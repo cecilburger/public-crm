@@ -1,0 +1,1061 @@
+<title>Kirana CRM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..900&family=Instrument+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --bg:#F6F5FA; --bg-alt:#EFEEF7; --surface:#FFFFFF; --surface-2:#EEEDF6;
+  --ink:#16183C; --ink-2:#4A4D74; --ink-3:#7B7E9E;
+  --line:#DEDCEB; --line-strong:#C6C3DC;
+  --brand:#2F31A8; --brand-ink:#FFFFFF; --brand-soft:#E8E8FB;
+  --accent:#B4700B; --accent-soft:#FBEFD8;
+  --good:#0F7A6C; --good-soft:#DFF3EF;
+  --shadow:0 1px 2px rgba(22,24,60,.06), 0 12px 32px -18px rgba(22,24,60,.28);
+  --shadow-lg:0 2px 4px rgba(22,24,60,.05), 0 40px 80px -40px rgba(22,24,60,.42);
+  --r:14px; --r-sm:9px;
+  --maxw:1180px;
+  --f-display:'Archivo','Helvetica Neue',Arial,sans-serif;
+  --f-body:'Instrument Sans','Helvetica Neue',Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0A0B22; --bg-alt:#0E1030; --surface:#131638; --surface-2:#1A1D48;
+    --ink:#EEEDF9; --ink-2:#A6A8CC; --ink-3:#7E81AC;
+    --line:#262A5E; --line-strong:#3A3F80;
+    --brand:#8385F2; --brand-ink:#0A0B22; --brand-soft:#1E2163;
+    --accent:#F0B24A; --accent-soft:#33260B;
+    --good:#3ECFB8; --good-soft:#0E3A36;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px -18px rgba(0,0,0,.8);
+    --shadow-lg:0 2px 4px rgba(0,0,0,.35), 0 40px 80px -40px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0A0B22; --bg-alt:#0E1030; --surface:#131638; --surface-2:#1A1D48;
+  --ink:#EEEDF9; --ink-2:#A6A8CC; --ink-3:#7E81AC;
+  --line:#262A5E; --line-strong:#3A3F80;
+  --brand:#8385F2; --brand-ink:#0A0B22; --brand-soft:#1E2163;
+  --accent:#F0B24A; --accent-soft:#33260B;
+  --good:#3ECFB8; --good-soft:#0E3A36;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px -18px rgba(0,0,0,.8);
+  --shadow-lg:0 2px 4px rgba(0,0,0,.35), 0 40px 80px -40px rgba(0,0,0,.9);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:90px}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--f-body); font-size:16.5px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%}
+a{color:inherit}
+h1,h2,h3,h4{font-family:var(--f-display);font-variation-settings:'wdth' 112;margin:0;text-wrap:balance;line-height:1.05;letter-spacing:-.02em}
+h1{font-size:clamp(2.6rem,5.6vw,4.5rem);font-weight:800;font-variation-settings:'wdth' 118}
+h2{font-size:clamp(1.9rem,3.4vw,2.9rem);font-weight:800}
+h3{font-size:1.16rem;font-weight:700;letter-spacing:-.01em;line-height:1.25}
+p{margin:0}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+.mono{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;font-weight:500}
+.tnum{font-variant-numeric:tabular-nums}
+.muted{color:var(--ink-2)}
+:focus-visible{outline:2.5px solid var(--accent);outline-offset:3px;border-radius:4px}
+
+/* ---------- status rail + nav ---------- */
+.rail{background:var(--ink);color:var(--bg);font-family:var(--f-mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase}
+:root[data-theme="dark"] .rail,
+:root:not([data-theme="light"]) .rail{background:var(--surface-2);color:var(--ink-2)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .rail{background:var(--ink);color:var(--bg)}}
+.rail .wrap{display:flex;gap:20px;align-items:center;justify-content:center;flex-wrap:wrap;padding-block:7px}
+.rail b{font-weight:600;color:var(--accent)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--good);display:inline-block;margin-right:6px;vertical-align:1px}
+.dot.pulse{animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+
+header.nav{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.nav .wrap{display:flex;align-items:center;gap:28px;height:66px}
+.logo{display:flex;align-items:center;gap:9px;font-family:var(--f-display);font-weight:800;font-variation-settings:'wdth' 120;font-size:1.14rem;letter-spacing:-.02em;text-decoration:none}
+.mark{width:26px;height:26px;border-radius:7px;background:var(--brand);display:grid;place-items:center;flex:none}
+.mark span{display:block;width:9px;height:9px;border-radius:2px 7px 2px 7px;background:var(--accent)}
+.navlinks{display:flex;gap:24px;margin-left:auto;font-size:.93rem}
+.navlinks a{text-decoration:none;color:var(--ink-2);transition:color .15s}
+.navlinks a:hover{color:var(--ink)}
+.navcta{display:flex;gap:10px;align-items:center}
+@media(max-width:940px){.navlinks{display:none}.navcta .ghost{display:none}}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;gap:8px;font-family:var(--f-body);font-weight:600;font-size:.94rem;
+  padding:11px 19px;border-radius:10px;text-decoration:none;border:1px solid transparent;cursor:pointer;transition:transform .12s,background .15s,border-color .15s}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--brand);color:var(--brand-ink)}
+.btn.primary:hover{background:color-mix(in srgb,var(--brand) 86%,var(--ink))}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line-strong)}
+.btn.ghost:hover{border-color:var(--ink-3);background:var(--surface)}
+.btn.gold{background:var(--accent);color:#1B1405}
+:root[data-theme="dark"] .btn.gold,:root:not([data-theme="light"]) .btn.gold{color:#221805}
+.btn.lg{padding:14px 24px;font-size:1rem}
+
+/* ---------- hero ---------- */
+.hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 108px);
+  -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,.55),transparent 78%);
+  mask-image:linear-gradient(180deg,rgba(0,0,0,.55),transparent 78%);opacity:.85}
+.hero .wrap{position:relative;display:grid;grid-template-columns:1.02fr .98fr;gap:56px;align-items:center;padding:74px 24px 78px}
+@media(max-width:980px){.hero .wrap{grid-template-columns:1fr;gap:40px;padding:52px 24px 58px}}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;padding:5px 11px;border:1px solid var(--line-strong);border-radius:100px;background:var(--surface);color:var(--ink-2)}
+.hero h1{margin:20px 0 0}
+.hero h1 em{font-style:normal;position:relative;white-space:nowrap}
+.hero h1 em::after{content:"";position:absolute;left:0;right:0;bottom:.06em;height:.14em;background:var(--accent);opacity:.55;border-radius:2px}
+.lede{margin-top:20px;font-size:1.09rem;color:var(--ink-2);max-width:34em}
+.herocta{display:flex;gap:12px;margin-top:28px;flex-wrap:wrap}
+.fineprint{margin-top:14px;color:var(--ink-3);font-size:.85rem}
+
+/* console panel */
+.console{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow-lg);overflow:hidden}
+.console-top{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{font-family:var(--f-mono);font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;border-radius:6px;border:1px solid transparent;background:none;color:var(--ink-3);cursor:pointer;white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--bg);border-color:var(--line);color:var(--ink)}
+.thread{padding:16px 16px 6px;display:flex;flex-direction:column;gap:12px;min-height:238px}
+.msg{max-width:82%;padding:10px 13px;border-radius:12px;font-size:.9rem;line-height:1.5;animation:rise .5s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.msg.in{background:var(--surface-2);border:1px solid var(--line);border-bottom-left-radius:4px;align-self:flex-start}
+.msg.out{background:var(--brand);color:var(--brand-ink);border-bottom-right-radius:4px;align-self:flex-end}
+.msg .who{font-family:var(--f-mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;opacity:.62;display:block;margin-bottom:3px}
+.ai-card{margin:0 16px 14px;border:1px dashed var(--accent);background:var(--accent-soft);border-radius:10px;padding:11px 13px}
+.ai-card .hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.ai-card .hd .mono{color:var(--accent)}
+.ai-text{font-size:.89rem;min-height:2.9em}
+.caret{display:inline-block;width:7px;height:1em;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.console-foot{display:flex;gap:14px;flex-wrap:wrap;padding:11px 16px;border-top:1px solid var(--line);background:var(--surface-2);color:var(--ink-3)}
+.console-foot span b{color:var(--ink);font-weight:600}
+
+/* ---------- stats band ---------- */
+.band{border-bottom:1px solid var(--line);background:var(--bg-alt)}
+.band .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;padding:0 24px}
+.stat{padding:26px 22px 24px;position:relative}
+.stat+.stat::before{content:"";position:absolute;left:-1px;top:22px;bottom:22px;width:1px;background:var(--line)}
+.stat .n{font-family:var(--f-display);font-variation-settings:'wdth' 118;font-weight:800;font-size:2.05rem;letter-spacing:-.03em;line-height:1}
+.stat .n small{font-size:.95rem;font-weight:600;color:var(--accent)}
+.stat p{margin-top:7px;font-size:.86rem;color:var(--ink-2)}
+@media(max-width:760px){.band .wrap{grid-template-columns:1fr 1fr}.stat+.stat::before{display:none}}
+
+/* ---------- generic section ---------- */
+section{padding:82px 0}
+.sechead{max-width:660px;margin-bottom:44px}
+.sechead .mono{color:var(--accent);display:block;margin-bottom:14px}
+.sechead p{margin-top:14px;color:var(--ink-2);font-size:1.04rem}
+.center{margin-left:auto;margin-right:auto;text-align:center}
+
+/* feature grid */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+@media(max-width:900px){.grid{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.grid{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:24px 22px;display:flex;flex-direction:column;gap:9px;transition:border-color .18s,transform .18s}
+.card:hover{border-color:var(--line-strong);transform:translateY(-2px)}
+.card .ico{width:34px;height:34px;border-radius:9px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:5px}
+.card .ico svg{width:18px;height:18px}
+.card p{font-size:.93rem;color:var(--ink-2)}
+.card .tagline{font-family:var(--f-mono);font-size:.64rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin-top:auto;padding-top:12px}
+.card.feat{background:linear-gradient(160deg,var(--brand-soft),var(--surface) 62%);border-color:var(--brand)}
+
+/* tour */
+.tour{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;padding:38px 0}
+.tour.flip>div:first-child{order:2}
+@media(max-width:900px){.tour{grid-template-columns:1fr;gap:28px}.tour.flip>div:first-child{order:0}}
+.tour h3{font-size:clamp(1.5rem,2.4vw,2rem);font-weight:800;font-variation-settings:'wdth' 115;margin-bottom:14px}
+.tour ul{margin:18px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.tour li{padding-left:26px;position:relative;font-size:.95rem;color:var(--ink-2)}
+.tour li::before{content:"";position:absolute;left:0;top:.52em;width:11px;height:11px;border-radius:3px 8px 3px 8px;background:var(--accent)}
+.mock{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.mock-hd{padding:9px 14px;border-bottom:1px solid var(--line);background:var(--surface-2);color:var(--ink-3)}
+
+/* kanban mock */
+.kan{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:14px}
+.kan-col{background:var(--bg-alt);border:1px solid var(--line);border-radius:10px;padding:9px;display:flex;flex-direction:column;gap:8px;min-height:180px}
+.kan-col>.mono{color:var(--ink-3);font-size:.6rem}
+.deal{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:.78rem;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.deal b{display:block;font-size:.82rem;margin-bottom:3px}
+.deal .amt{font-family:var(--f-mono);font-size:.72rem;color:var(--good);font-weight:600}
+.deal.moving{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* timeline mock */
+.tl{padding:16px 18px;display:flex;flex-direction:column;gap:0}
+.tl-row{display:grid;grid-template-columns:64px 1fr;gap:14px;padding:9px 0;position:relative}
+.tl-row+.tl-row{border-top:1px solid var(--line)}
+.tl-row time{font-family:var(--f-mono);font-size:.66rem;color:var(--ink-3);padding-top:2px}
+.tl-row .ev{font-size:.85rem}
+.tl-row .ev em{font-style:normal;color:var(--ink-3);font-size:.78rem;display:block}
+.chip{display:inline-block;font-family:var(--f-mono);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2)}
+.chip.wa{background:var(--good-soft);color:var(--good);border-color:transparent}
+.chip.ig{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.chip.ai{background:var(--brand-soft);color:var(--brand);border-color:transparent}
+
+/* ---------- pricing ---------- */
+.pricing{background:var(--bg-alt);border-block:1px solid var(--line)}
+.toggle{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:100px;padding:4px;gap:2px;margin:0 auto}
+.toggle button{font-family:var(--f-body);font-size:.86rem;font-weight:600;border:0;background:none;color:var(--ink-2);padding:8px 16px;border-radius:100px;cursor:pointer}
+.toggle button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.toggle .save{font-family:var(--f-mono);font-size:.6rem;letter-spacing:.08em;color:var(--accent);margin-left:6px}
+
+.plans{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:34px;align-items:start}
+@media(max-width:1000px){.plans{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.plans{grid-template-columns:1fr}}
+.plan{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:24px 21px;display:flex;flex-direction:column;gap:14px;position:relative}
+.plan.popular{border-color:var(--brand);box-shadow:var(--shadow-lg)}
+.plan .flag{position:absolute;top:-11px;left:21px;background:var(--brand);color:var(--brand-ink);font-family:var(--f-mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;padding:4px 9px;border-radius:5px}
+.plan h3{font-variation-settings:'wdth' 118;font-size:1.3rem}
+.plan .vol{font-family:var(--f-mono);font-size:.74rem;color:var(--accent);letter-spacing:.06em}
+.price{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;margin-top:4px}
+.price .cur{font-family:var(--f-mono);font-size:.86rem;color:var(--ink-2)}
+.price .val{font-family:var(--f-display);font-variation-settings:'wdth' 118;font-weight:800;font-size:2.2rem;letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums}
+.price .per{font-size:.82rem;color:var(--ink-3)}
+.unit{font-family:var(--f-mono);font-size:.7rem;color:var(--ink-3);letter-spacing:.04em}
+.plan ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:.88rem}
+.plan li{display:grid;grid-template-columns:16px 1fr;gap:9px;color:var(--ink-2)}
+.plan li svg{width:14px;height:14px;margin-top:4px;color:var(--good);flex:none}
+.plan li b{color:var(--ink);font-weight:600}
+.plan .btn{justify-content:center;margin-top:auto}
+.divider{height:1px;background:var(--line);margin:2px 0}
+
+/* configurator */
+.config{margin-top:26px;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.config-hd{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;background:var(--surface-2)}
+.config-hd h3{font-size:1.05rem}
+.config-body{display:grid;grid-template-columns:1.35fr 1fr;gap:0}
+@media(max-width:860px){.config-body{grid-template-columns:1fr}}
+.controls{padding:22px;display:flex;flex-direction:column;gap:20px;border-right:1px solid var(--line)}
+@media(max-width:860px){.controls{border-right:0;border-bottom:1px solid var(--line)}}
+.field>.mono{color:var(--ink-3);display:block;margin-bottom:9px}
+.segs{display:flex;gap:8px;flex-wrap:wrap}
+.seg{flex:1 1 120px;text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px;cursor:pointer;font-family:var(--f-body);color:var(--ink);transition:border-color .15s,background .15s}
+.seg:hover{border-color:var(--line-strong)}
+.seg[aria-pressed="true"]{border-color:var(--brand);background:var(--brand-soft)}
+.seg b{display:block;font-size:.95rem;font-weight:700}
+.seg span{font-family:var(--f-mono);font-size:.66rem;color:var(--ink-3);letter-spacing:.06em}
+.seg[aria-pressed="true"] span{color:var(--brand)}
+.stepper{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.stepper .lab b{display:block;font-size:.93rem}
+.stepper .lab span{font-size:.78rem;color:var(--ink-3)}
+.pm{display:flex;align-items:center;gap:4px}
+.pm button{width:32px;height:32px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);font-size:1.1rem;line-height:1;cursor:pointer;font-family:var(--f-mono)}
+.pm button:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.pm button:disabled{opacity:.35;cursor:not-allowed}
+.pm output{font-family:var(--f-mono);font-size:1rem;font-weight:600;min-width:42px;text-align:center;font-variant-numeric:tabular-nums}
+.summary{padding:22px;display:flex;flex-direction:column;gap:12px;background:var(--bg-alt)}
+.line{display:flex;justify-content:space-between;gap:12px;font-size:.9rem;color:var(--ink-2)}
+.line b{color:var(--ink);font-weight:600;font-family:var(--f-mono);font-size:.86rem;font-variant-numeric:tabular-nums}
+.line.total{border-top:1px solid var(--line-strong);padding-top:14px;margin-top:4px;align-items:baseline}
+.line.total .k{font-family:var(--f-display);font-weight:800;font-size:1.05rem;color:var(--ink);font-variation-settings:'wdth' 115}
+.line.total b{font-size:1.55rem;font-family:var(--f-display);font-variation-settings:'wdth' 118;letter-spacing:-.03em}
+.note{font-size:.78rem;color:var(--ink-3);line-height:1.5}
+
+/* addons + table */
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:.9rem}
+th,td{text-align:left;padding:13px 18px;border-bottom:1px solid var(--line)}
+thead th{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:500;background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums;font-size:.85rem;white-space:nowrap}
+td b{font-weight:600}
+td small{display:block;color:var(--ink-3);font-size:.78rem;margin-top:2px}
+.yes{color:var(--good);font-weight:700}
+.no{color:var(--ink-3)}
+
+/* marquee */
+.marq{overflow:hidden;border-block:1px solid var(--line);background:var(--surface);padding:18px 0;-webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)}
+.marq-track{display:flex;gap:42px;width:max-content;animation:slide 38s linear infinite}
+.marq-track span{font-family:var(--f-display);font-variation-settings:'wdth' 108;font-weight:600;font-size:1rem;color:var(--ink-3);white-space:nowrap;letter-spacing:-.01em}
+@keyframes slide{to{transform:translateX(-50%)}}
+
+/* faq */
+details{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);margin-bottom:9px;overflow:hidden}
+details[open]{border-color:var(--line-strong)}
+summary{cursor:pointer;padding:15px 18px;font-weight:600;font-size:.98rem;list-style:none;display:flex;justify-content:space-between;gap:14px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font-family:var(--f-mono);color:var(--accent);font-size:1.2rem;line-height:1}
+details[open] summary::after{content:"\2212"}
+details .ans{padding:0 18px 17px;color:var(--ink-2);font-size:.93rem;max-width:70ch}
+
+/* roadmap */
+.road{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+@media(max-width:900px){.road{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.road{grid-template-columns:1fr}}
+.mod{border:1px solid var(--line);border-radius:var(--r);padding:20px;background:var(--surface)}
+.mod.live{border-color:var(--good);background:linear-gradient(160deg,var(--good-soft),var(--surface) 70%)}
+.mod .st{font-family:var(--f-mono);font-size:.62rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px;display:block}
+.mod.live .st{color:var(--good)}
+.mod h3{font-size:1.05rem;margin-bottom:6px}
+.mod p{font-size:.86rem;color:var(--ink-2)}
+
+/* cta + footer */
+.cta{background:var(--ink);color:var(--bg);border-radius:0}
+:root[data-theme="dark"] .cta,:root:not([data-theme="light"]) .cta{background:var(--surface-2);color:var(--ink)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .cta{background:var(--ink);color:var(--bg)}}
+.cta h2{color:inherit}
+.cta .wrap{text-align:center;display:flex;flex-direction:column;align-items:center;gap:18px}
+.cta p{color:inherit;opacity:.75;max-width:52ch}
+footer{border-top:1px solid var(--line);background:var(--bg);padding:52px 0 34px;font-size:.88rem}
+.fgrid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:32px}
+@media(max-width:760px){.fgrid{grid-template-columns:1fr 1fr}}
+.fcol h4{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);font-weight:500;margin-bottom:12px}
+.fcol a{display:block;color:var(--ink-2);text-decoration:none;padding:3px 0}
+.fcol a:hover{color:var(--ink)}
+.fbot{margin-top:38px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--ink-3);font-size:.8rem}
+.themebtn{background:none;border:1px solid var(--line-strong);border-radius:8px;width:34px;height:34px;cursor:pointer;color:var(--ink-2);display:grid;place-items:center}
+.themebtn:hover{color:var(--ink);border-color:var(--ink-3)}
+
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+  html{scroll-behavior:auto}
+}
+</style>
+
+<div class="rail">
+  <div class="wrap">
+    <span><i class="dot pulse"></i>CRM &mdash; live</span>
+    <span>Helpdesk &mdash; private beta</span>
+    <span>Billing &mdash; 2026</span>
+    <span>Data residency: <b>Jakarta</b></span>
+  </div>
+</div>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="logo" href="#top"><span class="mark"><span></span></span>Kirana</a>
+    <nav class="navlinks">
+      <a href="#why">Why Kirana</a>
+      <a href="#product">Product</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#integrations">Integrations</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="navcta">
+      <button class="themebtn" id="themeBtn" aria-label="Switch color theme" title="Switch theme">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.5-6.5-1.4 1.4M7.9 16.1l-1.4 1.4m0-11.9 1.4 1.4m8.2 8.2 1.4 1.4"/><circle cx="12" cy="12" r="4"/></svg>
+      </button>
+      <a class="btn ghost" href="#pricing">See pricing</a>
+      <a class="btn primary" href="#demo">Book a demo</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="eyebrow mono"><i class="dot"></i>Omnichannel CRM for Indonesian teams</span>
+      <h1>Every chat is a <em>deal</em> in progress.</h1>
+      <p class="lede">Kirana CRM answers your WhatsApp for you. It drafts the reply in Bahasa Indonesia from your own catalogue, takes the order, and puts the deal on the board &mdash; while your team sleeps. Five agents answering like twenty.</p>
+      <div class="herocta">
+        <a class="btn primary lg" href="#demo">Start 14-day trial</a>
+        <a class="btn ghost lg" href="#config">Build your package</a>
+      </div>
+      <p class="fineprint">No credit card &middot; Live in 1 working day &middot; Starts at Rp 1.500.000/month</p>
+    </div>
+
+    <div class="console" id="heroConsole">
+      <div class="console-top">
+        <div class="tabs" role="tablist" aria-label="Channel">
+          <button class="tab" role="tab" aria-selected="true" data-ch="wa">WhatsApp <b>4</b></button>
+          <button class="tab" role="tab" aria-selected="false" data-ch="ig">Instagram <b>2</b></button>
+          <button class="tab" role="tab" aria-selected="false" data-ch="tok">Tokopedia <b>1</b></button>
+          <button class="tab" role="tab" aria-selected="false" data-ch="tt">TikTok</button>
+        </div>
+      </div>
+      <div class="thread" id="thread"></div>
+      <div class="ai-card">
+        <div class="hd">
+          <span class="mono">Autopilot draft &middot; confidence 94%</span>
+          <span class="mono muted" id="aiLatency">0.8s</span>
+        </div>
+        <div class="ai-text" id="aiText"></div>
+      </div>
+      <div class="console-foot mono">
+        <span>Customer since <b>2023</b></span>
+        <span>LTV <b>Rp 8,4jt</b></span>
+        <span>Stage <b>Negotiation</b></span>
+        <span>Owner <b>Rani</b></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="band">
+  <div class="wrap">
+    <div class="stat"><div class="n tnum">41<small>&thinsp;sec</small></div><p>Median first response once Autopilot handles the opening reply.</p></div>
+    <div class="stat"><div class="n tnum">62<small>&thinsp;%</small></div><p>Of routine chats closed without a human touching them.</p></div>
+    <div class="stat"><div class="n tnum">3,1<small>&thinsp;&times;</small></div><p>Chat-to-order conversion versus a shared WhatsApp Business number.</p></div>
+    <div class="stat"><div class="n tnum">1<small>&thinsp;day</small></div><p>From signature to live inbox, migration and templates included.</p></div>
+  </div>
+</div>
+
+<section id="why">
+  <div class="wrap">
+    <div class="sechead">
+      <span class="mono">Why Kirana</span>
+      <h2>A CRM built around the conversation, not the contact form.</h2>
+      <p>Most CRMs were designed for email and forms, then bolted a WhatsApp widget on the side. In Indonesia the deal happens in the chat &mdash; so the chat is the record, and everything else is generated from it.</p>
+    </div>
+    <div class="grid">
+
+      <article class="card feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.9 4.6 4.6 1.9-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M18 15l.9 2.1 2.1.9-2.1.9L18 21l-.9-2.1-2.1-.9 2.1-.9L18 15z"/></svg></div>
+        <h3>Autopilot that actually speaks your customer's language</h3>
+        <p>Trained on your catalogue, price list and past chats. Replies in Bahasa, Javanese-polite or English, quotes real stock, and escalates to a human with a one-line summary the moment it is unsure.</p>
+        <span class="tagline">Included on every plan</span>
+      </article>
+
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg></div>
+        <h3>One inbox, built for WhatsApp first</h3>
+        <p>Every conversation threaded under one customer, with the full history, the deal and the order in the same place. Instagram, Tokopedia and Shopee are next &mdash; the inbox is already channel-agnostic underneath.</p>
+        <span class="tagline">Unified inbox &middot; WhatsApp today</span>
+      </article>
+
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5m16 14V5M4 12h16"/><rect x="7" y="7" width="4" height="4" rx="1"/><rect x="13" y="13" width="4" height="4" rx="1"/></svg></div>
+        <h3>Pipelines that move themselves</h3>
+        <p>A payment link opened, an invoice paid, a quotation sent &mdash; each event advances the deal stage automatically. Nobody drags cards on a Friday to make the board look right.</p>
+        <span class="tagline">Conversation-native pipeline</span>
+      </article>
+
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.5 3.1-5.5 7-5.5s7 2 7 5.5"/></svg></div>
+        <h3>Customer memory, not customer records</h3>
+        <p>Every order, complaint, refund and promise on one timeline. When a buyer returns after eight months, the agent sees a one-line recap before typing hello.</p>
+        <span class="tagline">Customer 360</span>
+      </article>
+
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4v16h16"/><path d="M7 15l3.5-4 3 2.5L20 7"/></svg></div>
+        <h3>Revenue per conversation</h3>
+        <p>Not just tickets closed. See rupiah earned per chat, per agent, per channel, per campaign &mdash; and the cost of every conversation next to it.</p>
+        <span class="tagline">Analytics</span>
+      </article>
+
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></div>
+        <h3>It never invents a price</h3>
+        <p>Every rupiah figure the AI writes is checked against your catalogue before it is sent. Made-up numbers, unauthorised discounts and stock it does not have are blocked and handed to a person &mdash; with the reason attached.</p>
+        <span class="tagline">Guardrails</span>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section id="product" style="background:var(--bg-alt);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sechead">
+      <span class="mono">Product tour</span>
+      <h2>Three surfaces. One record of the customer.</h2>
+    </div>
+
+    <div class="tour">
+      <div>
+        <h3>The inbox your agents live in</h3>
+        <p class="muted">Assignment rules by product, language or region. Internal notes that never reach the customer. Canned replies with variables. Full history from every channel in the same scroll, so nobody asks "sorry, what was your order number again?"</p>
+        <ul>
+          <li>Round-robin and skill-based routing with load balancing</li>
+          <li>Collision detection &mdash; see when a teammate is already typing</li>
+          <li>Every reply checked against your catalogue before it is sent</li>
+          <li>SLA timers with escalation to a supervisor before the customer complains</li>
+        </ul>
+      </div>
+      <div class="mock">
+        <div class="mock-hd mono">Timeline &middot; Bu Sari &middot; +62 812 &bull;&bull;&bull;&bull; 4471</div>
+        <div class="tl">
+          <div class="tl-row"><time>09:12</time><div class="ev"><span class="chip wa">WhatsApp</span> Asked for stock of Batik Parang &mdash; size M <em>Autopilot answered in 6 seconds</em></div></div>
+          <div class="tl-row"><time>09:14</time><div class="ev"><span class="chip ai">Autopilot</span> Sent catalogue + Rp 480.000 payment link <em>Deal created: Retail &mdash; Jakarta</em></div></div>
+          <div class="tl-row"><time>09:31</time><div class="ev"><span class="chip">Xendit</span> Payment received &mdash; Rp 480.000 <em>Stage moved to Won automatically</em></div></div>
+          <div class="tl-row"><time>11:02</time><div class="ev"><span class="chip ig">Instagram</span> Commented on a reel &mdash; matched to the same customer <em>Merged into one profile</em></div></div>
+          <div class="tl-row"><time>Day 30</time><div class="ev"><span class="chip ai">Automation</span> Repeat-purchase nudge scheduled <em>Only if no open complaint</em></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tour flip">
+      <div>
+        <h3>A pipeline fed by real events</h3>
+        <p class="muted">Deals are created the moment intent appears in a chat and advance on evidence: link opened, quotation downloaded, invoice paid. Forecasts stop being fiction because nobody is updating them by hand.</p>
+        <ul>
+          <li>Unlimited pipelines &mdash; retail, reseller, B2B, after-sales</li>
+          <li>Rotting-deal alerts when a chat goes quiet past your threshold</li>
+          <li>Quotations and invoices generated from the thread, in rupiah, with PPN</li>
+          <li>Commission tracking per agent, exported for payroll</li>
+        </ul>
+      </div>
+      <div class="mock">
+        <div class="mock-hd mono">Pipeline &middot; Retail Jakarta &middot; Rp 187,4jt open</div>
+        <div class="kan">
+          <div class="kan-col"><span class="mono">Qualified &middot; 6</span>
+            <div class="deal"><b>Toko Melati</b><span class="amt">Rp 12.400.000</span></div>
+            <div class="deal"><b>CV Rahayu</b><span class="amt">Rp 6.800.000</span></div>
+          </div>
+          <div class="kan-col"><span class="mono">Quotation &middot; 4</span>
+            <div class="deal moving"><b>Bu Sari &mdash; grosir</b><span class="amt">Rp 24.900.000</span></div>
+            <div class="deal"><b>Warung Kopi 88</b><span class="amt">Rp 3.150.000</span></div>
+          </div>
+          <div class="kan-col"><span class="mono">Won &middot; 11</span>
+            <div class="deal"><b>Griya Busana</b><span class="amt">Rp 18.200.000</span></div>
+            <div class="deal"><b>Pak Hendra</b><span class="amt">Rp 9.750.000</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tour">
+      <div>
+        <h3>Autopilot, supervised</h3>
+        <p class="muted">Start it in suggest-only mode: it drafts, your agent presses send. Once accuracy passes your bar, let it answer on its own for the intents you choose &mdash; stock, shipping, price, return policy &mdash; and keep humans for the rest.</p>
+        <ul>
+          <li>Knowledge base from your PDFs, price lists and past conversations</li>
+          <li>Guardrails: never promises a discount, never invents stock</li>
+          <li>Confidence threshold per intent, with mandatory handover below it</li>
+          <li>Every AI reply logged, rated and reviewable in the audit trail</li>
+        </ul>
+      </div>
+      <div class="mock">
+        <div class="mock-hd mono">Autopilot &middot; last 7 days</div>
+        <div class="tl">
+          <div class="tl-row"><time>Handled</time><div class="ev"><b>4.318</b> conversations <em>62% fully resolved, 0 escalations missed</em></div></div>
+          <div class="tl-row"><time>Deflected</time><div class="ev"><b>Rp 41,2jt</b> in agent hours <em>Equivalent to 3,1 full-time agents</em></div></div>
+          <div class="tl-row"><time>Handover</time><div class="ev"><b>1.641</b> conversations <em>Average confidence at handover: 58%</em></div></div>
+          <div class="tl-row"><time>CSAT</time><div class="ev"><b>4,7 / 5</b> on AI-only chats <em>4,6 on human-handled chats</em></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="pricing" id="pricing">
+  <div class="wrap">
+    <div class="sechead center">
+      <span class="mono">Pricing</span>
+      <h2>Pay for conversations, not for seats you might hire.</h2>
+      <p>One number decides your plan: how many customer conversations you handle a month. Agents, pipelines, automations and Autopilot come with all of them.</p>
+      <div style="display:flex;justify-content:center;margin-top:22px">
+        <div class="toggle" role="group" aria-label="Billing period">
+          <button id="btnMonthly" aria-pressed="true">Monthly</button>
+          <button id="btnAnnual" aria-pressed="false">Annual<span class="save">2 months free</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="plans">
+
+      <article class="plan">
+        <h3>Starter</h3>
+        <span class="vol mono">1.000 chats / month</span>
+        <div class="price"><span class="cur">Rp</span><span class="val" data-price="1500000">1.500.000</span><span class="per">/month</span></div>
+        <span class="unit" data-unit="1500">Rp 1.500 per conversation</span>
+        <div class="divider"></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>1</b> WhatsApp Business number</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>5</b> agent seats</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>2.000</b> Autopilot replies</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Sales pipeline included</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Extra chats <b>Rp 1.800</b> each</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Email &amp; WhatsApp support</span></li>
+        </ul>
+        <a class="btn ghost" href="#demo">Start trial</a>
+      </article>
+
+      <article class="plan popular">
+        <span class="flag">Most picked</span>
+        <h3>Growth</h3>
+        <span class="vol mono">3.000 chats / month</span>
+        <div class="price"><span class="cur">Rp</span><span class="val" data-price="3900000">3.900.000</span><span class="per">/month</span></div>
+        <span class="unit" data-unit="1300">Rp 1.300 per conversation</span>
+        <div class="divider"></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>3</b> WhatsApp numbers</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>15</b> agent seats</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>10.000</b> Autopilot replies</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Deals move themselves on payment events</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Autopilot takes orders, not just questions</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Extra chats <b>Rp 1.500</b> each</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Onboarding session included</span></li>
+        </ul>
+        <a class="btn primary" href="#demo">Start trial</a>
+      </article>
+
+      <article class="plan">
+        <h3>Scale</h3>
+        <span class="vol mono">5.000 chats / month</span>
+        <div class="price"><span class="cur">Rp</span><span class="val" data-price="5900000">5.900.000</span><span class="per">/month</span></div>
+        <span class="unit" data-unit="1180">Rp 1.180 per conversation</span>
+        <div class="divider"></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>5</b> WhatsApp numbers</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>40</b> agent seats</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span><b>25.000</b> Autopilot replies</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Stock reserved automatically on order</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Custom roles &amp; tamper-evident audit log</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Extra chats <b>Rp 1.300</b> each</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Priority support, 4-hour response</span></li>
+        </ul>
+        <a class="btn ghost" href="#demo">Start trial</a>
+      </article>
+
+      <article class="plan">
+        <h3>Custom</h3>
+        <span class="vol mono">10.000+ chats / month</span>
+        <div class="price"><span class="val" style="font-size:1.8rem">Let's build it</span></div>
+        <span class="unit">Volume rate from Rp 950 per conversation</span>
+        <div class="divider"></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Unlimited numbers &amp; seats</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Private cloud or on-premise deployment</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Fine-tuned Autopilot on your own data</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Custom integrations &amp; ERP sync</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>99,9% uptime SLA with penalties</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12.5l5 5L20 6.5"/></svg><span>Named success manager + quarterly review</span></li>
+        </ul>
+        <a class="btn gold" href="#demo">Talk to sales</a>
+      </article>
+    </div>
+
+    <div class="config" id="config">
+      <div class="config-hd">
+        <h3>Build your package</h3>
+        <span class="mono muted">Live estimate &middot; excludes PPN</span>
+      </div>
+      <div class="config-body">
+        <div class="controls">
+          <div class="field">
+            <span class="mono">1 &nbsp;Conversation volume</span>
+            <div class="segs" id="volSegs">
+              <button class="seg" data-plan="starter" aria-pressed="true"><b>Starter</b><span>1.000 chats</span></button>
+              <button class="seg" data-plan="growth" aria-pressed="false"><b>Growth</b><span>3.000 chats</span></button>
+              <button class="seg" data-plan="scale" aria-pressed="false"><b>Scale</b><span>5.000 chats</span></button>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="mono">2 &nbsp;Extra WhatsApp numbers</span>
+            <div class="stepper">
+              <div class="lab"><b>Additional numbers</b><span id="numIncl">1 included in Starter</span></div>
+              <div class="pm">
+                <button type="button" data-step="numbers" data-d="-1" aria-label="Remove a number">&minus;</button>
+                <output id="outNumbers">0</output>
+                <button type="button" data-step="numbers" data-d="1" aria-label="Add a number">+</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="mono">3 &nbsp;Extra agent seats</span>
+            <div class="stepper">
+              <div class="lab"><b>Additional seats</b><span id="seatIncl">5 included in Starter</span></div>
+              <div class="pm">
+                <button type="button" data-step="seats" data-d="-1" aria-label="Remove a seat">&minus;</button>
+                <output id="outSeats">0</output>
+                <button type="button" data-step="seats" data-d="1" aria-label="Add a seat">+</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="mono">4 &nbsp;Autopilot packs</span>
+            <div class="stepper">
+              <div class="lab"><b>+5.000 AI replies each</b><span id="aiIncl">2.000 included in Starter</span></div>
+              <div class="pm">
+                <button type="button" data-step="ai" data-d="-1" aria-label="Remove an Autopilot pack">&minus;</button>
+                <output id="outAi">0</output>
+                <button type="button" data-step="ai" data-d="1" aria-label="Add an Autopilot pack">+</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="mono">5 &nbsp;One-time services</span>
+            <div class="segs" id="oneOff">
+              <button class="seg" data-one="greentick" aria-pressed="false"><b>Green tick</b><span>Rp 2.500.000</span></button>
+              <button class="seg" data-one="migration" aria-pressed="false"><b>Data migration</b><span>Rp 5.000.000</span></button>
+              <button class="seg" data-one="csm" aria-pressed="false"><b>Dedicated CSM</b><span>Rp 3.000.000 / mo</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary">
+          <span class="mono muted">Your monthly bill</span>
+          <div class="line"><span class="k" id="sumPlanName">Starter &mdash; 1.000 chats</span><b id="sumPlan">Rp 1.500.000</b></div>
+          <div class="line" id="rowNumbers" hidden><span class="k" id="sumNumbersLabel">Extra numbers</span><b id="sumNumbers">Rp 0</b></div>
+          <div class="line" id="rowSeats" hidden><span class="k" id="sumSeatsLabel">Extra seats</span><b id="sumSeats">Rp 0</b></div>
+          <div class="line" id="rowAi" hidden><span class="k" id="sumAiLabel">Autopilot packs</span><b id="sumAi">Rp 0</b></div>
+          <div class="line" id="rowCsm" hidden><span class="k">Dedicated success manager</span><b>Rp 3.000.000</b></div>
+          <div class="line" id="rowDisc" hidden><span class="k">Annual discount &mdash; 2 months free</span><b id="sumDisc">&minus; Rp 0</b></div>
+          <div class="line total"><span class="k">Total per month</span><b id="sumTotal">Rp 1.500.000</b></div>
+          <div class="line" id="rowYear" hidden><span class="k">Billed yearly</span><b id="sumYear">Rp 0</b></div>
+          <div class="line" id="rowOneOff" hidden><span class="k">One-time setup</span><b id="sumOneOff">Rp 0</b></div>
+          <a class="btn primary" href="#demo" style="justify-content:center;margin-top:6px">Get this quote by email</a>
+          <p class="note">Estimate only, excluding PPN. Meta charges its own WhatsApp conversation fee &mdash; we pass it through at cost with no markup, typically Rp 350&ndash;900 per 24-hour session depending on category.</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:56px">
+      <h3 style="margin-bottom:16px">Add-ons, priced plainly</h3>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Add-on</th><th>What it does</th><th class="num">Starter</th><th class="num">Growth</th><th class="num">Scale</th></tr></thead>
+          <tbody>
+            <tr><td><b>Extra WhatsApp number</b><small>Each number is a separate WABA sender</small></td><td class="muted">Split by brand, branch or language</td><td class="num">Rp 450.000</td><td class="num">Rp 400.000</td><td class="num">Rp 350.000</td></tr>
+            <tr><td><b>Extra agent seat</b><small>Named user, not concurrent</small></td><td class="muted">Full inbox + pipeline access</td><td class="num">Rp 175.000</td><td class="num">Rp 150.000</td><td class="num">Rp 125.000</td></tr>
+            <tr><td><b>Autopilot pack</b><small>5.000 AI replies</small></td><td class="muted">Top up when a campaign spikes</td><td class="num">Rp 500.000</td><td class="num">Rp 450.000</td><td class="num">Rp 400.000</td></tr>
+            <tr><td><b>Overage per chat</b><small>Only past your included volume</small></td><td class="muted">No hard cut-off, ever</td><td class="num">Rp 1.800</td><td class="num">Rp 1.500</td><td class="num">Rp 1.300</td></tr>
+            <tr><td><b>Data migration</b><small>From spreadsheets or another CRM</small></td><td class="muted">Contacts, chat history, deals</td><td class="num" colspan="3" style="text-align:right">Rp 5.000.000 one-time</td></tr>
+            <tr><td><b>Dedicated success manager</b><small>Named, WhatsApp-reachable</small></td><td class="muted">Monthly review + optimisation</td><td class="num" colspan="3" style="text-align:right">Rp 3.000.000 / month</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top:48px">
+      <h3 style="margin-bottom:16px">What each plan includes</h3>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Capability</th><th class="num">Starter</th><th class="num">Growth</th><th class="num">Scale</th><th class="num">Custom</th></tr></thead>
+          <tbody>
+            <tr><td>Conversations per month</td><td class="num">1.000</td><td class="num">3.000</td><td class="num">5.000</td><td class="num">10.000+</td></tr>
+            <tr><td>WhatsApp numbers included</td><td class="num">1</td><td class="num">3</td><td class="num">5</td><td class="num">Unlimited</td></tr>
+            <tr><td>Agent seats included</td><td class="num">5</td><td class="num">15</td><td class="num">40</td><td class="num">Unlimited</td></tr>
+            <tr><td>Autopilot AI replies</td><td class="num">2.000</td><td class="num">10.000</td><td class="num">25.000</td><td class="num">Unlimited</td></tr>
+            <tr><td>WhatsApp Business Platform</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Sales pipeline with automatic stage moves</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Autopilot takes orders &amp; issues checkout links</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Stock reservation on confirmed orders</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Usage dashboard &amp; per-conversation billing</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>REST API &amp; webhooks</td><td class="num">Read-only</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Roles, permissions &amp; tamper-evident audit log</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td></tr>
+            <tr><td>Data residency in Jakarta</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num yes">&#10003;</td><td class="num">+ on-premise</td></tr>
+            <tr><td>Support</td><td class="num">Email, 1 day</td><td class="num">Chat, 8 hours</td><td class="num">Priority, 4 hours</td><td class="num">SLA + CSM</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:14px">All prices in IDR and exclude PPN. Annual contracts are billed once for twelve months and include two months free. Downgrade or cancel monthly plans any time before the next cycle.</p>
+    </div>
+  </div>
+</section>
+
+<section id="integrations" style="padding-bottom:40px">
+  <div class="wrap">
+    <div class="sechead center">
+      <span class="mono">Integrations</span>
+      <h2>WhatsApp today. The rest of your stack next.</h2>
+      <p>We would rather ship one channel that works than list ten that do not. WhatsApp Business Platform is live now, and everything in Kirana is reachable through the REST API and webhooks while the connectors below are built.</p>
+    </div>
+  </div>
+</section>
+<div class="marq">
+  <div class="marq-track">
+    <span>WhatsApp Business API &middot; live</span><span>REST API &middot; live</span><span>Webhooks &middot; live</span><span>Instagram &middot; next</span><span>Tokopedia &middot; next</span><span>Shopee &middot; next</span><span>Midtrans &middot; next</span><span>Xendit &middot; next</span><span>TikTok Shop &middot; later</span><span>Accurate &middot; later</span><span>Mekari Jurnal &middot; later</span><span>n8n &middot; later</span>
+    <span>WhatsApp Business API &middot; live</span><span>REST API &middot; live</span><span>Webhooks &middot; live</span><span>Instagram &middot; next</span><span>Tokopedia &middot; next</span><span>Shopee &middot; next</span><span>Midtrans &middot; next</span><span>Xendit &middot; next</span><span>TikTok Shop &middot; later</span><span>Accurate &middot; later</span><span>Mekari Jurnal &middot; later</span><span>n8n &middot; later</span>
+  </div>
+</div>
+
+<section id="security">
+  <div class="wrap">
+    <div class="sechead">
+      <span class="mono">Trust</span>
+      <h2>Customer conversations are the most sensitive data you hold.</h2>
+      <p>We treat them that way, and we can prove it during procurement.</p>
+    </div>
+    <div class="grid">
+      <article class="card"><h3>UU PDP compliant</h3><p>Consent capture, retention windows, data subject deletion requests and a signed DPA. Built for Indonesia's personal data law, not retrofitted from GDPR.</p><span class="tagline">Compliance</span></article>
+      <article class="card"><h3>Data stays in Jakarta</h3><p>Primary and replica in Indonesian regions. On-premise or private VPC deployment available on Custom for banks, insurers and government.</p><span class="tagline">Residency</span></article>
+      <article class="card"><h3>Encrypted, logged, reversible</h3><p>AES-256-GCM per tenant at rest, TLS 1.3 in transit, phone numbers masked from agents without export rights, hash-chained audit log, and 30-day point-in-time recovery.</p><span class="tagline">Security</span></article>
+      <article class="card"><h3>Your AI data is yours</h3><p>Autopilot never trains a shared model on your conversations. Prompts and outputs are retained only inside your workspace and expire on your schedule.</p><span class="tagline">AI policy</span></article>
+      <article class="card"><h3>99,9% uptime</h3><p>Multi-zone, queued message delivery that survives a Meta outage, and a public status page. Financial penalties written into Custom contracts.</p><span class="tagline">Reliability</span></article>
+      <article class="card"><h3>Leave whenever you want</h3><p>Full export of contacts, deals and complete chat history as CSV and JSON, self-service, no exit fee and no "contact your account manager" wall.</p><span class="tagline">No lock-in</span></article>
+    </div>
+  </div>
+</section>
+
+<section style="background:var(--bg-alt);border-block:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sechead">
+      <span class="mono">The suite</span>
+      <h2>CRM is module one. The rest share the same customer record.</h2>
+      <p>Every Kirana module reads from one customer graph, so adding the next one never means another migration or another login.</p>
+    </div>
+    <div class="road">
+      <div class="mod live"><span class="st"><i class="dot"></i>Live now</span><h3>Kirana CRM</h3><p>Omnichannel inbox, conversation-native pipeline, Autopilot and revenue analytics.</p></div>
+      <div class="mod"><span class="st">Private beta &middot; Q4 2026</span><h3>Kirana Helpdesk</h3><p>Ticketing, SLA policies, knowledge base and a customer portal on the same threads.</p></div>
+      <div class="mod"><span class="st">2026</span><h3>Kirana Billing</h3><p>Recurring invoices, payment links, dunning over WhatsApp, PPN-ready e-faktur exports.</p></div>
+      <div class="mod"><span class="st">Exploring</span><h3>Kirana Field</h3><p>Route planning and check-ins for sales teams who close deals off the screen.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap" style="max-width:880px">
+    <div class="sechead center" style="margin-left:auto;margin-right:auto">
+      <span class="mono">FAQ</span>
+      <h2>The questions procurement always asks.</h2>
+    </div>
+
+    <details open><summary>What counts as one "chat"?</summary><div class="ans">A conversation, not a message. One customer talking to you within a rolling 24-hour window counts once, no matter how many messages fly back and forth or how many agents touch it. If the same person writes again three days later, that is a second conversation.</div></details>
+    <details><summary>What happens if we go over our volume?</summary><div class="ans">Nothing breaks. Extra conversations bill at your plan's overage rate (Rp 1.800 / 1.500 / 1.300) on the next invoice. If you cross the next tier's volume two months in a row, we move you up automatically &mdash; because the tier is always cheaper than the overage.</div></details>
+    <details><summary>Are Meta's WhatsApp fees included?</summary><div class="ans">No, and be suspicious of anyone who says they are. Meta bills per 24-hour conversation session by category (marketing, utility, service). We pass that through at cost with zero markup and show it as a separate line on your invoice, so you can audit it against Meta's own billing.</div></details>
+    <details><summary>Can we add more phone numbers later?</summary><div class="ans">Yes, at any time. Starter includes one WhatsApp Business number, Growth three, Scale five. Extra numbers are Rp 450.000 / 400.000 / 350.000 per number per month depending on plan, prorated to your billing date. Custom plans get unlimited numbers.</div></details>
+    <details><summary>Do we need a new phone number, or can we keep ours?</summary><div class="ans">Keep yours. We migrate an existing number onto the WhatsApp Business API in about two working days, including the one-time deregistration from the WhatsApp Business app. Chat history on the handset stays on the handset &mdash; that part Meta does not let anyone move.</div></details>
+    <details><summary>How long does onboarding take?</summary><div class="ans">Most teams are live the next working day: connect channels, import contacts, set routing rules. Autopilot needs your catalogue and price list and reaches usable accuracy within about a week of supervised use, where it drafts and your agents approve.</div></details>
+    <details><summary>Is Autopilot going to say something embarrassing to a customer?</summary><div class="ans">It runs in suggest-only mode until you say otherwise, and even then it only auto-answers the intents you switch on. It cannot promise discounts, invent stock or quote a price that is not in your catalogue, and any reply below your confidence threshold goes to a human with the draft attached.</div></details>
+    <details><summary>Can we pay in rupiah with a local invoice?</summary><div class="ans">Yes &mdash; bank transfer, virtual account, or card. You get a proper faktur pajak, and annual contracts can be split into quarterly billing on request. Government and BUMN procurement terms are supported on Custom.</div></details>
+    <details><summary>What if we outgrow Scale?</summary><div class="ans">That is Custom, and it starts around Rp 950 per conversation with volume steps below that. It also unlocks private cloud or on-premise deployment, a fine-tuned Autopilot model, and an SLA with financial penalties.</div></details>
+  </div>
+</section>
+
+<section class="cta" id="demo">
+  <div class="wrap">
+    <span class="mono" style="opacity:.7">Get started</span>
+    <h2>See it answering your own customers.</h2>
+    <p>Send us one week of real chats. We will run Autopilot on them and show you, line by line, what it would have replied and what it would have earned you. Thirty minutes, no slides.</p>
+    <div class="herocta" style="justify-content:center">
+      <a class="btn gold lg" href="mailto:halo@kirana.id?subject=Kirana%20CRM%20demo">Book a live demo</a>
+      <a class="btn ghost lg" href="#pricing" style="border-color:currentColor;color:inherit">Start 14-day trial</a>
+    </div>
+    <p class="mono" style="opacity:.6;font-size:.68rem">halo@kirana.id &middot; +62 21 5000 8800 &middot; Mon&ndash;Sat, 08.00&ndash;21.00 WIB</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fgrid">
+      <div class="fcol">
+        <a class="logo" href="#top" style="margin-bottom:12px"><span class="mark"><span></span></span>Kirana</a>
+        <p class="muted" style="max-width:32ch">Software for Indonesian companies that grow inside the chat. Built in Jakarta.</p>
+      </div>
+      <div class="fcol"><h4>Product</h4><a href="#why">Unified inbox</a><a href="#product">Pipeline</a><a href="#why">Autopilot AI</a><a href="#integrations">Integrations</a><a href="#pricing">Pricing</a></div>
+      <div class="fcol"><h4>Company</h4><a href="#demo">Contact sales</a><a href="#security">Security</a><a href="#faq">FAQ</a><a href="#demo">Careers</a><a href="#demo">Partner program</a></div>
+      <div class="fcol"><h4>Legal</h4><a href="#demo">Terms of service</a><a href="#demo">Privacy policy</a><a href="#demo">Data processing agreement</a><a href="#demo">Status page</a></div>
+    </div>
+    <div class="fbot">
+      <span>PT Kirana Digital Nusantara &middot; Jakarta Selatan &middot; &copy; 2026</span>
+      <span class="mono">Prices in IDR, excluding PPN</span>
+    </div>
+  </div>
+</footer>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var fmt = new Intl.NumberFormat('id-ID');
+  var rp = function(n){ return 'Rp ' + fmt.format(Math.round(n)); };
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- theme ---------- */
+  var root = document.documentElement, btn = document.getElementById('themeBtn');
+  btn.addEventListener('click', function(){
+    var cur = root.getAttribute('data-theme');
+    if(!cur){ cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  /* ---------- hero console ---------- */
+  var scripts = {
+    wa: {
+      msgs: [
+        {s:'in', who:'Bu Sari &middot; WhatsApp', t:'Sis, batik parang yang di story masih ada size M? Kalau ambil 3 dapat harga grosir ga?'},
+        {s:'out', who:'Rani &middot; Agent', t:'Halo Bu Sari, saya cek stoknya sebentar ya 🙏'},
+        {s:'in', who:'Bu Sari &middot; WhatsApp', t:'Butuh hari Jumat soalnya buat kondangan'}
+      ],
+      ai:'Stok Batik Parang size M tersisa 7 pcs, Bu. Untuk 3 pcs harga grosir Rp 480.000/pcs (dari Rp 545.000). Kirim hari ini, sampai Jakarta Kamis sore — aman untuk Jumat. Saya buatkan link pembayarannya?',
+      lat:'0.8s'
+    },
+    ig: {
+      msgs: [
+        {s:'in', who:'@dinda.wrdn &middot; Instagram DM', t:'halo kak, yang di reel kemarin itu warna apa aja ya?'},
+        {s:'in', who:'@dinda.wrdn &middot; Instagram DM', t:'ada yang navy ga'}
+      ],
+      ai:'Hai Kak Dinda! Yang di reel itu tersedia 4 warna: navy, maroon, sage, dan cream. Navy ready semua size kecuali XL. Mau saya kirimkan katalog lengkapnya?',
+      lat:'0.6s'
+    },
+    tok: {
+      msgs: [
+        {s:'in', who:'Order #INV-88214 &middot; Tokopedia', t:'Pesanan saya kok belum dikirim ya sudah 2 hari'}
+      ],
+      ai:'Mohon maaf atas keterlambatannya. Saya cek pesanan #INV-88214 sudah dipacking dan pickup kurir dijadwalkan hari ini pukul 15.00. Nomor resi akan otomatis masuk ke chat ini. Sebagai permohonan maaf, saya kirimkan voucher Rp 25.000 untuk pembelian berikutnya.',
+      lat:'0.9s'
+    },
+    tt: {
+      msgs: [
+        {s:'in', who:'TikTok Shop', t:'kak ini bisa COD? aku di Surabaya'}
+      ],
+      ai:'Bisa, Kak! COD tersedia untuk Surabaya dengan ongkir Rp 12.000, estimasi tiba 2 hari kerja. Minimal COD Rp 100.000. Mau saya bantu prosesin sekarang?',
+      lat:'0.5s'
+    }
+  };
+
+  var thread = document.getElementById('thread');
+  var aiText = document.getElementById('aiText');
+  var aiLat  = document.getElementById('aiLatency');
+  var typer;
+
+  function render(ch){
+    var d = scripts[ch];
+    thread.innerHTML = '';
+    d.msgs.forEach(function(m, i){
+      var el = document.createElement('div');
+      el.className = 'msg ' + m.s;
+      el.style.animationDelay = reduced ? '0s' : (i * 0.14) + 's';
+      el.innerHTML = '<span class="who">' + m.who + '</span>' + m.t;
+      thread.appendChild(el);
+    });
+    aiLat.textContent = d.lat;
+    clearInterval(typer);
+    if(reduced){ aiText.textContent = d.ai; return; }
+    var i = 0, txt = d.ai;
+    aiText.innerHTML = '<span class="caret"></span>';
+    typer = setInterval(function(){
+      i += 2;
+      if(i >= txt.length){ aiText.textContent = txt; clearInterval(typer); return; }
+      aiText.innerHTML = txt.slice(0, i) + '<span class="caret"></span>';
+    }, 22);
+  }
+
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(x){ x.setAttribute('aria-selected', String(x === t)); });
+      render(t.dataset.ch);
+    });
+  });
+  render('wa');
+
+  /* ---------- pricing data ---------- */
+  var PLANS = {
+    starter: {label:'Starter', chats:1000, price:1500000, numbers:1, seats:5, ai:2000,
+              exNumber:450000, exSeat:175000, exAi:500000},
+    growth:  {label:'Growth',  chats:3000, price:3900000, numbers:3, seats:15, ai:10000,
+              exNumber:400000, exSeat:150000, exAi:450000},
+    scale:   {label:'Scale',   chats:5000, price:5900000, numbers:5, seats:40, ai:25000,
+              exNumber:350000, exSeat:125000, exAi:400000}
+  };
+  var CSM = 3000000, GREENTICK = 2500000, MIGRATION = 5000000;
+  var ANNUAL_FACTOR = 10 / 12;
+  var annual = false;
+
+  /* ---------- plan cards react to billing toggle ---------- */
+  var cardChats = [1000, 3000, 5000];
+  function paintCards(){
+    var vals = document.querySelectorAll('.plan .val[data-price]');
+    var units = document.querySelectorAll('.plan .unit[data-unit]');
+    Array.prototype.forEach.call(vals, function(el, i){
+      var base = +el.dataset.price;
+      var m = annual ? Math.round(base * ANNUAL_FACTOR / 10000) * 10000 : base;
+      el.textContent = fmt.format(m);
+      if(units[i]){
+        units[i].textContent = 'Rp ' + fmt.format(Math.round(m / cardChats[i])) + ' per conversation';
+      }
+    });
+    var per = document.querySelectorAll('.plan .per');
+    Array.prototype.forEach.call(per, function(el){ el.textContent = annual ? '/month, billed yearly' : '/month'; });
+  }
+
+  var bM = document.getElementById('btnMonthly'), bA = document.getElementById('btnAnnual');
+  function setBilling(isAnnual){
+    annual = isAnnual;
+    bM.setAttribute('aria-pressed', String(!isAnnual));
+    bA.setAttribute('aria-pressed', String(isAnnual));
+    paintCards();
+    calc();
+  }
+  bM.addEventListener('click', function(){ setBilling(false); });
+  bA.addEventListener('click', function(){ setBilling(true); });
+
+  /* ---------- configurator ---------- */
+  var state = { plan:'starter', numbers:0, seats:0, ai:0, greentick:false, migration:false, csm:false };
+  var MAX = { numbers:20, seats:60, ai:20 };
+
+  document.querySelectorAll('#volSegs .seg').forEach(function(s){
+    s.addEventListener('click', function(){
+      document.querySelectorAll('#volSegs .seg').forEach(function(x){ x.setAttribute('aria-pressed', String(x === s)); });
+      state.plan = s.dataset.plan;
+      calc();
+    });
+  });
+
+  document.querySelectorAll('#oneOff .seg').forEach(function(s){
+    s.addEventListener('click', function(){
+      var k = s.dataset.one;
+      state[k] = !state[k];
+      s.setAttribute('aria-pressed', String(state[k]));
+      calc();
+    });
+  });
+
+  document.querySelectorAll('[data-step]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var k = b.dataset.step, d = +b.dataset.d;
+      state[k] = Math.min(MAX[k], Math.max(0, state[k] + d));
+      calc();
+    });
+  });
+
+  function row(id, show, labelId, labelText, valId, valText){
+    var r = document.getElementById(id);
+    r.hidden = !show;
+    if(show){
+      if(labelId){ document.getElementById(labelId).textContent = labelText; }
+      if(valId){ document.getElementById(valId).textContent = valText; }
+    }
+  }
+
+  function calc(){
+    var p = PLANS[state.plan];
+
+    document.getElementById('outNumbers').textContent = state.numbers;
+    document.getElementById('outSeats').textContent = state.seats;
+    document.getElementById('outAi').textContent = state.ai;
+    document.getElementById('numIncl').textContent = p.numbers + ' included in ' + p.label;
+    document.getElementById('seatIncl').textContent = p.seats + ' included in ' + p.label;
+    document.getElementById('aiIncl').textContent = fmt.format(p.ai) + ' included in ' + p.label;
+
+    document.querySelectorAll('[data-step]').forEach(function(b){
+      var k = b.dataset.step, d = +b.dataset.d;
+      b.disabled = (d < 0 && state[k] === 0) || (d > 0 && state[k] === MAX[k]);
+    });
+
+    var cNum  = state.numbers * p.exNumber;
+    var cSeat = state.seats * p.exSeat;
+    var cAi   = state.ai * p.exAi;
+    var cCsm  = state.csm ? CSM : 0;
+    var sub   = p.price + cNum + cSeat + cAi + cCsm;
+    var total = annual ? Math.round(sub * ANNUAL_FACTOR / 10000) * 10000 : sub;
+    var oneOff = (state.greentick ? GREENTICK : 0) + (state.migration ? MIGRATION : 0);
+
+    document.getElementById('sumPlanName').textContent = p.label + ' — ' + fmt.format(p.chats) + ' chats';
+    document.getElementById('sumPlan').textContent = rp(p.price);
+
+    row('rowNumbers', state.numbers > 0, 'sumNumbersLabel',
+        state.numbers + ' extra number' + (state.numbers > 1 ? 's' : '') + ' × ' + rp(p.exNumber),
+        'sumNumbers', rp(cNum));
+    row('rowSeats', state.seats > 0, 'sumSeatsLabel',
+        state.seats + ' extra seat' + (state.seats > 1 ? 's' : '') + ' × ' + rp(p.exSeat),
+        'sumSeats', rp(cSeat));
+    row('rowAi', state.ai > 0, 'sumAiLabel',
+        state.ai + ' Autopilot pack' + (state.ai > 1 ? 's' : '') + ' (' + fmt.format(state.ai * 5000) + ' replies)',
+        'sumAi', rp(cAi));
+    row('rowCsm', state.csm);
+    row('rowDisc', annual, null, null, 'sumDisc', '− ' + rp(sub - total));
+    row('rowYear', annual, null, null, 'sumYear', rp(total * 12));
+    row('rowOneOff', oneOff > 0, null, null, 'sumOneOff', rp(oneOff));
+
+    document.getElementById('sumTotal').textContent = rp(total);
+  }
+
+  paintCards();
+  calc();
+})();
+</script>

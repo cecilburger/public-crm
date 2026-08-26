@@ -1,0 +1,281 @@
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { api, ApiError } from '@/lib/api';
+import { t } from '@/lib/copy';
+import { assertCsrf, CsrfError } from '@/lib/csrf';
+
+export interface ActionResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Every change goes through a server action, so the access token stays on the
+ * server and the browser never holds a credential it could leak. They all work
+ * with JavaScript switched off, which matters on a cheap phone with a bad line.
+ */
+export async function sendMessage(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  const body = String(form.get('body') ?? '').trim();
+  const templateName = String(form.get('templateName') ?? '').trim();
+
+  if (!body) return { ok: false, error: t.chats.emptyMessage };
+
+  try {
+    await api(`/v1/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      body: { body, ...(templateName ? { templateName } : {}) },
+    });
+    revalidatePath('/obrolan', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chats.sendFailed };
+  }
+}
+
+export async function assignConversation(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const conversationId = String(form.get('conversationId') ?? '');
+  const raw = String(form.get('assigneeId') ?? '');
+  await api(`/v1/conversations/${conversationId}/assign`, {
+    method: 'POST',
+    body: { assigneeId: raw === '' ? null : raw },
+  });
+  revalidatePath('/obrolan', 'layout');
+}
+
+export async function resolveConversation(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const conversationId = String(form.get('conversationId') ?? '');
+  await api(`/v1/conversations/${conversationId}/resolve`, { method: 'POST' });
+  revalidatePath('/obrolan', 'layout');
+}
+
+export async function moveDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const dealId = String(form.get('dealId') ?? '');
+  const stageId = String(form.get('stageId') ?? '');
+  try {
+    await api(`/v1/deals/${dealId}`, { method: 'PATCH', body: { stageId } });
+    revalidatePath('/penjualan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.sales.moveFailed };
+  }
+}
+
+export async function inviteMember(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const payload = {
+    name: String(form.get('name') ?? '').trim(),
+    email: String(form.get('email') ?? '').trim(),
+    password: String(form.get('password') ?? ''),
+    role: String(form.get('role') ?? 'agent'),
+  };
+  if (payload.password.length < 12) return { ok: false, error: t.team.passwordShort };
+
+  try {
+    await api('/v1/members', { method: 'POST', body: payload });
+    revalidatePath('/tim');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.team.addFailed };
+  }
+}
+
+/** Accept, edit or bin an Autopilot draft. */
+export async function decideDraft(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  const draftId = String(form.get('draftId') ?? '');
+  const action = String(form.get('action') ?? 'use') as 'use' | 'discard';
+  const edited = String(form.get('body') ?? '').trim();
+
+  try {
+    await api(`/v1/conversations/${conversationId}/drafts/${draftId}`, {
+      method: 'POST',
+      body: { action, ...(action === 'use' && edited ? { body: edited } : {}) },
+    });
+    revalidatePath('/obrolan', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.autopilot.failed };
+  }
+}
+
+/** Turn Autopilot up or down. */
+export async function setAutopilotMode(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const mode = String(form.get('mode') ?? 'suggest');
+  try {
+    await api('/v1/autopilot', { method: 'PUT', body: { mode } });
+    revalidatePath('/pengaturan/autopilot');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.autopilot.failed };
+  }
+}
+
+/* ------------------------------------------------------------ two-factor */
+
+export interface MfaResult extends ActionResult {
+  backupCodes?: string[];
+}
+
+export async function startMfa(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api('/v1/auth/mfa/setup', { method: 'POST', body: {} });
+    revalidatePath('/pengaturan/keamanan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.security.failed };
+  }
+}
+
+export async function enableMfa(_prev: MfaResult | null, form: FormData): Promise<MfaResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const code = String(form.get('code') ?? '').trim();
+  try {
+    const result = await api<{ backupCodes: string[] }>('/v1/auth/mfa/enable', {
+      method: 'POST', body: { code },
+    });
+    revalidatePath('/pengaturan/keamanan');
+    return { ok: true, backupCodes: result.backupCodes };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? t.security.codeWrong : t.security.failed };
+  }
+}
+
+export async function disableMfa(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const code = String(form.get('code') ?? '').trim();
+  try {
+    await api('/v1/auth/mfa/disable', { method: 'POST', body: { code } });
+    revalidatePath('/pengaturan/keamanan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? t.security.codeWrong : t.security.failed };
+  }
+}
+
+export async function acknowledgeSecurityEvent(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const notes = String(form.get('notes') ?? '').trim();
+  const reported = String(form.get('intent') ?? '') === 'reported';
+
+  try {
+    await api(`/v1/security/events/${id}/${reported ? 'notified' : 'acknowledge'}`, {
+      method: 'POST', body: reported ? { notes } : { notes: notes || undefined },
+    });
+    revalidatePath('/pengaturan/keamanan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.security.failed };
+  }
+}
+
+/* -------------------------------------------------------------- catalogue */
+
+const num = (form: FormData, key: string): number | undefined => {
+  const raw = String(form.get(key) ?? '').replace(/[^\d]/g, '');
+  return raw === '' ? undefined : Number(raw);
+};
+
+/** One action for both adding and editing — the presence of an id decides. */
+export async function saveCatalogueItem(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+
+  const id = String(form.get('id') ?? '');
+  const payload = {
+    kind: String(form.get('kind') ?? 'product') as 'product' | 'faq' | 'policy',
+    title: String(form.get('title') ?? '').trim(),
+    body: String(form.get('body') ?? '').trim(),
+    sku: String(form.get('sku') ?? '').trim() || undefined,
+    priceIdr: num(form, 'priceIdr'),
+    stock: num(form, 'stock'),
+  };
+  if (!payload.title) return { ok: false, error: t.catalogue.failed };
+
+  try {
+    if (id) {
+      await api(`/v1/knowledge/${id}`, { method: 'PATCH', body: payload });
+    } else {
+      await api('/v1/knowledge', { method: 'POST', body: payload });
+    }
+    revalidatePath('/pengaturan/katalog');
+    revalidatePath('/pengaturan/autopilot');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.catalogue.failed };
+  }
+}
+
+export async function removeCatalogueItem(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api(`/v1/knowledge/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
+    revalidatePath('/pengaturan/katalog');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.catalogue.failed };
+  }
+}
+
+export async function saveShippingRate(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const area = String(form.get('area') ?? '').trim();
+  if (!area) return { ok: false, error: t.catalogue.failed };
+
+  try {
+    await api('/v1/shipping-rates', {
+      method: 'POST',
+      body: { area, costIdr: num(form, 'costIdr') ?? 0, etaDays: num(form, 'etaDays') ?? 2 },
+    });
+    revalidatePath('/pengaturan/katalog');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.catalogue.failed };
+  }
+}
+
+export async function removeShippingRate(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api(`/v1/shipping-rates/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
+    revalidatePath('/pengaturan/katalog');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.catalogue.failed };
+  }
+}
+
+export async function markInvoicePaidAction(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const reference = String(form.get('reference') ?? '').trim();
+  if (!reference) return { ok: false, error: t.settings.invFailed };
+
+  try {
+    await api(`/v1/invoices/${id}/paid`, { method: 'POST', body: { reference } });
+    revalidatePath('/pengaturan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.settings.invFailed };
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023"
+    ],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "types": [
+      "node"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@kirana/core": [
+        "packages/core/src/index.ts"
+      ],
+      "@kirana/core/*": [
+        "packages/core/src/*"
+      ],
+      "@kirana/db": [
+        "packages/db/src/index.ts"
+      ],
+      "@kirana/db/*": [
+        "packages/db/src/*"
+      ]
+    }
+  },
+  "include": [
+    "packages/**/*.ts",
+    "apps/api/**/*.ts",
+    "apps/worker/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "apps/console"
+  ]
+}

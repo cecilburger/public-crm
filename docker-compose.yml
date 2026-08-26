@@ -1,0 +1,83 @@
+# Local stack. Production runs the same images against managed Postgres and
+# Redis; the only difference is where the connection strings point.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kirana_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kirana-local}
+      POSTGRES_DB: kirana
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Gives the application roles a login. Migrations create the roles; this
+      # grants them credentials, which is a deployment concern, not a schema one.
+      - ./ops/bootstrap-roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kirana_owner -d kirana"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: { context: ., dockerfile: ops/Dockerfile }
+    command: ["npm", "run", "dev:api"]
+    environment:
+      NODE_ENV: development
+      # The API connects as kirana_app: subject to row-level security, no DDL.
+      DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
+      REDIS_URL: redis://redis:6379
+      KIRANA_KEK: ${KIRANA_KEK:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-000000}
+      META_APP_SECRET: ${META_APP_SECRET:-dev-meta-app-secret}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-dev-verify-token}
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes: [".:/app", "/app/node_modules"]
+
+  worker:
+    build: { context: ., dockerfile: ops/Dockerfile }
+    command: ["npm", "run", "dev:worker"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
+      REDIS_URL: redis://redis:6379
+      KIRANA_KEK: ${KIRANA_KEK:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
+      META_APP_SECRET: ${META_APP_SECRET:-dev-meta-app-secret}
+      # Unset is fine: Autopilot falls back to the offline stand-in.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AUTOPILOT_MODEL: ${AUTOPILOT_MODEL:-claude-opus-5}
+      AUTOPILOT_EFFORT: ${AUTOPILOT_EFFORT:-medium}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes: [".:/app", "/app/node_modules"]
+
+  console:
+    build: { context: ., dockerfile: ops/Dockerfile }
+    command: ["npm", "run", "dev", "-w", "@kirana/console"]
+    environment:
+      NODE_ENV: development
+      # Server-side calls only — the browser never talks to the API directly,
+      # so the access token stays in an httpOnly cookie.
+      KIRANA_API_URL: http://api:8080
+    ports: ["3000:3000"]
+    depends_on: [api]
+    volumes: [".:/app", "/app/node_modules"]
+
+volumes:
+  pgdata:
+  redisdata:
