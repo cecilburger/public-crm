@@ -12,7 +12,9 @@ import type { ConversationSummary } from '@/lib/api';
  * The API has four statuses; an agent has one question — who is waiting for me?
  * "Perlu dibalas" answers it, and the other two are there so nothing is hidden.
  */
-export function ConversationList({ conversations }: { conversations: ConversationSummary[] }) {
+export function ConversationList(
+  { conversations, basePath = '/obrolan' }: { conversations: ConversationSummary[]; basePath?: string },
+) {
   const pathname = usePathname();
   const params = useSearchParams();
   const filter = params.get('f') ?? 'semua';
@@ -39,7 +41,7 @@ export function ConversationList({ conversations }: { conversations: Conversatio
         {tabs.map((tab) => (
           <Link
             key={tab.key}
-            href={tab.key === 'semua' ? '/obrolan' : `/obrolan?f=${tab.key}`}
+            href={tab.key === 'semua' ? basePath : `${basePath}?f=${tab.key}`}
             aria-current={filter === tab.key ? 'page' : undefined}
           >
             {tab.label} {tab.n}
@@ -52,19 +54,29 @@ export function ConversationList({ conversations }: { conversations: Conversatio
           <p className="empty" style={{ fontSize: 13 }}>{t.chats.emptyList}</p>
         ) : (
           shown.map((c) => {
-            const active = pathname === `/obrolan/${c.id}`;
+            const active = pathname === `${basePath}/${c.id}`;
             const waiting = awaitingReply(c);
             return (
               <Link
                 key={c.id}
-                href={`/obrolan/${c.id}`}
+                href={`${basePath}/${c.id}`}
                 className={`thread-item ${waiting ? 'waiting' : ''}`}
                 aria-current={active ? 'page' : undefined}
               >
                 <span className="row1">
                   {waiting ? <span className="dot warn" aria-label={t.chats.needsReply} /> : null}
-                  <span className="who">{c.display_name ?? t.chats.unknown}</span>
-                  <span className="when tnum">{ago(c.last_message_at)}</span>
+                  <span className="who">
+                    {c.display_name
+                      ? <>{c.display_name}{c.phone ? <span className="dim" style={{ fontWeight: 400 }}> · {c.phone}</span> : null}</>
+                      : (c.phone ?? '—')}
+                  </span>
+                  {/* This list is a Client Component hydrating over server-rendered
+                      HTML — "ago" is relative to whenever each render actually runs,
+                      so the server's text and the client's first paint can
+                      legitimately differ by a rounding step (e.g. "51m" vs "52m").
+                      That's expected drift, not a bug: let the client's clock win
+                      instead of warning about it. */}
+                  <span className="when tnum" suppressHydrationWarning>{ago(c.last_message_at)}</span>
                 </span>
                 <span className="row2">
                   <span className="chip">{t.channels[c.channel_kind] ?? c.channel_kind}</span>

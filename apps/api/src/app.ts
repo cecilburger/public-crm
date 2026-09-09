@@ -19,6 +19,8 @@ import { registerAutopilotRoutes } from './routes/autopilot.ts';
 import { registerCheckoutRoutes } from './routes/checkout.ts';
 import { registerMfaRoutes } from './routes/mfa.ts';
 import { registerSecurityRoutes } from './routes/security.ts';
+import { registerWaBridgeChannelRoutes } from './routes/waBridgeChannels.ts';
+import { registerContactRoutes } from './routes/contacts.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 
 /** What a webhook is handed to once it is spooled and verified. */
@@ -155,8 +157,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // Unauthenticated by design: health probes, the sign-in pair, the provider
   // webhook (which authenticates by signature) and the public price calculator.
   const PUBLIC = new Set(['/healthz', '/readyz', '/metrics', '/v1/auth/login', '/v1/auth/refresh',
-                          '/v1/webhooks/meta', '/v1/billing/estimate', '/v1/billing/plans',
-                          '/v1/auth/mfa/verify']);
+                          '/v1/webhooks/meta', '/v1/webhooks/wa-bridge', '/v1/billing/estimate',
+                          '/v1/billing/plans', '/v1/auth/mfa/verify']);
 
   app.addHook('onRequest', async (req) => {
     const path = req.url.split('?')[0] ?? '';
@@ -174,8 +176,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
 
     // A stolen-and-rotated refresh token revokes its family; the short-lived
-    // access tokens from that family have to die with it.
-    const dead = await withTenant(deps.db, claims.tid, (tx) => familyRevoked(tx, claims.tid, claims.fam));
+    // access tokens from that family have to die with it. Checked alongside
+    // whether the tenant a token claims even exists any more — a signature is
+    // still valid after the database behind it is wiped and reseeded (as the
+    // in-memory `dev:stack` does on every restart), and without this a token
+    // like that sails through every RLS-scoped read as an empty result right
+    // up until the first write, which fails as a raw foreign-key violation
+    // instead of the plain "sign in again" this should have been.
+    const { tenantExists, dead } = await withTenant(deps.db, claims.tid, async (tx) => {
+      const rows = await tx.query<{ id: string }>('select id from tenants where id = $1', [claims.tid]);
+      return { tenantExists: !!rows[0], dead: await familyRevoked(tx, claims.tid, claims.fam) };
+    });
+    if (!tenantExists) throw unauthenticated('Session no longer valid');
     if (dead) throw unauthenticated('Session revoked');
 
     req.actor = { userId: claims.sub, tenantId: claims.tid, role: claims.role as Role };
@@ -262,6 +274,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerCheckoutRoutes(app, ctx);
   registerMfaRoutes(app, ctx);
   registerSecurityRoutes(app, ctx);
+  registerWaBridgeChannelRoutes(app, ctx);
+  registerContactRoutes(app, ctx);
 
   return app;
 }

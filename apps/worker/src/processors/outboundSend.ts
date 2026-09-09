@@ -1,11 +1,13 @@
 import { guardOutbound, sendRatePerSecond, normalisePhone, toMicros, META_RATE_IDR } from '@kirana/core';
 import { withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, type Database } from '@kirana/db';
 import type { MetaClient } from '../meta.ts';
+import type { WaBridgeClient } from '../waBridge.ts';
 
 export interface SendDeps {
   db: Database;
   kek: Buffer;
   meta: MetaClient;
+  waBridge: WaBridgeClient;
   accessTokenFor: (tenantId: string, channelId: string) => Promise<string>;
 }
 
@@ -21,11 +23,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
   return withTenant(deps.db, job.tenantId, async (tx) => {
     const rows = await tx.query<{
       id: string; body_enc: string | null; template_name: string | null; status: string;
-      channel_id: string; conversation_id: string; contact_id: string;
+      channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
-              c.contact_id, c.last_inbound_at, ch.quality, ch.external_id, ct.phone_enc
+              c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id, ct.phone_enc
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
@@ -36,6 +38,39 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
     const msg = rows[0];
     if (!msg) return { status: 'not_found' };
     if (msg.status !== 'queued') return { status: 'already_sent' };
+
+    const keys = await tenantKeys(tx, deps.kek, job.tenantId);
+    const body = msg.body_enc ? openField(keys, job.tenantId, msg.body_enc) : '';
+    const to = msg.phone_enc ? normalisePhone(openField(keys, job.tenantId, msg.phone_enc)) : null;
+    if (!to) {
+      await markFailed(tx, job, 'channel_unavailable');
+      return { status: 'failed' };
+    }
+
+    // A QR-paired session has no Meta template/window rules and no per-second
+    // quality cap to pace against — those are policed by the guard in
+    // `guardOutbound`, which exists to enforce Meta's rules and does not apply
+    // here. It gets its own, much simpler path rather than a maze of
+    // conditionals inside the Meta one.
+    if (msg.channel_kind === 'whatsapp_web') {
+      try {
+        const sent = await deps.waBridge.send({ channelId: msg.channel_id, toE164: to, body });
+        await tx.query(
+          `update messages set status = 'sent', provider_message_id = $3 where tenant_id = $1 and id = $2`,
+          [job.tenantId, job.messageId, sent.providerMessageId],
+        );
+        await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
+          [job.tenantId, job.messageId]);
+        return { status: 'sent', providerMessageId: sent.providerMessageId };
+      } catch (err) {
+        if ((err as { permanent?: boolean }).permanent === true) {
+          await markFailed(tx, job, (err as Error).message.slice(0, 500));
+          return { status: 'failed' };
+        }
+        await scheduleRetry(tx, job, err as Error);
+        throw err;
+      }
+    }
 
     const quality = msg.quality as 'green' | 'yellow' | 'red' | 'flagged';
     const guard = guardOutbound({
@@ -52,11 +87,7 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       return { status: 'blocked', reason: guard.reason };
     }
     if (sendRatePerSecond(quality) === 0) return { status: 'paused' };
-
-    const keys = await tenantKeys(tx, deps.kek, job.tenantId);
-    const body = msg.body_enc ? openField(keys, job.tenantId, msg.body_enc) : '';
-    const to = msg.phone_enc ? normalisePhone(openField(keys, job.tenantId, msg.phone_enc)) : null;
-    if (!to || !msg.external_id) {
+    if (!msg.external_id) {
       await markFailed(tx, job, 'channel_unavailable');
       return { status: 'failed' };
     }
@@ -97,20 +128,26 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         await markFailed(tx, job, (err as Error).message.slice(0, 500));
         return { status: 'failed' };
       }
-      await tx.query(
-        `update message_outbox
-            set attempts = attempts + 1,
-                next_attempt_at = now() + make_interval(secs => least(300, power(2, attempts + 1))),
-                last_error = $3
-          where tenant_id = $1 and message_id = $2`,
-        [job.tenantId, job.messageId, (err as Error).message.slice(0, 500)],
-      );
+      await scheduleRetry(tx, job, err as Error);
       throw err; // let the queue's backoff own the retry schedule
     }
   });
 }
 
-async function markFailed(tx: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, job: { tenantId: string; messageId: string }, reason: string) {
+type Tx = { query: (t: string, p?: readonly unknown[]) => Promise<unknown> };
+
+async function scheduleRetry(tx: Tx, job: { tenantId: string; messageId: string }, err: Error) {
+  await tx.query(
+    `update message_outbox
+        set attempts = attempts + 1,
+            next_attempt_at = now() + make_interval(secs => least(300, power(2, attempts + 1))),
+            last_error = $3
+      where tenant_id = $1 and message_id = $2`,
+    [job.tenantId, job.messageId, err.message.slice(0, 500)],
+  );
+}
+
+async function markFailed(tx: Tx, job: { tenantId: string; messageId: string }, reason: string) {
   await tx.query(
     `update messages set status = 'failed', error = $3 where tenant_id = $1 and id = $2`,
     [job.tenantId, job.messageId, JSON.stringify({ reason })],

@@ -39,6 +39,17 @@ const schema = z.object({
    */
   META_IP_ALLOWLIST: z.string().default(''),
 
+  /**
+   * The WhatsApp Web bridge (whatsapp-web.js + Puppeteer, QR-paired) — a
+   * separate, unofficial channel from the Meta channel above. It runs as its
+   * own service because a Chromium-backed session is heavy and crash-prone,
+   * and one tenant's session dying must not touch the API or worker process.
+   */
+  WA_BRIDGE_URL: z.string().default('http://127.0.0.1:8090'),
+  /** Shared secret between apps/api, apps/worker and apps/wa-bridge — this is
+   * an internal service, never exposed publicly. */
+  WA_BRIDGE_SECRET: z.string().default('dev-wa-bridge-secret-change-me'),
+
   /** Autopilot. With no ANTHROPIC_API_KEY the worker runs offline (see main.ts). */
   AUTOPILOT_MODEL: z.string().default('claude-opus-5'),
   AUTOPILOT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
@@ -78,7 +89,8 @@ export function env(): Env {
     throw new Error(`Invalid environment:\n${issues}`);
   }
   if (parsed.data.NODE_ENV === 'production') {
-    const weak = ['dev-only-jwt-secret-change-me-000000', 'dev-meta-app-secret', 'dev-verify-token'];
+    const weak = ['dev-only-jwt-secret-change-me-000000', 'dev-meta-app-secret', 'dev-verify-token',
+                  'dev-wa-bridge-secret-change-me'];
     for (const [k, v] of Object.entries(parsed.data)) {
       if (typeof v === 'string' && weak.includes(v)) throw new Error(`${k} still holds its development default`);
     }

@@ -8,13 +8,19 @@
  *
  *   npm run dev:stack     → http://localhost:8080
  */
-import { connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage, queueOutboundMessage, createDeal } from '@kirana/db';
+import {
+  connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
+  queueOutboundMessage, createDeal, tenantKeys, openField,
+} from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import { buildApp } from '../apps/api/src/app.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
 import { processAutopilotDraft } from '../apps/worker/src/processors/autopilotDraft.ts';
+import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
 import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billingRollup.ts';
 import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from '../apps/worker/src/autopilot/model.ts';
+import { GraphMetaClient } from '../apps/worker/src/meta.ts';
+import { WaBridgeClient } from '../apps/worker/src/waBridge.ts';
 
 process.env.NODE_ENV ??= 'development';
 process.env.LOG_LEVEL ??= 'warn';
@@ -198,6 +204,23 @@ await withTenant(db, tenantId, async (tx) => {
 });
 await closePeriodAndIssueInvoice(db, tenantId);
 
+// Channel credentials are stored encrypted per tenant; unwrapped only in
+// memory, only for the send being performed — same as the real worker.
+const accessTokenFor = async (tid: string, channelId: string): Promise<string> => {
+  return withTenant(db, tid, async (tx) => {
+    const rows = await tx.query<{ credentials_enc: string | null }>(
+      'select credentials_enc from channels where tenant_id = $1 and id = $2', [tid, channelId]);
+    if (!rows[0]?.credentials_enc) throw new Error('Channel has no stored credentials');
+    const keys = await tenantKeys(tx, kek, tid);
+    return (JSON.parse(openField(keys, tid, rows[0].credentials_enc)) as { accessToken: string }).accessToken;
+  });
+};
+// The seeded demo channels have no real Meta credentials to send with — a
+// real WhatsApp Web number connected through `apps/wa-bridge` does have
+// somewhere real to go, so that half of `processOutbound` is worth wiring in.
+const meta = new GraphMetaClient(e.META_GRAPH_URL);
+const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
+
 const app = buildApp({
   db, control: db, kek, env: e,
   dispatch: async ({ queue, payload }) => {
@@ -207,7 +230,29 @@ const app = buildApp({
         (payload as { webhookEventId: string }).webhookEventId);
     }
     if (queue === 'autopilot.draft') await runAutopilot(payload);
-    // outbound.send is a no-op here: there is no Meta to talk to in a demo.
+    if (queue === 'outbound.send') {
+      const job = payload as { tenantId: string; messageId: string };
+      // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real
+      // Meta credentials — there is nowhere for `processOutbound` to actually
+      // send those, only a guaranteed failure. A WhatsApp Web number has a
+      // real `apps/wa-bridge` session behind it, so only that kind is worth
+      // routing through the real send path here; everything else stays the
+      // no-op it always was in this demo stack.
+      const isWaBridge = await withTenant(db, job.tenantId, async (tx) => {
+        const rows = await tx.query<{ kind: string }>(
+          `select ch.kind from messages m
+             join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+            where m.tenant_id = $1 and m.id = $2`,
+          [job.tenantId, job.messageId],
+        );
+        return rows[0]?.kind === 'whatsapp_web';
+      }).catch(() => false);
+
+      if (isWaBridge) {
+        await processOutbound({ db, kek, meta, waBridge, accessTokenFor }, job)
+          .catch((err) => console.error('[dev-stack] outbound send failed:', (err as Error).message));
+      }
+    }
   },
 });
 

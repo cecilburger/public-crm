@@ -8,3 +8,6 @@ coverage/
 .DS_Store
 .next/
 *.tsbuildinfo
+apps/wa-bridge/.wwebjs_auth/
+apps/wa-bridge/.wwebjs_cache/
+apps/wa-bridge/data/

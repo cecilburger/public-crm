@@ -3,6 +3,7 @@ import { env, loadKek, LogAlertSink, FanOutSink } from '@kirana/core';
 import { WebhookAlertSink } from './alerts/webhook.ts';
 import { connectPostgres, withTenant, rotateTenantDek } from '@kirana/db';
 import { GraphMetaClient } from './meta.ts';
+import { WaBridgeClient } from './waBridge.ts';
 import { resolveSender, sendBillingEmail } from './email/send.ts';
 import { processInboundWebhook } from './processors/inboundNormalise.ts';
 import { processOutbound } from './processors/outboundSend.ts';
@@ -30,6 +31,7 @@ const dispatch = async ({ queue, payload }: { queue: string; payload: unknown })
 };
 
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
+const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
 const emailSender = resolveSender(e);
 const email = { db, sender: emailSender };
 
@@ -70,7 +72,7 @@ const workers = [
     processInboundWebhook({ db, control, kek, dispatch }, job.data.webhookEventId), { connection, concurrency: 16 }),
 
   new Worker('outbound.send', async (job: Job) =>
-    processOutbound({ db, kek, meta, accessTokenFor }, job.data), { connection, concurrency: 8 }),
+    processOutbound({ db, kek, meta, waBridge, accessTokenFor }, job.data), { connection, concurrency: 8 }),
 
   new Worker('autopilot.draft', async (job: Job) =>
     processAutopilotDraft({ db, kek, model: autopilot, dispatch }, job.data), { connection, concurrency: 6 }),

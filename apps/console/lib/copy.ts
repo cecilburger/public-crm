@@ -20,6 +20,10 @@ export const t = {
 
   nav: {
     chats: 'Obrolan',
+    chatWa: 'Chat WA',
+    customers: 'Pelanggan',
+    monitoring: 'Monitoring',
+    waStatus: 'Status Nomor',
     sales: 'Penjualan',
     team: 'Tim',
     settings: 'Pengaturan',
@@ -68,7 +72,6 @@ export const t = {
     needsReply: 'Menunggu balasan Anda',
     nobodyYet: 'Belum dipegang',
     done: 'Selesai',
-    unknown: 'Tanpa nama',
     emptyList: 'Tidak ada obrolan di sini.',
     pickOne: 'Pilih satu obrolan di kiri',
     pickOneHelp: 'Obrolan paling baru ada di atas. Tanda kuning berarti pelanggan sedang menunggu balasan Anda.',
@@ -78,6 +81,8 @@ export const t = {
     refreshing: 'Memuat…',
 
     takeIt: 'Saya yang tangani',
+    markCustomer: 'Tandai sebagai customer',
+    markedCustomer: 'Customer',
     handledBy: 'Ditangani oleh',
     assign: 'Simpan',
     markDone: 'Tandai selesai',
@@ -417,6 +422,7 @@ export const t = {
     'member.invited': 'Anggota tim ditambah',
     'user.created': 'Anggota tim dibuat',
     'channel.connected': 'Saluran chat disambungkan',
+    'channel.disconnected': 'Saluran chat diputus',
     'tenant.provisioned': 'Akun toko dibuat',
     'billing.period_closed': 'Periode tagihan ditutup',
     'retention.purged': 'Data lama dihapus otomatis',
@@ -443,10 +449,62 @@ export const t = {
   channels: {
     whatsapp: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger',
     tiktok: 'TikTok', telegram: 'Telegram', tokopedia: 'Tokopedia',
-    shopee: 'Shopee', email: 'Email', webchat: 'Chat web',
+    shopee: 'Shopee', email: 'Email', webchat: 'Chat web', whatsapp_web: 'WhatsApp (manual)',
   } as Record<string, string>,
 
   statuses: {
     open: 'Berjalan', pending: 'Menunggu', snoozed: 'Ditunda', resolved: 'Selesai',
   } as Record<string, string>,
+
+  waBridge: {
+    title: 'Chat WA',
+    subtitle: 'Chat langsung dari nomor WhatsApp pribadi Anda, dipindai lewat kode QR — bukan nomor bisnis resmi.',
+    warning:
+      'Ini memakai WhatsApp Web, bukan jalur resmi Meta. WhatsApp bisa memblokir nomor yang dipakai kirim pesan massal atau balasan otomatis berlebihan. Cocok untuk chat manual dulu.',
+    sessions: 'Nomor tersambung',
+    addNumber: 'Sambungkan nomor baru',
+    namePlaceholder: 'Nama nomor ini, misal: WA Toko 1',
+    connect: 'Sambungkan',
+    connecting: 'Menyambungkan…',
+    cancel: 'Batal',
+    scanQr: 'Kode QR untuk disambungkan',
+    scanHow: 'Buka WhatsApp di HP → Perangkat Tertaut → Tautkan Perangkat, arahkan kamera ke kode ini.',
+    disconnect: 'Putuskan',
+    delete: 'Hapus',
+    deleteTitle: 'Hapus nomor ini?',
+    deleteWarning: (name: string) =>
+      `Ini akan menghapus "${name}" beserta semua riwayat percakapan dan pesannya secara permanen. Tindakan ini tidak bisa dibatalkan.`,
+    deleteConfirm: 'Ya, hapus permanen',
+    reconnect: 'Sambungkan ulang',
+    manage: 'Kelola nomor',
+    noSessions: 'Belum ada nomor WhatsApp yang tersambung.',
+    failed: 'Gagal menyambungkan nomor',
+    status: {
+      starting: 'Memulai…', qr_pending: 'Menunggu dipindai', authenticated: 'Autentikasi berhasil',
+      ready: 'Tersambung', disconnected: 'Terputus', logged_out: 'Diputuskan', error: 'Gagal',
+      connecting: 'Menyambungkan', connected: 'Tersambung', disabled: 'Nonaktif',
+    } as Record<string, string>,
+  },
+
+  waStatus: {
+    title: 'Status Nomor',
+    subtitle: 'Semua nomor WhatsApp yang tersambung, dan berapa chat yang masih menunggu dibalas di masing-masing.',
+    code: 'Kode',
+    number: 'Nomor',
+    totalChats: 'Jumlah Chat',
+    status: 'Status',
+    unanswered: 'Belum Dijawab',
+    unansweredCount: (n: number) => n === 0 ? 'Tidak ada' : `${n} chat`,
+    noNumbers: 'Belum ada nomor WhatsApp yang tersambung.',
+  },
+
+  customers: {
+    title: 'Pelanggan',
+    subtitle: 'Orang-orang yang sudah ditandai sebagai customer dari halaman chat.',
+    name: 'Nama',
+    phone: 'Nomor',
+    tags: 'Label',
+    lastSeen: 'Terakhir Aktif',
+    noCustomers: 'Belum ada yang ditandai sebagai customer. Tandai dari halaman chat.',
+  },
 };

@@ -175,6 +175,10 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppCtx): void {
       );
       const tenant = await tx.query<{ name: string; slug: string; status: string }>(
         'select name, slug, status from tenants where id = $1', [actor.tenantId]);
+      // The access token's subject can outlive the row it points to (a
+      // removed member, or a dev database reseeded under a live session) —
+      // treat that as "no longer signed in", not as a page to render broken.
+      if (!rows[0] || !tenant[0]) throw unauthenticated('Session no longer valid');
       return { user: rows[0], workspace: tenant[0] };
     });
   });

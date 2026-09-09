@@ -2,7 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { readFile, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+//const ROOT = new URL('..', import.meta.url).pathname;
+
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const ROOT = join(__dirname, '..');
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
