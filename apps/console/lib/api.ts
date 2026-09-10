@@ -75,6 +75,9 @@ export interface ConversationSummary {
   phone: string | null;
   channel_kind: string;
   channel_id: string;
+  contact_id: string;
+  created_at: string;
+  first_response_at: string | null;
 }
 
 export interface AutopilotDraft {
@@ -115,6 +118,31 @@ export interface Deal {
 export interface Stage {
   id: string; pipeline_id: string; pipeline: string; name: string;
   position: number; is_won: boolean; is_lost: boolean;
+}
+
+export interface DealDetail {
+  id: string; title: string; amountIdr: number; status: string; lostReason: string | null;
+  stageId: string; stageName: string; pipelineId: string; pipelineName: string;
+  isWon: boolean; isLost: boolean;
+  contactId: string; contactName: string | null; contactPhone: string | null;
+  ownerId: string | null; sourceConversationId: string | null;
+  expectedCloseOn: string | null; notes: string | null;
+  rotsAt: string | null; closedAt: string | null; createdAt: string; updatedAt: string;
+}
+
+export interface DealOrderSummary {
+  id: string; code: string; status: string; totalIdr: number; shipArea: string | null; createdAt: string;
+}
+
+export interface DealActivityRow {
+  id: number; actorType: string; actorId: string | null; action: string;
+  meta: Record<string, unknown>; createdAt: string;
+}
+
+export interface DealDetailResponse {
+  deal: DealDetail;
+  orders: DealOrderSummary[];
+  activity: DealActivityRow[];
 }
 
 export interface Usage {
@@ -165,6 +193,30 @@ export interface Contact {
   tags: string[];
   firstSeenAt: string;
   lastSeenAt: string;
+}
+
+export interface ContactDetail {
+  id: string;
+  displayName: string | null;
+  phone: string | null;
+  email: string | null;
+  tags: string[];
+  address: string | null;
+  notes: string | null;
+}
+
+export interface Order {
+  id: string;
+  code: string;
+  status: 'draft' | 'awaiting_payment' | 'paid' | 'cancelled' | 'fulfilled';
+  contactId: string;
+  displayName: string | null;
+  phone: string | null;
+  itemCount: number;
+  totalIdr: number;
+  shipArea: string | null;
+  createdAt: string;
+  paidAt: string | null;
 }
 
 export interface AuditRow {

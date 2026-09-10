@@ -24,6 +24,15 @@ export function clock(iso: string): string {
   return today ? time : `${d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })} ${time}`;
 }
 
+/** A span of time, not a point — "6 menit" / "2 jam 15 menit". */
+export function duration(ms: number): string {
+  const totalMin = Math.max(0, Math.round(ms / 60_000));
+  if (totalMin < 60) return `${totalMin} menit`;
+  const hours = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  return mins === 0 ? `${hours} jam` : `${hours} jam ${mins} menit`;
+}
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');

@@ -9,9 +9,12 @@ import type { Me, WaBridgeChannel } from '@/lib/api';
 import { WaBridgeRailList } from '@/components/WaBridgeRailList';
 
 const ICONS = {
+  dashboard: <><rect x="3" y="3" width="8" height="10" rx="1.5" /><rect x="13" y="3" width="8" height="6" rx="1.5" /><rect x="13" y="13" width="8" height="8" rx="1.5" /><rect x="3" y="15" width="8" height="6" rx="1.5" /></>,
   chats: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z" />,
   chatWa: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 7h6M9 11h6M9 15h3" /></>,
   customers: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6.5 7-6.5s7 2.9 7 6.5" /></>,
+  orders: <><path d="M3 7l2-4h14l2 4M3 7h18M3 7v13a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V7" /><path d="M9 11a3 3 0 0 0 6 0" /></>,
+  contact: <><rect x="4" y="4" width="16" height="17" rx="2" /><circle cx="12" cy="10.5" r="2.3" /><path d="M8.3 16.5c.7-1.7 2-2.5 3.7-2.5s3 .8 3.7 2.5M9 4V2.5M15 4V2.5" /></>,
   waStatus: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M9 9v11" /></>,
   monitoring: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
   chevron: <path d="M9 6l6 6-6 6" />,
@@ -26,9 +29,12 @@ const ICONS = {
  * person whose job is answering customers.
  */
 const NAV = [
+  { href: '/dashboard', label: t.nav.dashboard, icon: 'dashboard' as const, badge: false },
   { href: '/obrolan', label: t.nav.chats, icon: 'chats' as const, badge: true },
   { href: '/chat-wa', label: t.nav.chatWa, icon: 'chatWa' as const, badge: false },
   { href: '/pelanggan', label: t.nav.customers, icon: 'customers' as const, badge: false },
+  { href: '/pesanan', label: t.nav.orders, icon: 'orders' as const, badge: false },
+  { href: '/kontak', label: t.nav.contact, icon: 'contact' as const, badge: false },
   { href: '/penjualan', label: t.nav.sales, icon: 'sales' as const, badge: false },
   { href: '/tim', label: t.nav.team, icon: 'team' as const, badge: false },
 ];
@@ -39,6 +45,7 @@ const NAV = [
 // instead of crowding the main list.
 const MONITORING = [
   { href: '/status-nomor', label: t.nav.waStatus },
+  { href: '/performa-agen', label: t.nav.agentPerformance },
 ];
 
 export function Rail({ me, needsReply, waChannels }: { me: Me; needsReply: number; waChannels: WaBridgeChannel[] }) {

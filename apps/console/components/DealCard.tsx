@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useActionState } from 'react';
 import { moveDeal, type ActionResult } from '@/app/(app)/actions';
 import { rp } from '@/lib/format';
@@ -20,7 +21,7 @@ export function DealCard({ deal, stages }: { deal: Deal; stages: Stage[] }) {
 
   return (
     <article className={`deal ${quiet ? 'rotting' : ''}`}>
-      <div className="title">{deal.title}</div>
+      <Link href={`/penjualan/${deal.id}`} className="title" style={{ display: 'block' }}>{deal.title}</Link>
       <div className="mono dim">{deal.contact_name ?? '—'}</div>
       <div className="amt" style={{ marginTop: 6 }}>{rp(deal.amount_idr)}</div>
 

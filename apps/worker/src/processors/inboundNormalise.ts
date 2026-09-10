@@ -5,6 +5,8 @@ export interface NormaliseDeps {
   control: Database;
   kek: Buffer;
   dispatch: (job: { queue: string; payload: unknown }) => Promise<void>;
+  /** Told about every new message so an open console can refresh instead of polling. Optional: nothing breaks without a listener. */
+  publish?: (tenantId: string, event: { type: 'message'; conversationId: string }) => void;
 }
 
 /**
@@ -62,6 +64,7 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
       }));
 
     if (!result.duplicate) {
+      deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
       await deps.dispatch({
         queue: 'autopilot.draft',
         payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
@@ -137,11 +140,12 @@ async function processWaBridgeEvent(
     // outbound message so the transcript stays complete either way, deduped
     // against whatever the console itself already queued and sent.
     if (m.fromMe) {
-      await withTenant(deps.db, channel.tenant_id, (tx) =>
+      const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
         recordPhoneReply({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
           channelId: channel.id, to: m.to, body: m.body || `[${m.type} message]`,
           displayName: m.displayName, providerMessageId: m.id, providerTs: new Date(m.timestampSec * 1000),
         }));
+      if (!result.duplicate) deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
       return { status: 'processed' };
     }
 
@@ -152,6 +156,7 @@ async function processWaBridgeEvent(
       }));
 
     if (!result.duplicate) {
+      deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
       await deps.dispatch({
         queue: 'autopilot.draft',
         payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },

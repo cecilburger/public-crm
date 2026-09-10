@@ -21,7 +21,10 @@ import { registerMfaRoutes } from './routes/mfa.ts';
 import { registerSecurityRoutes } from './routes/security.ts';
 import { registerWaBridgeChannelRoutes } from './routes/waBridgeChannels.ts';
 import { registerContactRoutes } from './routes/contacts.ts';
+import { registerOrderRoutes } from './routes/orders.ts';
+import { registerDealRoutes } from './routes/deals.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
+import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
 /** What a webhook is handed to once it is spooled and verified. */
 export type Dispatch = (job: { queue: string; payload: unknown }) => Promise<void>;
@@ -52,6 +55,14 @@ export interface AppDeps {
   rateLimit?: { max: number; windowMs: number };
   /** Where security alerts go. Logs if not supplied. */
   alerts?: AlertSink;
+  /**
+   * Delivers inbound-message events to open `/v1/realtime` connections.
+   * Deployed, `server.ts` supplies one wired to Redis so the (separate)
+   * worker process can reach it; unsupplied, one is created that only ever
+   * hears from calls in this same process — which is all dev-stack needs,
+   * since it runs the worker's logic inline.
+   */
+  realtime?: RealtimeHub;
 }
 
 declare module 'fastify' {
@@ -232,6 +243,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   };
 
   const ctx: AppCtx = { ...deps, rateLimits: store, raise, alertSink: alerts, requireActor, guard, asTenant };
+  const realtime = deps.realtime ?? createRealtimeHub();
 
   /* --------------------------------------------------------------- routes */
 
@@ -256,6 +268,41 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
+  // A doorbell, not a data feed: one line per changed conversation, nothing
+  // else. The console relays this to the browser and reacts by refetching —
+  // the same server-rendered path a manual refresh already takes, just
+  // triggered by an event instead of a timer.
+  app.get('/v1/realtime', async (req, reply) => {
+    const actor = requireActor(req);
+    reply.hijack();
+
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+    });
+    reply.raw.write(':ok\n\n');
+
+    const send = (event: { type: string; conversationId: string }) => {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    const unsubscribe = realtime.subscribe(actor.tenantId, send);
+
+    // Bounded lifetime so a connection outlives neither its access token nor
+    // an idle load balancer — the browser's EventSource reconnects on its
+    // own, picking up a refreshed cookie through the console's own relay.
+    const heartbeat = setInterval(() => reply.raw.write(':ping\n\n'), 25_000);
+    const maxLifetime = setTimeout(() => reply.raw.end(), 10 * 60_000);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      clearTimeout(maxLifetime);
+      unsubscribe();
+    };
+    reply.raw.on('close', cleanup);
+    reply.raw.on('error', cleanup);
+  });
+
   app.get('/readyz', async (_req, reply) => {
     try {
       await deps.db.query('select 1');
@@ -276,6 +323,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerSecurityRoutes(app, ctx);
   registerWaBridgeChannelRoutes(app, ctx);
   registerContactRoutes(app, ctx);
+  registerOrderRoutes(app, ctx);
+  registerDealRoutes(app, ctx);
 
   return app;
 }

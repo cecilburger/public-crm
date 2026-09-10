@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { assertCsrf, CsrfError } from '@/lib/csrf';
@@ -64,6 +65,94 @@ export async function markAsCustomer(form: FormData): Promise<void> {
   revalidatePath('/pelanggan');
 }
 
+/* ----------------------------------------------------------------- pesanan */
+
+export async function markOrderPaid(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const orderId = String(form.get('orderId') ?? '');
+  await api(`/v1/orders/${orderId}/mark-paid`, { method: 'POST' });
+  revalidatePath('/pesanan');
+}
+
+export async function fulfillOrder(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const orderId = String(form.get('orderId') ?? '');
+  await api(`/v1/orders/${orderId}/fulfill`, { method: 'POST' });
+  revalidatePath('/pesanan');
+}
+
+export async function cancelOrder(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const orderId = String(form.get('orderId') ?? '');
+  await api(`/v1/orders/${orderId}/cancel`, { method: 'POST' });
+  revalidatePath('/pesanan');
+}
+
+/* ------------------------------------------------------------- pelanggan */
+
+function readCustomerForm(form: FormData) {
+  const displayName = String(form.get('displayName') ?? '').trim();
+  const phone = String(form.get('phone') ?? '').trim();
+  const email = String(form.get('email') ?? '').trim();
+  const tags = String(form.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const address = String(form.get('address') ?? '').trim();
+  const notes = String(form.get('notes') ?? '').trim();
+  return { displayName, phone, email, tags, address, notes };
+}
+
+export async function createCustomer(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const { displayName, phone, email, tags, address, notes } = readCustomerForm(form);
+
+  let created: { id: string };
+  try {
+    created = await api<{ id: string }>('/v1/contacts', {
+      method: 'POST',
+      body: {
+        ...(displayName ? { displayName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(address ? { address } : {}),
+        ...(notes ? { notes } : {}),
+        tags,
+      },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.customers.failed };
+  }
+  revalidatePath('/pelanggan');
+  redirect(`/pelanggan/${created.id}`);
+}
+
+export async function updateCustomer(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const { displayName, phone, email, tags, address, notes } = readCustomerForm(form);
+
+  try {
+    await api(`/v1/contacts/${id}`, {
+      method: 'PATCH',
+      body: {
+        displayName: displayName || null, phone: phone || null, email: email || null,
+        address: address || null, notes: notes || null, tags,
+      },
+    });
+    revalidatePath('/pelanggan');
+    revalidatePath(`/pelanggan/${id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.customers.failed };
+  }
+}
+
+export async function deleteCustomer(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('id') ?? '');
+  await api(`/v1/contacts/${id}`, { method: 'DELETE' });
+  revalidatePath('/pelanggan');
+  redirect('/pelanggan');
+}
+
 export async function moveDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const dealId = String(form.get('dealId') ?? '');
@@ -74,6 +163,24 @@ export async function moveDeal(_prev: ActionResult | null, form: FormData): Prom
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.sales.moveFailed };
+  }
+}
+
+export async function updateDealDetails(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const notes = String(form.get('notes') ?? '').trim();
+  const expectedCloseOn = String(form.get('expectedCloseOn') ?? '').trim();
+
+  try {
+    await api(`/v1/deals/${id}/details`, {
+      method: 'PATCH',
+      body: { notes: notes || null, expectedCloseOn: expectedCloseOn || null },
+    });
+    revalidatePath(`/penjualan/${id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.dealDetail.failed };
   }
 }
 

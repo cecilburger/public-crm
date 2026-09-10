@@ -2,6 +2,7 @@ import { env, loadKek } from '@kirana/core';
 import { connectPostgres } from '@kirana/db';
 import { buildApp } from './app.ts';
 import { RedisRateLimitStore } from './redis-store.ts';
+import { createRealtimeHub, type RealtimeEvent } from './realtime.ts';
 
 const e = env();
 const kek = loadKek(e.KIRANA_KEK);
@@ -22,12 +23,28 @@ redis.on('error', (err: Error) => console.error('[redis] rate-limit store:', err
 const rateLimits = new RedisRateLimitStore(redis, (err) =>
   console.error('[redis] rate limiting degraded, failing open:', err.message));
 
+// The worker that actually writes new messages runs in its own process (its
+// own container, under `make up`) — this is how one of its events reaches
+// whichever API replica is holding the console's open connection.
+const realtime = createRealtimeHub();
+const realtimeSub = new Redis(e.REDIS_URL, { maxRetriesPerRequest: 2, lazyConnect: false });
+realtimeSub.on('error', (err: Error) => console.error('[redis] realtime subscriber:', err.message));
+await realtimeSub.subscribe('kirana:realtime');
+realtimeSub.on('message', (_channel: string, raw: string) => {
+  try {
+    const { tenantId, event } = JSON.parse(raw) as { tenantId: string; event: RealtimeEvent };
+    realtime.publish(tenantId, event);
+  } catch (err) {
+    console.error('[redis] malformed realtime event:', (err as Error).message);
+  }
+});
+
 const { Queue } = await import('bullmq');
 const connection = { url: e.REDIS_URL };
 const queues = new Map<string, InstanceType<typeof Queue>>();
 
 const app = buildApp({
-  db, control, kek, env: e, rateLimits,
+  db, control, kek, env: e, rateLimits, realtime,
   dispatch: async ({ queue, payload }) => {
     let q = queues.get(queue);
     if (!q) {
@@ -48,6 +65,7 @@ const shutdown = async (signal: string) => {
   await app.close();
   await Promise.all([...queues.values()].map((q) => q.close()));
   redis.disconnect();
+  realtimeSub.disconnect();
   await Promise.all([db.close(), control.close()]);
   process.exit(0);
 };
