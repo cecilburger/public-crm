@@ -347,6 +347,101 @@ export async function ordersForContact(ctx: Ctx, contactId: string, limit = 5) {
   }));
 }
 
+/** The order(s) `confirmOrder` filed under this deal — usually one. */
+export async function ordersForDeal(ctx: Ctx, dealId: string) {
+  const orders = await ctx.tx.query<{
+    id: string; code: string; status: string; total_micros: string; ship_area: string | null; created_at: Date;
+  }>(
+    `select id, code, status, total_micros, ship_area, created_at from orders
+      where tenant_id = $1 and deal_id = $2 order by created_at desc`,
+    [ctx.tenantId, dealId],
+  );
+  return orders.map((o) => ({
+    id: o.id, code: o.code, status: o.status,
+    totalIdr: fromMicros(Number(o.total_micros)),
+    shipArea: o.ship_area, createdAt: o.created_at,
+  }));
+}
+
+export interface OrderListItem {
+  id: string; code: string; status: string;
+  contactId: string; displayName: string | null; phone: string | null;
+  itemCount: number; totalIdr: number; shipArea: string | null;
+  createdAt: Date; paidAt: Date | null;
+}
+
+/** Every order in the shop, newest first — the Pesanan page's one query. */
+export async function listOrders(ctx: Ctx, args: { limit?: number } = {}): Promise<OrderListItem[]> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const rows = await ctx.tx.query<{
+    id: string; code: string; status: string; contact_id: string;
+    display_name: string | null; phone_enc: string | null;
+    item_count: string; total_micros: string; ship_area: string | null;
+    created_at: Date; paid_at: Date | null;
+  }>(
+    `select o.id, o.code, o.status, o.contact_id, ct.display_name, ct.phone_enc,
+            (select count(*) from order_items oi
+              where oi.tenant_id = o.tenant_id and oi.order_id = o.id) as item_count,
+            o.total_micros, o.ship_area, o.created_at, o.paid_at
+       from orders o
+       join contacts ct on ct.id = o.contact_id and ct.tenant_id = o.tenant_id
+      where o.tenant_id = $1
+      order by o.created_at desc
+      limit $2`,
+    [ctx.tenantId, Math.min(args.limit ?? 200, 500)],
+  );
+  return rows.map((r) => ({
+    id: r.id, code: r.code, status: r.status, contactId: r.contact_id,
+    displayName: r.display_name,
+    phone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
+    itemCount: Number(r.item_count),
+    totalIdr: fromMicros(Number(r.total_micros)),
+    shipArea: r.ship_area, createdAt: r.created_at, paidAt: r.paid_at,
+  }));
+}
+
+/**
+ * Confirming a bank transfer by hand — the same manual step invoices use.
+ * Only `awaiting_payment` can become `paid`; a draft has no payment link yet
+ * and a cancelled/fulfilled order is done.
+ */
+export async function markOrderPaid(ctx: Ctx, args: { orderId: string; actorId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string; code: string }>(
+    `update orders set status = 'paid', paid_at = now(), updated_at = now()
+      where tenant_id = $1 and id = $2 and status = 'awaiting_payment'
+      returning id, code`,
+    [ctx.tenantId, args.orderId],
+  );
+  if (!rows[0]) return false;
+
+  await ctx.tx.query(
+    `update payment_links set status = 'paid' where tenant_id = $1 and order_id = $2 and status = 'open'`,
+    [ctx.tenantId, args.orderId],
+  );
+  await audit(ctx.tx, ctx.tenantId, {
+    actorType: 'user', actorId: args.actorId, action: 'order.paid_manually',
+    resourceType: 'order', resourceId: args.orderId, meta: { code: rows[0].code },
+  });
+  return true;
+}
+
+/** Only a paid order ships — this is the last step in the order's life. */
+export async function markOrderFulfilled(ctx: Ctx, args: { orderId: string; actorId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string; code: string }>(
+    `update orders set status = 'fulfilled', updated_at = now()
+      where tenant_id = $1 and id = $2 and status = 'paid'
+      returning id, code`,
+    [ctx.tenantId, args.orderId],
+  );
+  if (!rows[0]) return false;
+
+  await audit(ctx.tx, ctx.tenantId, {
+    actorType: 'user', actorId: args.actorId, action: 'order.fulfilled',
+    resourceType: 'order', resourceId: args.orderId, meta: { code: rows[0].code },
+  });
+  return true;
+}
+
 export async function readAddress(ctx: Ctx, orderId: string): Promise<{ recipient: string | null; address: string | null }> {
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const rows = await ctx.tx.query<{ recipient_enc: string | null; address_enc: string | null }>(

@@ -1,9 +1,24 @@
 import { normalisePhone } from '@kirana/core';
 import type { Sql } from './sql.ts';
-import { sealField, fieldIndex, tenantKeys } from './keys.ts';
+import { sealField, openField, fieldIndex, tenantKeys, type TenantKeys } from './keys.ts';
 import { recordConversationActivity, incrementUsage, ensureBillingPeriod } from './metering.ts';
 
 export interface Ctx { tx: Sql; tenantId: string; kek: Buffer }
+
+/** Seals a phone for storage, or returns nulls when the form left it blank. */
+function sealPhone(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
+  if (!raw) return { enc: null, bidx: null };
+  const e164 = normalisePhone(raw);
+  if (!e164) throw new Error(`Unparseable phone number: ${raw}`);
+  return { enc: sealField(keys, tenantId, e164), bidx: fieldIndex(keys.indexKey, e164) };
+}
+
+/** Same idea as `sealPhone`, normalised to lowercase so "Bob@x.com" and "bob@x.com" are one blind index. */
+function sealEmail(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
+  if (!raw) return { enc: null, bidx: null };
+  const normalised = raw.trim().toLowerCase();
+  return { enc: sealField(keys, tenantId, normalised), bidx: fieldIndex(keys.indexKey, normalised) };
+}
 
 /* ---------------------------------------------------------------- contacts */
 
@@ -52,6 +67,109 @@ export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: numbe
       limit $2`,
     [ctx.tenantId, Math.min(args.limit ?? 200, 500), args.tag ?? null],
   );
+}
+
+/** No schema of their own yet — address and notes live in the general-purpose `attributes` bag. */
+function packAttributes(args: { address: string | null; notes: string | null }): string {
+  return JSON.stringify({ address: args.address, notes: args.notes });
+}
+
+/** A customer added by hand from the Pelanggan page, not by messaging in. */
+export async function createContact(
+  ctx: Ctx,
+  args: {
+    displayName: string | null; phone: string | null; email: string | null; tags: string[];
+    address: string | null; notes: string | null; now?: Date;
+  },
+): Promise<{ id: string }> {
+  const now = args.now ?? new Date();
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const phone = sealPhone(keys, ctx.tenantId, args.phone);
+  const email = sealEmail(keys, ctx.tenantId, args.email);
+
+  const rows = await ctx.tx.query<{ id: string }>(
+    `insert into contacts
+       (tenant_id, display_name, phone_enc, phone_bidx, email_enc, email_bidx, tags, attributes, first_seen_at, last_seen_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+     returning id`,
+    [ctx.tenantId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx, args.tags,
+     packAttributes(args), now],
+  );
+  return { id: rows[0]!.id };
+}
+
+/** For the edit form — the encrypted fields, still sealed; the route decrypts them. */
+export async function getContact(ctx: Ctx, args: { contactId: string }) {
+  const rows = await ctx.tx.query<{
+    id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null;
+    tags: string[]; attributes: { address?: string | null; notes?: string | null } | null;
+  }>(
+    `select id, display_name, phone_enc, email_enc, tags, attributes
+       from contacts where tenant_id = $1 and id = $2 and deleted_at is null`,
+    [ctx.tenantId, args.contactId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * A form save, not a message — always writes the whole record, the way the
+ * edit page submits it. `phone` is the one field that can come back `undefined`
+ * on purpose: someone without `contact:export` only ever sees the masked
+ * number, so the route never forwards it here for them — leaving the stored
+ * value untouched is the only safe option, since the alternative is silently
+ * overwriting a real number with a string of bullet characters.
+ */
+export async function updateContact(
+  ctx: Ctx,
+  args: {
+    contactId: string; displayName: string | null; phone?: string | null; email: string | null;
+    tags: string[]; address: string | null; notes: string | null;
+  },
+): Promise<boolean> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const email = sealEmail(keys, ctx.tenantId, args.email);
+  const attributes = packAttributes(args);
+
+  if (args.phone === undefined) {
+    const rows = await ctx.tx.query<{ id: string }>(
+      `update contacts
+          set display_name = $3, email_enc = $4, email_bidx = $5, tags = $6, attributes = $7
+        where tenant_id = $1 and id = $2 and deleted_at is null
+        returning id`,
+      [ctx.tenantId, args.contactId, args.displayName, email.enc, email.bidx, args.tags, attributes],
+    );
+    return !!rows[0];
+  }
+
+  const phone = sealPhone(keys, ctx.tenantId, args.phone);
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update contacts
+        set display_name = $3, phone_enc = $4, phone_bidx = $5, email_enc = $6, email_bidx = $7, tags = $8,
+            attributes = $9
+      where tenant_id = $1 and id = $2 and deleted_at is null
+      returning id`,
+    [ctx.tenantId, args.contactId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx, args.tags,
+     attributes],
+  );
+  return !!rows[0];
+}
+
+/**
+ * A soft delete, not the DSR erasure flow: this just flags the row and hides
+ * it from every listing (`deleted_at is null` guards them all) — the name,
+ * number and chat history are left intact underneath, recoverable in the
+ * database if this was a mistake. Actually scrubbing personal data is a
+ * separate, heavier operation reserved for a real privacy request (see
+ * `governance.ts`'s DSR erasure), not a button on a list page.
+ */
+export async function softDeleteContact(ctx: Ctx, args: { contactId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update contacts set deleted_at = now()
+      where tenant_id = $1 and id = $2 and deleted_at is null
+      returning id`,
+    [ctx.tenantId, args.contactId],
+  );
+  return !!rows[0];
 }
 
 /* ----------------------------------------------------------- conversations */
@@ -281,9 +399,11 @@ export async function listInbox(
     id: string; status: string; priority: string; assignee_id: string | null;
     last_message_at: Date | null; last_inbound_at: Date | null; sla_due_at: Date | null;
     display_name: string | null; phone_enc: string | null; channel_kind: string; channel_id: string;
+    contact_id: string; created_at: Date; first_response_at: Date | null;
   }>(
     `select c.id, c.status, c.priority, c.assignee_id, c.last_message_at, c.last_inbound_at,
-            c.sla_due_at, ct.display_name, ct.phone_enc, ch.kind as channel_kind, ch.id as channel_id
+            c.sla_due_at, ct.display_name, ct.phone_enc, ch.kind as channel_kind, ch.id as channel_id,
+            c.contact_id, c.created_at, c.first_response_at
        from conversations c
        join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
        join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
@@ -424,6 +544,103 @@ export async function createDeal(
      Math.round(args.amountIdr * 1_000_000), args.ownerId ?? null, args.sourceConversationId ?? null],
   );
   return { id: rows[0]!.id };
+}
+
+export interface DealDetail {
+  id: string; title: string; amountIdr: number; status: string; lostReason: string | null;
+  stageId: string; stageName: string; pipelineId: string; pipelineName: string;
+  isWon: boolean; isLost: boolean;
+  contactId: string; contactName: string | null; contactPhone: string | null;
+  ownerId: string | null; sourceConversationId: string | null;
+  expectedCloseOn: string | null; notes: string | null;
+  rotsAt: Date | null; closedAt: Date | null; createdAt: Date; updatedAt: Date;
+}
+
+/** Everything the deal detail page needs, in one query. */
+export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | null> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const rows = await ctx.tx.query<{
+    id: string; title: string; amount_idr: string; status: string; lost_reason: string | null;
+    stage_id: string; stage_name: string; pipeline_id: string; pipeline_name: string;
+    is_won: boolean; is_lost: boolean;
+    contact_id: string; contact_name: string | null; phone_enc: string | null;
+    owner_id: string | null; source_conversation_id: string | null;
+    expected_close_on: Date | null; notes: string | null;
+    rots_at: Date | null; closed_at: Date | null; created_at: Date; updated_at: Date;
+  }>(
+    `select d.id, d.title, d.amount_micros / 1000000 as amount_idr, d.status, d.lost_reason,
+            d.stage_id, s.name as stage_name, d.pipeline_id, p.name as pipeline_name,
+            s.is_won, s.is_lost,
+            d.contact_id, ct.display_name as contact_name, ct.phone_enc,
+            d.owner_id, d.source_conversation_id,
+            d.expected_close_on, d.notes, d.rots_at, d.closed_at, d.created_at, d.updated_at
+       from deals d
+       join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id
+       join pipelines p on p.id = d.pipeline_id and p.tenant_id = d.tenant_id
+       join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
+      where d.tenant_id = $1 and d.id = $2`,
+    [ctx.tenantId, dealId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    id: row.id, title: row.title, amountIdr: Number(row.amount_idr), status: row.status,
+    lostReason: row.lost_reason,
+    stageId: row.stage_id, stageName: row.stage_name, pipelineId: row.pipeline_id, pipelineName: row.pipeline_name,
+    isWon: row.is_won, isLost: row.is_lost,
+    contactId: row.contact_id, contactName: row.contact_name,
+    contactPhone: row.phone_enc ? openField(keys, ctx.tenantId, row.phone_enc) : null,
+    ownerId: row.owner_id, sourceConversationId: row.source_conversation_id,
+    expectedCloseOn: row.expected_close_on ? row.expected_close_on.toISOString().slice(0, 10) : null,
+    notes: row.notes,
+    rotsAt: row.rots_at, closedAt: row.closed_at, createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
+
+/** Notes and the target close date — the two fields a deal card has no room for. */
+export async function updateDeal(
+  ctx: Ctx, args: { dealId: string; notes?: string | null; expectedCloseOn?: string | null },
+): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update deals set
+        notes = case when $3 then $4 else notes end,
+        expected_close_on = case when $5 then $6::date else expected_close_on end,
+        updated_at = now()
+      where tenant_id = $1 and id = $2
+      returning id`,
+    [ctx.tenantId, args.dealId,
+     args.notes !== undefined, args.notes ?? null,
+     args.expectedCloseOn !== undefined, args.expectedCloseOn ?? null],
+  );
+  return !!rows[0];
+}
+
+export interface DealActivityRow {
+  id: number; actorType: string; actorId: string | null; action: string;
+  meta: Record<string, unknown>; createdAt: Date;
+}
+
+/**
+ * The deal's own slice of the tenant's audit chain — same table Riwayat reads,
+ * scoped to one resource so `deal:read` can see it without needing the
+ * tenant-wide `audit:read` permission.
+ */
+export async function dealActivity(ctx: Ctx, dealId: string, limit = 50): Promise<DealActivityRow[]> {
+  const rows = await ctx.tx.query<{
+    id: number; actor_type: string; actor_id: string | null; action: string;
+    meta: Record<string, unknown>; created_at: Date;
+  }>(
+    `select id, actor_type, actor_id, action, meta, created_at
+       from audit_events
+      where tenant_id = $1 and resource_type = 'deal' and resource_id = $2
+      order by id desc limit $3`,
+    [ctx.tenantId, dealId, limit],
+  );
+  return rows.map((r) => ({
+    id: r.id, actorType: r.actor_type, actorId: r.actor_id, action: r.action,
+    meta: r.meta, createdAt: r.created_at,
+  }));
 }
 
 /**

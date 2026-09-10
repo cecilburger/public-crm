@@ -14,6 +14,7 @@ import {
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import { buildApp } from '../apps/api/src/app.ts';
+import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
 import { processAutopilotDraft } from '../apps/worker/src/processors/autopilotDraft.ts';
 import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
@@ -221,12 +222,18 @@ const accessTokenFor = async (tid: string, channelId: string): Promise<string> =
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
 const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
 
+const realtime = createRealtimeHub();
+
 const app = buildApp({
-  db, control: db, kek, env: e,
+  db, control: db, kek, env: e, realtime,
   dispatch: async ({ queue, payload }) => {
     if (queue === 'inbound.normalise') {
       await processInboundWebhook(
-        { db, control: db, kek, dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); } },
+        {
+          db, control: db, kek,
+          dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); },
+          publish: (tenantId, event) => realtime.publish(tenantId, event),
+        },
         (payload as { webhookEventId: string }).webhookEventId);
     }
     if (queue === 'autopilot.draft') await runAutopilot(payload);

@@ -5,12 +5,15 @@ import { useRouter } from 'next/navigation';
 import { t } from '@/lib/copy';
 
 /**
- * Polling, said plainly.
- *
- * There is no streaming endpoint on the API yet, so this re-renders on an
- * interval. The control says what it is doing rather than showing a green "live"
- * light that means nothing — and it can be paused, because a list that reorders
- * itself while you are reading it is worse than a stale one.
+ * Two sources feed the same refresh: an interval (still needed for things a
+ * message event doesn't cover, like a QR code rotating while pairing) and
+ * `/api/realtime` — a relay onto the API's own SSE endpoint — which fires the
+ * instant a new WhatsApp message actually arrives instead of waiting for the
+ * next tick. `EventSource` reconnects on its own when the connection drops or
+ * the API cycles it after its max lifetime, so there is no manual retry loop
+ * here. The control still says what it is doing rather than showing a green
+ * "live" light that means nothing, and it can be paused, because a list that
+ * reorders itself while you are reading it is worse than a stale one.
  */
 export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
   const router = useRouter();
@@ -20,10 +23,13 @@ export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
 
   useEffect(() => {
     if (!on) return;
-    const id = setInterval(() => {
-      start(() => { router.refresh(); setLast(Date.now()); });
-    }, seconds * 1000);
-    return () => clearInterval(id);
+    const refresh = () => start(() => { router.refresh(); setLast(Date.now()); });
+
+    const source = new EventSource('/api/realtime');
+    source.onmessage = refresh;
+
+    const id = setInterval(refresh, seconds * 1000);
+    return () => { source.close(); clearInterval(id); };
   }, [on, seconds, router]);
 
   return (

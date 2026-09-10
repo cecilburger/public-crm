@@ -30,6 +30,19 @@ const dispatch = async ({ queue, payload }: { queue: string; payload: unknown })
   await q.add(queue, payload, { attempts: 8, backoff: { type: 'exponential', delay: 2_000 } });
 };
 
+// The API's `/v1/realtime` connections live in a different process (a
+// different container) than this one — Redis pub/sub is the bridge between
+// the process that writes a message and the one holding the console's open
+// connection to tell it about it.
+const IORedis = await import('ioredis');
+const Redis = (IORedis as unknown as { default?: typeof IORedis.Redis }).default ?? IORedis.Redis;
+const realtimePub = new Redis(e.REDIS_URL);
+realtimePub.on('error', (err: Error) => console.error('[redis] realtime publisher:', err.message));
+const publish = (tenantId: string, event: { type: 'message'; conversationId: string }) => {
+  void realtimePub.publish('kirana:realtime', JSON.stringify({ tenantId, event })).catch((err: Error) =>
+    console.error('[redis] realtime publish failed:', err.message));
+};
+
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
 const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
 const emailSender = resolveSender(e);
@@ -69,7 +82,7 @@ const accessTokenFor = async (tenantId: string, channelId: string): Promise<stri
 
 const workers = [
   new Worker('inbound.normalise', async (job: Job) =>
-    processInboundWebhook({ db, control, kek, dispatch }, job.data.webhookEventId), { connection, concurrency: 16 }),
+    processInboundWebhook({ db, control, kek, dispatch, publish }, job.data.webhookEventId), { connection, concurrency: 16 }),
 
   new Worker('outbound.send', async (job: Job) =>
     processOutbound({ db, kek, meta, waBridge, accessTokenFor }, job.data), { connection, concurrency: 8 }),
@@ -109,6 +122,7 @@ console.log(`worker ready: ${workers.map((w) => w.name).join(', ')}`);
 const shutdown = async () => {
   await Promise.all(workers.map((w) => w.close()));
   await Promise.all([...queues.values()].map((q) => q.close()));
+  realtimePub.disconnect();
   await Promise.all([db.close(), control.close()]);
   process.exit(0);
 };
