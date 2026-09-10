@@ -38,6 +38,7 @@
     "packages/**/*.ts",
     "apps/api/**/*.ts",
     "apps/worker/**/*.ts",
+    "apps/wa-bridge/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": [

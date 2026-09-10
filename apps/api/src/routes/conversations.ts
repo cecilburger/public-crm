@@ -15,13 +15,23 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       status: z.enum(['open', 'pending', 'snoozed', 'resolved']).optional(),
       assignee: z.string().uuid().optional(),
       limit: z.coerce.number().int().min(1).max(200).optional(),
+      channelKind: z.string().optional(),
     }).safeParse(req.query);
     if (!q.success) throw invalid('Check the filter parameters');
 
-    return ctx.asTenant(req, (tx, actor) =>
-      listInbox({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+    return ctx.asTenant(req, async (tx, actor) => {
+      const canReveal = actorCan(actor, 'contact:export');
+      const rows = await listInbox({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         status: q.data.status, assigneeId: q.data.assignee, limit: q.data.limit,
-      }));
+        channelKind: q.data.channelKind,
+      });
+      const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
+
+      return rows.map(({ phone_enc, ...r }) => {
+        const phone = phone_enc ? openField(keys, actor.tenantId, phone_enc) : null;
+        return { ...r, phone: phone ? (canReveal ? phone : maskPhone(phone)) : null };
+      });
+    });
   });
 
   app.get('/v1/conversations/:id', async (req) => {
@@ -112,7 +122,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
   });
 
   app.post('/v1/conversations/:id/messages', async (req, reply) => {
-    ctx.guard(req, 'conversation:write');
+    const actor = ctx.guard(req, 'conversation:write');
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     const body = z.object({
       body: z.string().min(1).max(4096),
@@ -168,7 +178,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       return queued;
     });
 
-    await ctx.dispatch({ queue: 'outbound.send', payload: { messageId: result.messageId } });
+    await ctx.dispatch({ queue: 'outbound.send', payload: { tenantId: actor.tenantId, messageId: result.messageId } });
     return reply.status(202).send(result);
   });
 
@@ -178,7 +188,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
    * rule and every other check still apply.
    */
   app.post('/v1/conversations/:id/drafts/:draftId', async (req, reply) => {
-    ctx.guard(req, 'conversation:write');
+    const actor = ctx.guard(req, 'conversation:write');
     const params = z.object({ id: z.string().uuid(), draftId: z.string().uuid() }).parse(req.params);
     const body = z.object({
       action: z.enum(['use', 'discard']),
@@ -260,8 +270,39 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       return queued;
     });
 
-    if (result) await ctx.dispatch({ queue: 'outbound.send', payload: { messageId: result.messageId } });
+    if (result) await ctx.dispatch({ queue: 'outbound.send', payload: { tenantId: actor.tenantId, messageId: result.messageId } });
     return reply.status(result ? 202 : 200).send(result ?? { ok: true });
+  });
+
+  /**
+   * Flags the person behind this thread as a customer — a tag on the contact,
+   * not the conversation, so it follows them across every channel they write
+   * in on and is what the Pelanggan page filters by.
+   */
+  app.post('/v1/conversations/:id/mark-customer', async (req) => {
+    ctx.guard(req, 'contact:write');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return ctx.asTenant(req, async (tx, actor) => {
+      const conv = await tx.query<{ contact_id: string }>(
+        'select contact_id from conversations where tenant_id = $1 and id = $2', [actor.tenantId, id]);
+      if (!conv[0]) throw notFound('Conversation');
+
+      const rows = await tx.query<{ id: string }>(
+        `update contacts
+            set tags = case when 'customer' = any(tags) then tags else array_append(tags, 'customer') end
+          where tenant_id = $1 and id = $2
+          returning id`,
+        [actor.tenantId, conv[0].contact_id],
+      );
+      if (!rows[0]) throw notFound('Contact');
+
+      await audit(tx, actor.tenantId, {
+        actorType: 'user', actorId: actor.userId, action: 'contact.marked_customer',
+        resourceType: 'contact', resourceId: conv[0].contact_id,
+      });
+      return { ok: true };
+    });
   });
 
   app.post('/v1/conversations/:id/assign', async (req) => {

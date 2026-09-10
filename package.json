@@ -6,7 +6,8 @@
     "packages/*",
     "apps/api",
     "apps/worker",
-    "apps/console"
+    "apps/console",
+    "apps/wa-bridge"
   ],
   "engines": {
     "node": ">=22"

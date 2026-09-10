@@ -72,7 +72,9 @@ export interface ConversationSummary {
   last_inbound_at: string | null;
   sla_due_at: string | null;
   display_name: string | null;
+  phone: string | null;
   channel_kind: string;
+  channel_id: string;
 }
 
 export interface AutopilotDraft {
@@ -142,6 +144,27 @@ export interface AutopilotSettings {
     max_replies_per_hour: number;
   } | null;
   last30Days: Record<string, number>;
+}
+
+export interface WaBridgeChannel {
+  id: string;
+  displayName: string;
+  status: string;
+  phoneE164: string | null;
+  sessionStatus: string;
+  qrDataUrl: string | null;
+  qrExpiresAt: string | null;
+  lastSeenAt: string | null;
+  lastError: string | null;
+}
+
+export interface Contact {
+  id: string;
+  displayName: string | null;
+  phone: string | null;
+  tags: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
 }
 
 export interface AuditRow {

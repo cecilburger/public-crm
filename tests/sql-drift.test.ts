@@ -3,7 +3,14 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { analyseSource, projectionOf, columnName } from './helpers/sql-drift.ts';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+//const ROOT = new URL('..', import.meta.url).pathname;
+
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const ROOT = join(__dirname, '..');
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];

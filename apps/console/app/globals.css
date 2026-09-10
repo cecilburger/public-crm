@@ -163,6 +163,34 @@ h3 { font-size: 13px; font-weight: 700; }
 }
 .navitem[aria-current="page"] .count { background: var(--brand); color: var(--brand-ink); }
 
+/* A group header looks like any other nav item, but is a button (toggles a
+   dropdown) rather than a link, with a chevron in the count's usual spot. */
+.navitem-toggle { width: 100%; background: none; border: none; cursor: pointer; }
+.navitem-toggle .chev { margin-left: auto; width: 14px; height: 14px; flex: none; transition: transform .12s; }
+.navitem-toggle[aria-current="page"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+
+/* Numbers paired under "Chat WA" — only shown while that section is active. */
+.rail-sub {
+  display: flex; flex-direction: column; gap: 1px;
+  margin: 2px 0 6px 9px; padding-left: 9px; border-left: 1px solid var(--line);
+}
+.rail-sub-item { display: flex; align-items: center; gap: 2px; }
+.rail-sub-row {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
+  padding: 5px 6px; border-radius: 6px; background: none; border: none;
+  color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500; text-align: left;
+}
+button.rail-sub-row, a.rail-sub-row { cursor: pointer; }
+button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); color: var(--ink); }
+.rail-sub-row[aria-current="page"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.rail-sub-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-sub-more {
+  list-style: none; cursor: pointer; flex: none; width: 22px; height: 22px; border-radius: 6px;
+  display: grid; place-items: center; color: var(--ink-3); font-size: 14px; line-height: 1;
+}
+.rail-sub-more::-webkit-details-marker { display: none; }
+.rail-sub-more:hover { background: var(--panel-2); color: var(--ink); }
+
 .railfoot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px; }
 .whoami { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
 .avatar {
@@ -508,3 +536,19 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 .rowform label .mono { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
 .rowform .input { padding: 6px 9px; font-size: 13px; }
 .rowform.addrow { border-style: dashed; border-color: var(--line-2); background: transparent; }
+
+/* -------------------------------------------------------------- modal */
+
+.modal {
+  border: 1px solid var(--line); border-radius: var(--r); padding: 0;
+  width: min(420px, calc(100vw - 32px)); background: var(--panel); color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.modal::backdrop { background: rgba(8, 9, 28, .45); }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 13px 16px; border-bottom: 1px solid var(--line);
+}
+.modal-head h2 { font-size: 15px; }
+.modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

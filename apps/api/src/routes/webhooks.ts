@@ -104,4 +104,54 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     return reply.status(200).send({ received: events.length, accepted });
   });
+
+  /**
+   * The WhatsApp Web bridge (`apps/wa-bridge`) reports everything through this
+   * one endpoint — QR codes, pairing state, and inbound messages alike — spooled
+   * into the same `webhook_events` idempotency barrier as the Meta channel and
+   * turned into rows by the same `inbound.normalise` worker. It is an internal
+   * service, not a public provider, so it authenticates with a shared secret
+   * rather than a per-payload signature.
+   */
+  app.post('/v1/webhooks/wa-bridge', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${ctx.env.WA_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'wa-bridge webhook rejected: bad secret');
+      webhookEvents.inc({ provider: 'wa_bridge', outcome: 'bad_signature' });
+      return reply.status(401).send();
+    }
+
+    const body = req.body as {
+      channelId?: string; event?: string; at?: string;
+      message?: { id?: string };
+    };
+    if (!body.channelId || !body.event) {
+      webhookEvents.inc({ provider: 'wa_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // Message events dedupe on WhatsApp's own message id, same as Meta.
+    // Session-state events (qr, ready, disconnected…) have no such id, so the
+    // timestamp the bridge attached stands in — good enough since these are
+    // status transitions, not customer data that must never duplicate.
+    const externalId = body.event === 'message' && body.message?.id
+      ? body.message.id
+      : `${body.channelId}:${body.event}:${body.at ?? Date.now()}`;
+
+    const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
+      tx.query<{ id: string }>(
+        `insert into webhook_events (provider, external_id, signature_ok, payload)
+         values ('wa_bridge', $1, true, $2)
+         on conflict (provider, external_id) do nothing
+         returning id`,
+        [externalId, JSON.stringify(body)],
+      ));
+
+    webhookEvents.inc({ provider: 'wa_bridge', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    if (inserted[0]) {
+      await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
+    }
+
+    return reply.status(200).send({ received: true });
+  });
 }

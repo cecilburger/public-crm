@@ -29,6 +29,7 @@ export async function sendMessage(_prev: ActionResult | null, form: FormData): P
       body: { body, ...(templateName ? { templateName } : {}) },
     });
     revalidatePath('/obrolan', 'layout');
+    revalidatePath('/chat-wa', 'layout');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.chats.sendFailed };
@@ -44,6 +45,7 @@ export async function assignConversation(form: FormData): Promise<void> {
     body: { assigneeId: raw === '' ? null : raw },
   });
   revalidatePath('/obrolan', 'layout');
+  revalidatePath('/chat-wa', 'layout');
 }
 
 export async function resolveConversation(form: FormData): Promise<void> {
@@ -51,6 +53,15 @@ export async function resolveConversation(form: FormData): Promise<void> {
   const conversationId = String(form.get('conversationId') ?? '');
   await api(`/v1/conversations/${conversationId}/resolve`, { method: 'POST' });
   revalidatePath('/obrolan', 'layout');
+  revalidatePath('/chat-wa', 'layout');
+}
+
+export async function markAsCustomer(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const conversationId = String(form.get('conversationId') ?? '');
+  await api(`/v1/conversations/${conversationId}/mark-customer`, { method: 'POST' });
+  revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/pelanggan');
 }
 
 export async function moveDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -99,6 +110,7 @@ export async function decideDraft(_prev: ActionResult | null, form: FormData): P
       body: { action, ...(action === 'use' && edited ? { body: edited } : {}) },
     });
     revalidatePath('/obrolan', 'layout');
+    revalidatePath('/chat-wa', 'layout');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.autopilot.failed };
@@ -261,6 +273,54 @@ export async function removeShippingRate(
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.catalogue.failed };
   }
+}
+
+/* ------------------------------------------------------------- chat wa */
+
+export async function createWaBridgeSession(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const displayName = String(form.get('displayName') ?? '').trim();
+  if (!displayName) return { ok: false, error: t.waBridge.failed };
+
+  try {
+    await api('/v1/wa-bridge/channels', { method: 'POST', body: { displayName } });
+    revalidatePath('/chat-wa', 'layout');
+    revalidatePath('/', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.waBridge.failed };
+  }
+}
+
+export async function disconnectWaBridgeSession(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const channelId = String(form.get('channelId') ?? '');
+  await api(`/v1/wa-bridge/channels/${channelId}/disconnect`, { method: 'POST' });
+  revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/', 'layout');
+}
+
+export async function deleteWaBridgeSession(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const channelId = String(form.get('channelId') ?? '');
+  try {
+    await api(`/v1/wa-bridge/channels/${channelId}`, { method: 'DELETE' });
+    revalidatePath('/chat-wa', 'layout');
+    revalidatePath('/', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.waBridge.failed };
+  }
+}
+
+export async function reconnectWaBridgeSession(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const channelId = String(form.get('channelId') ?? '');
+  await api(`/v1/wa-bridge/channels/${channelId}/reconnect`, { method: 'POST' });
+  revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/', 'layout');
 }
 
 export async function markInvoicePaidAction(

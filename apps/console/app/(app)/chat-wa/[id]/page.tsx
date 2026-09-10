@@ -1,22 +1,25 @@
-import { notFound } from 'next/navigation';
+import { redirect } from 'next/navigation';
 import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me } from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { Composer } from '@/components/Composer';
 import { DraftCard } from '@/components/DraftCard';
-import { assignConversation, resolveConversation } from '../../actions';
+import { assignConversation, resolveConversation, markAsCustomer } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ThreadPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ChatWaThreadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
   let detail: ConversationDetail;
   try {
     detail = await api<ConversationDetail>(`/v1/conversations/${id}`);
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) notFound();
+    // The conversation this link pointed to is gone — most likely its WhatsApp
+    // number was just deleted, cascading its conversations with it. The list
+    // view is still there, so send the agent back to it rather than a dead end.
+    if (err instanceof ApiError && err.status === 404) redirect('/chat-wa');
     throw err;
   }
 
@@ -27,14 +30,13 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   ]);
 
   const { conversation, contact, messages, draft } = detail;
-  // Tolerate an older API that does not send this yet — a missing panel beats a
-  // 500 on the page an agent lives in.
   const orders = detail.orders ?? [];
   const assignee = members.find((m) => m.id === conversation.assignee_id);
   const contactDeals = deals.filter((d) => d.contact_id === conversation.contact_id);
   const openValue = contactDeals.filter((d) => d.status === 'open')
     .reduce((sum, d) => sum + Number(d.amount_idr), 0);
   const mine = conversation.assignee_id === me.user.id;
+  const isCustomer = contact.tags.includes('customer');
 
   return (
     <div style={{ display: 'flex', minHeight: 0 }}>
@@ -45,13 +47,13 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
             {contact.displayName ? <span className="mono dim">{contact.phone ?? '—'}</span> : null}
           </div>
 
-          {conversation.serviceWindowOpen
-            ? <span className="chip good">{t.chats.canReplyFreely}</span>
-            : <span className="chip warn">{t.chats.templateOnly}</span>}
+          {/* A WhatsApp Web session has no 24-hour Meta window — it can always
+              reply freely, so the chip and the composer's template branch never
+              apply here. */}
+          <span className="chip good">{t.chats.canReplyFreely}</span>
 
           <span className="spacer" style={{ marginLeft: 'auto' }} />
 
-          {/* One obvious button for the common case, the full picker for the rest. */}
           {!mine ? (
             <form action={assignConversation}>
               <CsrfField />
@@ -60,6 +62,16 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
               <button className="btn primary sm" type="submit">{t.chats.takeIt}</button>
             </form>
           ) : null}
+
+          {isCustomer ? (
+            <span className="chip good">{t.chats.markedCustomer}</span>
+          ) : (
+            <form action={markAsCustomer}>
+              <CsrfField />
+              <input type="hidden" name="conversationId" value={conversation.id} />
+              <button className="btn sm" type="submit">{t.chats.markCustomer}</button>
+            </form>
+          )}
 
           <details className="dropdown">
             <summary className="btn sm">
@@ -100,8 +112,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}
 
-        <Composer conversationId={conversation.id} windowOpen={conversation.serviceWindowOpen}
-                  customerName={contact.displayName ?? contact.phone ?? '—'} />
+        <Composer conversationId={conversation.id} windowOpen customerName={contact.displayName ?? contact.phone ?? '—'} />
       </div>
 
       <aside className="context" aria-label={t.chats.aboutCustomer}>
@@ -149,10 +160,6 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
               <span className="v">{rp(d.amount_idr)}</span>
             </div>
           ))}
-        </section>
-
-        <section>
-          <p className="dim" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{t.chats.billingNote}</p>
         </section>
       </aside>
     </div>

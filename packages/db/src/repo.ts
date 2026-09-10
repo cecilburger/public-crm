@@ -38,6 +38,22 @@ export async function upsertContactByPhone(
   return { id: rows[0]!.id, created: rows[0]!.created };
 }
 
+/** Everyone who has ever messaged in, optionally narrowed to one tag — the Pelanggan page asks for `tag: 'customer'`. */
+export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: number } = {}) {
+  return ctx.tx.query<{
+    id: string; display_name: string | null; phone_enc: string | null; tags: string[];
+    first_seen_at: Date; last_seen_at: Date;
+  }>(
+    `select id, display_name, phone_enc, tags, first_seen_at, last_seen_at
+       from contacts
+      where tenant_id = $1 and deleted_at is null
+        and ($3::text is null or $3 = any(tags))
+      order by last_seen_at desc
+      limit $2`,
+    [ctx.tenantId, Math.min(args.limit ?? 200, 500), args.tag ?? null],
+  );
+}
+
 /* ----------------------------------------------------------- conversations */
 
 /** Reopens the contact's live thread on this channel, or starts one. */
@@ -192,24 +208,198 @@ export async function queueOutboundMessage(
   return { messageId: msg[0]!.id };
 }
 
+export interface PhoneReplyResult {
+  messageId: string; conversationId: string; contactId: string; duplicate: boolean;
+}
+
+/**
+ * A reply typed on the linked phone itself, outside the console — WhatsApp
+ * echoes it back to the bridge the same way it does a customer's message,
+ * just flagged `fromMe`. Recorded as an outbound message on the same
+ * conversation so the transcript stays complete regardless of which device
+ * replied; deduped on the provider's message id like inbound is, since a
+ * message the console itself queued echoes back here too and must not
+ * appear a second time.
+ */
+export async function recordPhoneReply(
+  ctx: Ctx,
+  args: {
+    channelId: string; to: string; body: string; providerMessageId: string;
+    displayName?: string | null; providerTs?: Date; now?: Date;
+  },
+): Promise<PhoneReplyResult> {
+  const now = args.now ?? new Date();
+
+  const dup = await ctx.tx.query<{ id: string; conversation_id: string }>(
+    `select id, conversation_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (dup[0]) {
+    const c = await ctx.tx.query<{ contact_id: string }>(
+      'select contact_id from conversations where tenant_id = $1 and id = $2',
+      [ctx.tenantId, dup[0].conversation_id],
+    );
+    return {
+      messageId: dup[0].id, conversationId: dup[0].conversation_id,
+      contactId: c[0]?.contact_id ?? '', duplicate: true,
+    };
+  }
+
+  const contact = await upsertContactByPhone(ctx, { phone: args.to, displayName: args.displayName, now });
+  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now });
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const inserted = await ctx.tx.query<{ id: string }>(
+    `insert into messages
+       (tenant_id, conversation_id, channel_id, direction, sender_type,
+        body_enc, provider_message_id, status, provider_ts)
+     values ($1,$2,$3,'outbound','agent',$4,$5,'sent',$6)
+     returning id`,
+    [ctx.tenantId, conversation.id, args.channelId,
+     sealField(keys, ctx.tenantId, args.body), args.providerMessageId, args.providerTs ?? now],
+  );
+
+  const at = args.providerTs ?? now;
+  await ctx.tx.query(
+    `update conversations
+        set last_message_at = greatest(last_message_at, $3),
+            first_response_at = coalesce(first_response_at, $3)
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, conversation.id, at],
+  );
+
+  return { messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id, duplicate: false };
+}
+
 /* -------------------------------------------------------------------- reads */
 
 export async function listInbox(
-  ctx: Ctx, args: { status?: string; assigneeId?: string; limit?: number } = {},
+  ctx: Ctx, args: { status?: string; assigneeId?: string; limit?: number; channelKind?: string } = {},
 ) {
-  return ctx.tx.query(
+  return ctx.tx.query<{
+    id: string; status: string; priority: string; assignee_id: string | null;
+    last_message_at: Date | null; last_inbound_at: Date | null; sla_due_at: Date | null;
+    display_name: string | null; phone_enc: string | null; channel_kind: string; channel_id: string;
+  }>(
     `select c.id, c.status, c.priority, c.assignee_id, c.last_message_at, c.last_inbound_at,
-            c.sla_due_at, ct.display_name, ch.kind as channel_kind
+            c.sla_due_at, ct.display_name, ct.phone_enc, ch.kind as channel_kind, ch.id as channel_id
        from conversations c
        join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
        join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
       where c.tenant_id = $1
         and ($2::text is null or c.status = $2)
         and ($3::uuid is null or c.assignee_id = $3)
+        and ($5::text is null or ch.kind = $5)
       order by c.last_message_at desc nulls last
       limit $4`,
-    [ctx.tenantId, args.status ?? null, args.assigneeId ?? null, Math.min(args.limit ?? 50, 200)],
+    [ctx.tenantId, args.status ?? null, args.assigneeId ?? null, Math.min(args.limit ?? 50, 200),
+     args.channelKind ?? null],
   );
+}
+
+/* ------------------------------------------------------------- wa-bridge */
+
+/**
+ * A whatsapp_web channel plus its pairing session, created together: a
+ * channel with no session row would have nowhere to put the QR code, and a
+ * session with no channel has no conversations to attach messages to.
+ */
+export async function createWaBridgeChannel(
+  ctx: Ctx, args: { displayName: string },
+): Promise<{ channelId: string }> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `insert into channels (tenant_id, kind, display_name, status)
+     values ($1, 'whatsapp_web', $2, 'connecting') returning id`,
+    [ctx.tenantId, args.displayName],
+  );
+  const channelId = rows[0]!.id;
+  await ctx.tx.query(
+    `insert into wa_bridge_sessions (channel_id, tenant_id, status) values ($1, $2, 'starting')`,
+    [channelId, ctx.tenantId],
+  );
+  return { channelId };
+}
+
+export async function listWaBridgeChannels(ctx: Ctx) {
+  return ctx.tx.query<{
+    id: string; display_name: string; status: string; phone_e164: string | null;
+    session_status: string; qr_data: string | null; qr_expires_at: Date | null;
+    last_seen_at: Date | null; last_error: string | null;
+  }>(
+    `select ch.id, ch.display_name, ch.status, ch.phone_e164,
+            s.status as session_status, s.qr_data, s.qr_expires_at, s.last_seen_at, s.last_error
+       from channels ch
+       join wa_bridge_sessions s on s.channel_id = ch.id and s.tenant_id = ch.tenant_id
+      where ch.tenant_id = $1 and ch.kind = 'whatsapp_web'
+      order by ch.created_at desc`,
+    [ctx.tenantId],
+  );
+}
+
+export async function disableWaBridgeChannel(ctx: Ctx, args: { channelId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update channels set status = 'disabled'
+      where tenant_id = $1 and id = $2 and kind = 'whatsapp_web' returning id`,
+    [ctx.tenantId, args.channelId],
+  );
+  if (!rows[0]) return false;
+  await ctx.tx.query(
+    `update wa_bridge_sessions set status = 'logged_out', updated_at = now()
+      where tenant_id = $1 and channel_id = $2`,
+    [ctx.tenantId, args.channelId],
+  );
+  return true;
+}
+
+/**
+ * Unlike disconnecting, this removes the channel row itself — `wa_bridge_sessions`
+ * cascades with it. Conversations and messages do not: both reference
+ * `channels` with `on delete restrict`, so a number that already has chat
+ * history is deleted here on purpose, in the one order that satisfies every
+ * constraint — the caller is the one that should have already confirmed this
+ * with whoever clicked delete, since the history does not come back.
+ */
+export async function deleteWaBridgeChannel(ctx: Ctx, args: { channelId: string }): Promise<boolean> {
+  const owned = await ctx.tx.query<{ id: string }>(
+    `select id from channels where tenant_id = $1 and id = $2 and kind = 'whatsapp_web'`,
+    [ctx.tenantId, args.channelId],
+  );
+  if (!owned[0]) return false;
+
+  // Metering rows reference the channel directly, not through a conversation,
+  // so they need their own delete before the channel can go.
+  await ctx.tx.query(`delete from meta_cost_events where tenant_id = $1 and channel_id = $2`,
+    [ctx.tenantId, args.channelId]);
+  await ctx.tx.query(`delete from billable_conversations where tenant_id = $1 and channel_id = $2`,
+    [ctx.tenantId, args.channelId]);
+  // Cascades away every message (and each message's outbox row) on this channel.
+  await ctx.tx.query(`delete from conversations where tenant_id = $1 and channel_id = $2`,
+    [ctx.tenantId, args.channelId]);
+
+  await ctx.tx.query(`delete from channels where tenant_id = $1 and id = $2`, [ctx.tenantId, args.channelId]);
+  return true;
+}
+
+/**
+ * Re-arms a number that was disconnected — same row, same id, so `apps/wa-bridge`
+ * can be told to start a session for it again. Whether that means WhatsApp
+ * resumes silently or asks for a fresh QR is up to whatsapp-web.js's own saved
+ * session state, not something this call knows.
+ */
+export async function reconnectWaBridgeChannel(ctx: Ctx, args: { channelId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update channels set status = 'connecting'
+      where tenant_id = $1 and id = $2 and kind = 'whatsapp_web' and status = 'disabled' returning id`,
+    [ctx.tenantId, args.channelId],
+  );
+  if (!rows[0]) return false;
+  await ctx.tx.query(
+    `update wa_bridge_sessions set status = 'starting', qr_data = null, qr_expires_at = null, last_error = null, updated_at = now()
+      where tenant_id = $1 and channel_id = $2`,
+    [ctx.tenantId, args.channelId],
+  );
+  return true;
 }
 
 /* -------------------------------------------------------------------- deals */
