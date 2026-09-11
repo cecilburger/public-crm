@@ -6,7 +6,7 @@ import { recordConversationActivity, incrementUsage, ensureBillingPeriod } from 
 export interface Ctx { tx: Sql; tenantId: string; kek: Buffer }
 
 /** Seals a phone for storage, or returns nulls when the form left it blank. */
-function sealPhone(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
+export function sealPhone(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
   if (!raw) return { enc: null, bidx: null };
   const e164 = normalisePhone(raw);
   if (!e164) throw new Error(`Unparseable phone number: ${raw}`);
@@ -14,7 +14,7 @@ function sealPhone(keys: TenantKeys, tenantId: string, raw: string | null): { en
 }
 
 /** Same idea as `sealPhone`, normalised to lowercase so "Bob@x.com" and "bob@x.com" are one blind index. */
-function sealEmail(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
+export function sealEmail(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
   if (!raw) return { enc: null, bidx: null };
   const normalised = raw.trim().toLowerCase();
   return { enc: sealField(keys, tenantId, normalised), bidx: fieldIndex(keys.indexKey, normalised) };

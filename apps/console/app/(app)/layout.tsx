@@ -17,13 +17,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   ]);
 
   // The badge counts what needs a human, not what is merely open — a number that
-  // goes down when you do your job is a number people trust.
-  const needsReply = conversations.filter(awaitingReply).length;
+  // goes down when you do your job is a number people trust. The notification
+  // bell reuses this same list (no second fetch) so it can name who, not just
+  // how many.
+  const needsReplyList = conversations.filter(awaitingReply);
 
   return (
     <CsrfProvider token={csrf}>
       <div className="shell">
-        <Rail me={me} needsReply={needsReply} waChannels={waChannels} />
+        <Rail me={me} needsReply={needsReplyList.length} notifications={needsReplyList} waChannels={waChannels} />
         <div className="main">{children}</div>
       </div>
     </CsrfProvider>

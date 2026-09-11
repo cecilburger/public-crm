@@ -23,6 +23,8 @@ import { registerWaBridgeChannelRoutes } from './routes/waBridgeChannels.ts';
 import { registerContactRoutes } from './routes/contacts.ts';
 import { registerOrderRoutes } from './routes/orders.ts';
 import { registerDealRoutes } from './routes/deals.ts';
+import { registerTaskRoutes } from './routes/tasks.ts';
+import { registerBrandRoutes } from './routes/brands.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -325,6 +327,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerContactRoutes(app, ctx);
   registerOrderRoutes(app, ctx);
   registerDealRoutes(app, ctx);
+  registerTaskRoutes(app, ctx);
+  registerBrandRoutes(app, ctx);
 
   return app;
 }

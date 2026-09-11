@@ -11,3 +11,5 @@ export * from './orders.ts';
 export * from './security.ts';
 export * from './rotation.ts';
 export * from './invoices.ts';
+export * from './tasks.ts';
+export * from './brands.ts';
