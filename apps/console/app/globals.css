@@ -217,6 +217,48 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .whoami .name { font-weight: 600; font-size: 12.5px; line-height: 1.2; }
 .whoami .role { font-family: var(--f-mono); font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .1em; }
 
+/* Lives in the brand row so it's on every page without touching every page's
+   own topbar — the Rail is the one piece of chrome every screen shares. */
+.notif { position: relative; }
+.notif-bell {
+  position: relative; width: 38px; height: 38px; border-radius: 9px;
+  display: grid; place-items: center; background: none; border: none; cursor: pointer;
+  color: var(--ink-2); flex: none;
+}
+.notif-bell svg { width: 23px; height: 23px; }
+.notif-bell:hover { background: var(--panel-2); color: var(--ink); }
+.notif-badge {
+  position: absolute; top: 2px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--danger); color: #fff;
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; line-height: 1;
+  display: grid; place-items: center;
+}
+.notif-panel {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 200;
+  width: 300px; max-height: 380px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r);
+  box-shadow: var(--shadow);
+}
+.notif-panel > header {
+  padding: 11px 14px; border-bottom: 1px solid var(--line);
+  font-family: var(--f-display); font-weight: 700; font-size: 13px;
+}
+.notif-panel .empty { padding: 22px 14px; font-size: 12.5px; text-align: center; }
+.notif-list { display: flex; flex-direction: column; }
+.notif-item {
+  display: flex; align-items: center; gap: 9px; padding: 10px 14px;
+  border-bottom: 1px solid var(--line); font-size: 12.5px;
+}
+.notif-item .dot { margin-top: 1px; flex: none; }
+.notif-item:hover { background: var(--panel-2); }
+.notif-time { margin-left: auto; font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
+.notif-footer {
+  display: block; padding: 9px 14px; text-align: center;
+  font-size: 12px; font-weight: 600; color: var(--brand);
+  border-top: 1px solid var(--line);
+}
+.notif-footer:hover { background: var(--panel-2); }
+
 .main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
 
 .topbar {
@@ -309,6 +351,13 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .stat-delta svg { width: 11px; height: 11px; }
 .stat-delta.good { color: var(--good); }
 .stat-delta.warn { color: var(--warn); }
+
+/* A stat tile that doubles as a filter toggle — same look, just clickable. */
+.stat-tile-btn { width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit; transition: border-color .12s, box-shadow .12s; }
+.stat-tile-btn:hover { border-color: var(--ink-3); }
+.stat-tile-btn.active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+.stat-tile-btn .stat-label { display: flex; align-items: center; gap: 6px; }
+.stat-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 
 /* A ranked list of magnitudes: label, meter, value — the fill is the series
    hue, the unfilled track a lighter step of the same ramp, so state reads
@@ -452,6 +501,120 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .deal .amt { font-family: var(--f-display); font-variation-settings: "wdth" 115; font-weight: 700; font-size: 15px; letter-spacing: -.02em; }
 .deal .foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .deal.rotting { border-color: var(--warn); box-shadow: inset 3px 0 0 var(--warn); }
+
+/* -------------------------------------------------------------- calendar */
+
+.calendar { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.calendar-head { display: flex; align-items: center; gap: 10px; }
+.calendar-head h3 { font-size: 15px; }
+.calendar-nav { display: flex; gap: 4px; margin-left: auto; }
+.calendar-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+  background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+}
+.calendar-dow {
+  background: var(--panel-2); padding: 6px; text-align: center;
+  font-family: var(--f-mono); font-size: 10px; text-transform: uppercase; color: var(--ink-3); letter-spacing: .06em;
+}
+.calendar-day {
+  background: var(--panel); min-height: 98px; padding: 6px; display: flex; flex-direction: column; gap: 3px;
+  border: none; width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
+}
+.calendar-day:hover { filter: brightness(0.97); }
+.calendar-day.outside { background: var(--bg); }
+.calendar-day.outside .calendar-daynum { color: var(--ink-3); }
+.calendar-day.today { box-shadow: inset 0 0 0 2px var(--brand); }
+.calendar-daynum { font-size: 11.5px; font-weight: 700; color: var(--ink-2); }
+.calendar-pill {
+  font-size: 10.5px; padding: 2px 6px; border-radius: 5px; text-align: left;
+  background: var(--brand-soft); color: var(--brand);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.calendar-pill.overdue { background: var(--danger-soft); color: var(--danger); }
+.calendar-pill.done { background: var(--good-soft); color: var(--good); text-decoration: line-through; opacity: .8; }
+.calendar-pill.cancelled { background: var(--panel-2); color: var(--ink-3); text-decoration: line-through; }
+.calendar-more { font-size: 10px; color: var(--ink-3); padding-left: 2px; }
+.calendar-empty-msg { padding: 16px 0 2px; }
+
+.calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.calendar-toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.calendar-nav-group { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 2px; }
+.calendar-period-label { font-size: 15px; font-weight: 650; text-transform: capitalize; }
+.calendar-mode-select {
+  background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--r);
+  padding: 6px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.calendar-body { display: flex; gap: 16px; align-items: flex-start; }
+.calendar-main { flex: 1; min-width: 0; }
+.calendar-sidebar { width: 240px; flex: none; display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 900px) {
+  .calendar-body { flex-direction: column; }
+  .calendar-sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; }
+}
+
+/* mini month (sidebar + year view) */
+.mini-cal { border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
+.mini-cal-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.mini-cal-head b { font-size: 12.5px; text-transform: capitalize; }
+.mini-cal-title-btn { background: none; border: none; padding: 0; cursor: pointer; color: inherit; }
+.mini-cal-title-btn:hover b { color: var(--brand); }
+.mini-cal-nav { margin-left: auto; display: flex; gap: 2px; }
+.mini-cal-nav .btn { min-width: 22px; height: 22px; padding: 0; }
+.mini-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.mini-cal-dow { font-size: 9px; text-align: center; color: var(--ink-3); font-family: var(--f-mono); }
+.mini-cal-day {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 10.5px; border-radius: 50%; cursor: pointer; position: relative;
+  color: var(--ink-2); background: transparent; border: none;
+}
+.mini-cal-day:hover { background: var(--panel-2); }
+.mini-cal-day.outside { color: var(--ink-3); opacity: .5; }
+.mini-cal-day.today { font-weight: 700; color: var(--brand); }
+.mini-cal-day.selected { background: var(--brand); color: var(--brand-ink); font-weight: 700; }
+.mini-cal-day.has-events::after {
+  content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
+  width: 4px; height: 4px; border-radius: 50%; background: var(--brand);
+}
+.mini-cal-day.selected.has-events::after { background: var(--brand-ink); }
+.mini-cal.compact .mini-cal-day { font-size: 9px; }
+
+.calendar-filters { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.calendar-filters h4 { font-family: var(--f-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.calendar-filter-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
+.calendar-filter-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.calendar-filter-dot.open { background: var(--brand); }
+.calendar-filter-dot.done { background: var(--good); }
+.calendar-filter-dot.cancelled { background: var(--danger); }
+
+/* year view */
+.year-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+
+/* day/week time grid */
+.time-grid { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--panel); }
+.time-week-head { display: grid; grid-template-columns: 56px repeat(7, 1fr); border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.time-daycol-head { padding: 6px 4px; text-align: center; font-size: 11px; color: var(--ink-2); border-left: 1px solid var(--line); }
+.time-daycol-head.today { color: var(--brand); font-weight: 700; }
+.time-daycol-head b { font-size: 13px; }
+.time-scroll { max-height: 520px; overflow-y: auto; }
+.time-row { display: flex; border-bottom: 1px solid var(--line); min-height: 42px; }
+.time-row-week { display: grid; grid-template-columns: 56px repeat(7, 1fr); border-bottom: 1px solid var(--line); min-height: 42px; }
+.time-row.current-hour, .time-row-week.current-hour { background: var(--brand-soft); }
+.time-row-label { width: 56px; flex: none; font-size: 10px; font-family: var(--f-mono); color: var(--ink-3); text-align: right; padding: 4px 8px 0 0; }
+.time-row-slot { flex: 1; padding: 3px 4px; display: flex; flex-direction: column; gap: 3px; border-left: 1px solid var(--line); }
+.time-row-slot.today { background: var(--brand-soft); }
+.time-event {
+  display: block; font-size: 10.5px; padding: 3px 6px; border-radius: 5px;
+  background: var(--brand-soft); color: var(--brand);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.time-event.overdue { background: var(--danger-soft); color: var(--danger); }
+.time-event.done { background: var(--good-soft); color: var(--good); text-decoration: line-through; opacity: .8; }
+.time-event.cancelled { background: var(--panel); color: var(--ink-3); text-decoration: line-through; }
+
+@media (max-width: 900px) {
+  .calendar-dow:nth-child(n+1) { font-size: 9px; }
+  .calendar-day { min-height: 64px; }
+}
 
 /* ---------------------------------------------------------------- meter */
 
@@ -658,6 +821,50 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 .modal-head h2 { font-size: 15px; }
 .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.modal.wide { width: min(560px, calc(100vw - 32px)); }
+.modal.wide .modal-body { max-height: 60vh; overflow-y: auto; }
+.day-detail-list { display: flex; flex-direction: column; gap: 10px; }
+.day-detail-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 10px; border: 1px solid var(--line); border-radius: var(--r);
+}
+
+/* ------------------------------------------------------------- drawer */
+
+/* A side panel for a quick add, in place of a full page navigation — the
+   page underneath (and its own full-page form, reachable directly) stays
+   exactly as it was. */
+.drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(8, 9, 28, .45); z-index: 300;
+  opacity: 0; pointer-events: none; transition: opacity .22s ease;
+}
+.drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+.drawer-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 301;
+  width: 440px; max-width: 92vw;
+  background: var(--panel); box-shadow: var(--shadow);
+  display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform .25s ease;
+}
+.drawer-panel.open { transform: translateX(0); }
+
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 16px 20px; border-bottom: 1px solid var(--line); flex: none;
+}
+.drawer-head h2 { font-size: 16px; }
+.drawer-close {
+  width: 30px; height: 30px; border-radius: 8px; flex: none;
+  display: grid; place-items: center; background: none; border: none; cursor: pointer;
+  color: var(--ink-2);
+}
+.drawer-close svg { width: 17px; height: 17px; }
+.drawer-close:hover { background: var(--panel-2); color: var(--ink); }
+.drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
+.drawer-foot {
+  display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); flex: none;
+}
 
 /* ------------------------------------------------------------ record form */
 

@@ -205,6 +205,43 @@ export interface ContactDetail {
   notes: string | null;
 }
 
+export interface Task {
+  id: string;
+  title: string;
+  notes: string | null;
+  dueAt: string;
+  status: 'open' | 'done' | 'cancelled';
+  contactId: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  dealId: string | null;
+  dealTitle: string | null;
+  assigneeId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface Brand {
+  id: string;
+  name: string;
+  picName: string | null;
+  phone: string | null;
+  email: string | null;
+  instagram: string | null;
+  website: string | null;
+  category: string | null;
+  city: string | null;
+  source: 'scrape' | 'manual' | 'referral' | 'other';
+  status: 'not_contacted' | 'contacted' | 'replied' | 'interested' | 'rejected';
+  assigneeId: string | null;
+  notes: string | null;
+  lastContactedAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Order {
   id: string;
   code: string;

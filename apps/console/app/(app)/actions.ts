@@ -88,6 +88,79 @@ export async function cancelOrder(form: FormData): Promise<void> {
   revalidatePath('/pesanan');
 }
 
+/* ------------------------------------------------------------------- tugas */
+
+export async function createTask(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const contactId = String(form.get('contactId') ?? '');
+  const title = String(form.get('title') ?? '').trim();
+  const dueAt = String(form.get('dueAt') ?? '').trim();
+  const notes = String(form.get('notes') ?? '').trim();
+  const dealId = String(form.get('dealId') ?? '').trim();
+  const assigneeId = String(form.get('assigneeId') ?? '').trim();
+
+  if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
+
+  try {
+    await api('/v1/tasks', {
+      method: 'POST',
+      body: {
+        contactId, title, dueAt,
+        notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
+      },
+    });
+    revalidatePath('/tugas');
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
+  }
+  redirect('/tugas');
+}
+
+/**
+ * Same as `createTask`, minus the redirect — for the slide-in drawer on the
+ * Tugas table itself, which is already on `/tugas` and just needs the list to
+ * refresh and the panel to close, not a navigation.
+ */
+export async function createTaskInline(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const contactId = String(form.get('contactId') ?? '');
+  const title = String(form.get('title') ?? '').trim();
+  const dueAt = String(form.get('dueAt') ?? '').trim();
+  const notes = String(form.get('notes') ?? '').trim();
+  const dealId = String(form.get('dealId') ?? '').trim();
+  const assigneeId = String(form.get('assigneeId') ?? '').trim();
+
+  if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
+
+  try {
+    await api('/v1/tasks', {
+      method: 'POST',
+      body: {
+        contactId, title, dueAt,
+        notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
+      },
+    });
+    revalidatePath('/tugas');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
+  }
+}
+
+export async function markTaskDone(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const taskId = String(form.get('taskId') ?? '');
+  await api(`/v1/tasks/${taskId}/done`, { method: 'POST' });
+  revalidatePath('/tugas');
+}
+
+export async function cancelTask(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const taskId = String(form.get('taskId') ?? '');
+  await api(`/v1/tasks/${taskId}/cancel`, { method: 'POST' });
+  revalidatePath('/tugas');
+}
+
 /* ------------------------------------------------------------- pelanggan */
 
 function readCustomerForm(form: FormData) {
@@ -151,6 +224,103 @@ export async function deleteCustomer(form: FormData): Promise<void> {
   await api(`/v1/contacts/${id}`, { method: 'DELETE' });
   revalidatePath('/pelanggan');
   redirect('/pelanggan');
+}
+
+/* ------------------------------------------------------------------- brand */
+
+function readBrandForm(form: FormData) {
+  const name = String(form.get('name') ?? '').trim();
+  const picName = String(form.get('picName') ?? '').trim();
+  const phone = String(form.get('phone') ?? '').trim();
+  const email = String(form.get('email') ?? '').trim();
+  const instagram = String(form.get('instagram') ?? '').trim();
+  const website = String(form.get('website') ?? '').trim();
+  const category = String(form.get('category') ?? '').trim();
+  const city = String(form.get('city') ?? '').trim();
+  const source = String(form.get('source') ?? '').trim();
+  const assigneeId = String(form.get('assigneeId') ?? '').trim();
+  const notes = String(form.get('notes') ?? '').trim();
+  return { name, picName, phone, email, instagram, website, category, city, source, assigneeId, notes };
+}
+
+export async function createBrand(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const { name, picName, phone, email, instagram, website, category, city, source, assigneeId, notes } =
+    readBrandForm(form);
+  if (!name) return { ok: false, error: t.brand.failed };
+
+  let created: { id: string };
+  try {
+    created = await api<{ id: string }>('/v1/brands', {
+      method: 'POST',
+      body: {
+        name,
+        ...(picName ? { picName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(instagram ? { instagram } : {}),
+        ...(website ? { website } : {}),
+        ...(category ? { category } : {}),
+        ...(city ? { city } : {}),
+        ...(source ? { source } : {}),
+        ...(assigneeId ? { assigneeId } : {}),
+        ...(notes ? { notes } : {}),
+      },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
+  revalidatePath('/brand');
+  redirect(`/brand/${created.id}`);
+}
+
+export async function updateBrand(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const { name, picName, phone, email, instagram, website, category, city, source, assigneeId, notes } =
+    readBrandForm(form);
+  if (!name) return { ok: false, error: t.brand.failed };
+
+  try {
+    await api(`/v1/brands/${id}`, {
+      method: 'PATCH',
+      body: {
+        name,
+        ...(picName ? { picName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(instagram ? { instagram } : {}),
+        ...(website ? { website } : {}),
+        ...(category ? { category } : {}),
+        ...(city ? { city } : {}),
+        ...(source ? { source } : {}),
+        ...(assigneeId ? { assigneeId } : {}),
+        ...(notes ? { notes } : {}),
+      },
+    });
+    revalidatePath('/brand');
+    revalidatePath(`/brand/${id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
+}
+
+export async function setBrandStatus(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('id') ?? '');
+  const status = String(form.get('status') ?? '');
+  await api(`/v1/brands/${id}/status`, { method: 'POST', body: { status } });
+  revalidatePath('/brand');
+  revalidatePath(`/brand/${id}`);
+}
+
+export async function deleteBrand(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('id') ?? '');
+  await api(`/v1/brands/${id}`, { method: 'DELETE' });
+  revalidatePath('/brand');
+  redirect('/brand');
 }
 
 export async function moveDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -394,6 +564,7 @@ export async function createWaBridgeSession(
   try {
     await api('/v1/wa-bridge/channels', { method: 'POST', body: { displayName } });
     revalidatePath('/chat-wa', 'layout');
+    revalidatePath('/pengaturan/channel-wa');
     revalidatePath('/', 'layout');
     return { ok: true };
   } catch (err) {
@@ -406,6 +577,7 @@ export async function disconnectWaBridgeSession(form: FormData): Promise<void> {
   const channelId = String(form.get('channelId') ?? '');
   await api(`/v1/wa-bridge/channels/${channelId}/disconnect`, { method: 'POST' });
   revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/pengaturan/channel-wa');
   revalidatePath('/', 'layout');
 }
 
@@ -415,6 +587,7 @@ export async function deleteWaBridgeSession(_prev: ActionResult | null, form: Fo
   try {
     await api(`/v1/wa-bridge/channels/${channelId}`, { method: 'DELETE' });
     revalidatePath('/chat-wa', 'layout');
+    revalidatePath('/pengaturan/channel-wa');
     revalidatePath('/', 'layout');
     return { ok: true };
   } catch (err) {
@@ -427,6 +600,7 @@ export async function reconnectWaBridgeSession(form: FormData): Promise<void> {
   const channelId = String(form.get('channelId') ?? '');
   await api(`/v1/wa-bridge/channels/${channelId}/reconnect`, { method: 'POST' });
   revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/pengaturan/channel-wa');
   revalidatePath('/', 'layout');
 }
 

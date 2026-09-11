@@ -10,7 +10,9 @@
  */
 import {
   connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
-  queueOutboundMessage, createDeal, tenantKeys, openField,
+  queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
+  upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
+  createTask, createBrand, setBrandStatus,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import { buildApp } from '../apps/api/src/app.ts';
@@ -164,6 +166,98 @@ await withTenant(db, tenantId, async (tx) => {
   await tx.query(
     `update deals set rots_at = now() - interval '2 days' where tenant_id = $1 and title like 'Paket reseller%'`,
     [tenantId]);
+
+  // Notes and a target close date on a couple of deals, so Deal Detail opens
+  // with real content instead of two empty fields.
+  const dealRows = await tx.query<{ id: string; title: string }>(
+    `select id, title from deals where tenant_id = $1`, [tenantId]);
+  const dealByTitle = (title: string) => dealRows.find((d) => d.title === title)?.id;
+
+  const poKorporat = dealByTitle('PO korporat Q1');
+  if (poKorporat) {
+    await updateDeal({ tx, tenantId, kek }, {
+      dealId: poKorporat,
+      notes: 'Sudah kirim katalog dan harga grosir. Menunggu PO resmi dari bagian pembelian.',
+      expectedCloseOn: new Date(now + 5 * 24 * hour).toISOString().slice(0, 10),
+    });
+  }
+  const restock = dealByTitle('Restock 24 pcs');
+  if (restock) {
+    await updateDeal({ tx, tenantId, kek }, {
+      dealId: restock,
+      notes: 'Nego harga grosir untuk 24 pcs, nunggu konfirmasi ukuran per warna.',
+      expectedCloseOn: new Date(now + 2 * 24 * hour).toISOString().slice(0, 10),
+    });
+  }
+});
+
+// A handful of follow-ups spanning overdue, due today and upcoming, so Tugas
+// opens with a real spread across its table, kanban and calendar views.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const contacts = await tx.query<{ contact_id: string; display_name: string }>(
+    `select ct.id as contact_id, ct.display_name from contacts ct where ct.tenant_id = $1`, [tenantId]);
+  const byName = (name: string) => contacts.find((c) => c.display_name === name)?.contact_id;
+
+  const tasks: [string, string, number, string][] = [
+    ['Bu Sari',       'Follow-up harga grosir batik parang', -1 * 24 * hour, agents[0].id],
+    ['Pak Hendra',    'Kirim invoice PO korporat Q1',          2 * hour,        agents[0].id],
+    ['Toko Melati',   'Konfirmasi ukuran per warna restock',   1 * 24 * hour,  agents[1].id],
+    ['Bu Ratna',      'Cek kepuasan setelah pesanan diterima', 3 * 24 * hour,  agents[0].id],
+  ];
+  for (const [contactName, title, offset, assigneeId] of tasks) {
+    const contactId = byName(contactName);
+    if (!contactId) continue;
+    await createTask(ctx, {
+      contactId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id,
+    });
+  }
+});
+
+// A brand outreach list spanning every stage of the funnel and both sources
+// — mostly scraped, a couple added by hand — so the Brand page's counters
+// and status filters aren't staring at zero.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+
+  const brands: {
+    name: string; picName?: string; phone?: string; email?: string; instagram?: string; website?: string;
+    category: string; city: string; source: 'scrape' | 'manual' | 'referral' | 'other';
+    status: 'not_contacted' | 'contacted' | 'replied' | 'interested' | 'rejected';
+    assignee?: 0 | 1; notes?: string;
+  }[] = [
+    { name: 'Batik Nusantara Store', picName: 'Ayu Lestari', instagram: '@batiknusantara',
+      category: 'Fashion', city: 'Bandung', source: 'scrape', status: 'not_contacted' },
+    { name: 'Kopi Kenangan Partner', picName: 'Reza Pratama', phone: '081234500011',
+      instagram: '@kopikenanganptr', category: 'F&B', city: 'Jakarta',
+      source: 'scrape', status: 'contacted', assignee: 0 },
+    { name: 'Skinlogy Beauty', picName: 'Nadia Putri', email: 'nadia@skinlogy.id', instagram: '@skinlogy.id',
+      category: 'Skincare', city: 'Surabaya', source: 'manual', status: 'replied', assignee: 1,
+      notes: 'Tertarik program reseller, minta katalog harga grosir.' },
+    { name: 'Rumah Tenun Ikat', picName: 'Made Wirawan', phone: '081234500022',
+      website: 'https://rumahtenunikat.id', category: 'Fashion', city: 'Yogyakarta',
+      source: 'referral', status: 'interested', assignee: 0,
+      notes: 'Siap kolaborasi, tinggal nego harga dan minimum order.' },
+    { name: 'Sepatu Lokal Jaya', picName: 'Fajar Hidayat', instagram: '@sepatulokaljaya',
+      category: 'Footwear', city: 'Jakarta', source: 'scrape', status: 'rejected', assignee: 1,
+      notes: 'Sudah punya distributor tetap, belum butuh partner baru.' },
+    { name: 'Kerajinan Rotan Asri', picName: 'Dewi Anggraini',
+      category: 'Kerajinan', city: 'Cirebon', source: 'manual', status: 'not_contacted' },
+    { name: 'Teh Herbal Sehat', picName: 'Bagus Setiawan', phone: '081234500033', instagram: '@tehherbalsehat',
+      category: 'F&B', city: 'Semarang', source: 'scrape', status: 'contacted', assignee: 0 },
+  ];
+
+  for (const b of brands) {
+    const created = await createBrand(ctx, {
+      name: b.name, picName: b.picName ?? null, phone: b.phone ?? null, email: b.email ?? null,
+      instagram: b.instagram ?? null, website: b.website ?? null, category: b.category, city: b.city,
+      source: b.source, assigneeId: b.assignee !== undefined ? agents[b.assignee].id : null,
+      notes: b.notes ?? null, createdBy: agents[0].id,
+    });
+    if (b.status !== 'not_contacted') {
+      await setBrandStatus(ctx, { brandId: created.id, status: b.status, actorId: agents[0].id });
+    }
+  }
 });
 
 // The same choice the worker makes: a real model when a key is configured,
@@ -189,6 +283,63 @@ const unclaimed = await withTenant(db, tenantId, (tx) =>
 for (const conversation of unclaimed) {
   await runAutopilot({ tenantId, conversationId: conversation.id }).catch(() => undefined);
 }
+
+// Orders across the funnel — one still being built, one waiting on payment,
+// one paid, one shipped, one that fell through — so Pesanan is not empty.
+//
+// Deliberately seeded after the Autopilot draft pass above: Autopilot's own
+// `susun_pesanan` tool also calls `upsertDraftOrder` against a conversation's
+// draft basket, and Bu Sari's inbound message reads like an order request —
+// running this block first meant her seeded draft got silently overwritten
+// by whatever Autopilot parsed out of that message.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const contactConvs = await tx.query<{ contact_id: string; conversation_id: string; display_name: string }>(
+    `select c.contact_id, c.id as conversation_id, ct.display_name
+       from conversations c join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
+      where c.tenant_id = $1`, [tenantId]);
+  const byName = (name: string) => contactConvs.find((c) => c.display_name === name);
+
+  const seeds: {
+    contact: string; sku: string; qty: number; area: string;
+    outcome: 'draft' | 'awaiting_payment' | 'paid' | 'fulfilled' | 'cancelled';
+  }[] = [
+    { contact: 'Bu Sari',        sku: 'BTK-PRG-M', qty: 3,  area: 'Jakarta', outcome: 'draft' },
+    { contact: 'Toko Melati',    sku: 'BTK-PRG-M', qty: 5,  area: 'Bekasi',  outcome: 'awaiting_payment' },
+    { contact: 'Pak Hendra',     sku: 'KML-01',     qty: 10, area: 'Jakarta', outcome: 'paid' },
+    { contact: 'Bu Ratna',       sku: 'DRS-RBY',    qty: 6,  area: 'Bandung', outcome: 'fulfilled' },
+    { contact: 'Dinda Wardani',  sku: 'DRS-RBY',    qty: 1,  area: 'Jakarta', outcome: 'cancelled' },
+  ];
+
+  for (const seed of seeds) {
+    const contact = byName(seed.contact);
+    if (!contact) continue;
+
+    const draft = await upsertDraftOrder(ctx, {
+      conversationId: contact.conversation_id, contactId: contact.contact_id,
+      lines: [{ sku: seed.sku, qty: seed.qty }],
+    });
+    if (seed.outcome === 'draft') continue;
+
+    await setDeliveryDetails(ctx, {
+      orderId: draft.id, recipient: contact.display_name,
+      address: 'Jl. Contoh Raya No. 1', area: seed.area,
+    });
+    const confirmed = await confirmOrder(ctx, { orderId: draft.id, publicBaseUrl: e.PUBLIC_BASE_URL });
+    if (!confirmed.ok) continue;
+
+    if (seed.outcome === 'cancelled') {
+      await releaseOrder(ctx, { orderId: confirmed.order.id, reason: 'Pelanggan membatalkan pesanan' });
+      continue;
+    }
+    if (seed.outcome === 'paid' || seed.outcome === 'fulfilled') {
+      await markOrderPaid(ctx, { orderId: confirmed.order.id, actorId: agents[0].id });
+    }
+    if (seed.outcome === 'fulfilled') {
+      await markOrderFulfilled(ctx, { orderId: confirmed.order.id, actorId: agents[0].id });
+    }
+  }
+});
 
 // A closed period with an invoice already issued, so the billing page shows the
 // real thing rather than an empty table.

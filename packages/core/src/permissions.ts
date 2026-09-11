@@ -10,6 +10,7 @@ export const PERMISSIONS = [
   'conversation:read', 'conversation:write', 'conversation:assign', 'conversation:close',
   'contact:read', 'contact:write', 'contact:export',
   'deal:read', 'deal:write',
+  'brand:read', 'brand:write',
   'broadcast:send', 'autopilot:manage', 'channel:manage',
   'member:manage', 'apikey:manage', 'billing:manage',
   'audit:read', 'dsr:manage', 'tenant:delete',
@@ -18,7 +19,7 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 const AGENT: Permission[] = [
   'conversation:read', 'conversation:write', 'conversation:close',
-  'contact:read', 'contact:write', 'deal:read', 'deal:write',
+  'contact:read', 'contact:write', 'deal:read', 'deal:write', 'brand:read', 'brand:write',
 ];
 
 const SUPERVISOR: Permission[] = [
@@ -34,7 +35,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   admin: ADMIN,
   supervisor: SUPERVISOR,
   agent: AGENT,
-  viewer: ['conversation:read', 'contact:read', 'deal:read'],
+  viewer: ['conversation:read', 'contact:read', 'deal:read', 'brand:read'],
 };
 
 export function can(role: Role, permission: Permission): boolean {
