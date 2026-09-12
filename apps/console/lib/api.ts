@@ -112,7 +112,7 @@ export interface Member {
 export interface Deal {
   id: string; title: string; amount_idr: string | number; status: string;
   stage_id: string; stage: string; position: number; rots_at: string | null;
-  owner_id: string | null; contact_id: string; contact_name: string | null;
+  owner_id: string | null; closed_at: string | null; contact_id: string; contact_name: string | null;
 }
 
 export interface Stage {
@@ -184,6 +184,10 @@ export interface WaBridgeChannel {
   qrExpiresAt: string | null;
   lastSeenAt: string | null;
   lastError: string | null;
+  maxPerDay: number;
+  chat: {
+    meeting: number; minat: number; balas: number; belum: number; tolak: number; bot: number;
+  };
 }
 
 export interface Contact {
@@ -203,6 +207,25 @@ export interface ContactDetail {
   tags: string[];
   address: string | null;
   notes: string | null;
+}
+
+export interface ContactOrder {
+  id: string;
+  code: string;
+  status: 'draft' | 'awaiting_payment' | 'paid' | 'cancelled' | 'fulfilled';
+  totalIdr: number;
+  shipArea: string | null;
+  createdAt: string;
+  lines: { title: string; qty: number }[];
+}
+
+export interface ContactTimelineEvent {
+  id: string;
+  action: string;
+  meta: Record<string, unknown>;
+  actorType: string;
+  actorId: string | null;
+  occurredAt: string;
 }
 
 export interface Task {
@@ -240,6 +263,47 @@ export interface Brand {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MessageTemplate {
+  id: string;
+  name: string;
+  category: 'marketing' | 'utility' | 'authentication';
+  language: string;
+  body: string;
+  status: 'draft' | 'pending' | 'approved' | 'rejected';
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QuickReply {
+  id: string;
+  title: string;
+  body: string;
+  shortcut: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SalesTarget {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  ownerId: string | null;
+  amountIdr: number;
+  notes: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContactPurchaseSummary {
+  contactId: string;
+  count: number;
+  totalIdr: number;
 }
 
 export interface Order {

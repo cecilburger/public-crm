@@ -430,7 +430,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
     return ctx.asTenant(req, (tx, actor) =>
       tx.query(
         `select d.id, d.title, d.amount_micros / 1000000 as amount_idr, d.status,
-                d.stage_id, s.name as stage, s.position, d.rots_at, d.owner_id,
+                d.stage_id, s.name as stage, s.position, d.rots_at, d.owner_id, d.closed_at,
                 d.contact_id, ct.display_name as contact_name
            from deals d
            join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id

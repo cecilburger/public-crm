@@ -8,7 +8,8 @@ const TABS = [
   { href: '/pengaturan', label: t.settings.tabBill },
   { href: '/pengaturan/autopilot', label: t.autopilot.title },
   { href: '/pengaturan/katalog', label: t.catalogue.title },
-  { href: '/pengaturan/channel-wa', label: t.waChannel.title },
+  { href: '/pengaturan/template-pesan', label: t.messageTemplate.title },
+  { href: '/pengaturan/balasan-cepat', label: t.quickReply.title },
   { href: '/pengaturan/keamanan', label: t.security.title },
   { href: '/pengaturan/riwayat', label: t.settings.tabHistory },
 ];

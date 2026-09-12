@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { Contact } from '@/lib/api';
-import { ago, initials } from '@/lib/format';
+import type { Contact, ContactPurchaseSummary } from '@/lib/api';
+import { ago, initials, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { CustomerRowActions } from '@/components/CustomerRowActions';
 
@@ -39,8 +39,11 @@ function useSingleOpenDropdown() {
 }
 
 export function CustomerTable({
-  contacts, conversationByContact = {},
-}: { contacts: Contact[]; conversationByContact?: Record<string, string> }) {
+  contacts, conversationByContact = {}, purchasesByContact = {},
+}: {
+  contacts: Contact[]; conversationByContact?: Record<string, string>;
+  purchasesByContact?: Record<string, ContactPurchaseSummary>;
+}) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
@@ -113,6 +116,11 @@ export function CustomerTable({
         </div>
         <div className="kanban-card-bottom">
           <span className="dim" style={{ fontSize: 11 }}>{ago(c.lastSeenAt)}</span>
+          {purchasesByContact[c.id] ? (
+            <span className="dim tnum" style={{ fontSize: 11, marginLeft: 8 }}>
+              {purchasesByContact[c.id].count}x · {rp(purchasesByContact[c.id].totalIdr)}
+            </span>
+          ) : null}
           <span className="spacer" />
           <button type="button" className="btn ghost sm" disabled={!conversationId}
                   title={conversationId ? undefined : t.customers.noChat}
@@ -143,6 +151,8 @@ export function CustomerTable({
             {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
           </span>
         </td>
+        <td className="num">{purchasesByContact[c.id]?.count ?? 0}</td>
+        <td className="num">{rp(purchasesByContact[c.id]?.totalIdr ?? 0)}</td>
         <td className="num">{ago(c.lastSeenAt)}</td>
         <td style={{ textAlign: 'center' }}>
           {conversationId ? (
@@ -188,7 +198,7 @@ export function CustomerTable({
               <summary className="btn ghost sm">
                 {t.customers.filters}{activeTags.length > 0 ? ` (${activeTags.length})` : ''}
               </summary>
-              <div className="dropdown-body column">
+              <div className="dropdown-body vertical">
                 {availableTags.length === 0 ? (
                   <p className="dim" style={{ fontSize: 12.5, padding: '4px 6px' }}>{t.customers.noFilters}</p>
                 ) : availableTags.map((tag) => (
@@ -204,7 +214,7 @@ export function CustomerTable({
               <summary className="btn ghost sm">
                 {t.customers.groupBy}{groupBy !== 'none' ? ' •' : ''}
               </summary>
-              <div className="dropdown-body column">
+              <div className="dropdown-body vertical">
                 <label className="dropdown-check">
                   <input type="radio" name="pelanggan-groupby" checked={groupBy === 'none'}
                          onChange={() => setGroupBy('none')} />
@@ -261,6 +271,8 @@ export function CustomerTable({
                         <th>{t.customers.name}</th>
                         <th>{t.customers.phone}</th>
                         <th>{t.customers.tags}</th>
+                        <th className="num">{t.customers.purchases.count}</th>
+                        <th>{t.customers.purchases.column}</th>
                         <th className="num">{t.customers.lastSeen}</th>
                         <th style={{ textAlign: 'center' }}>{t.customers.chat}</th>
                         <th style={{ textAlign: 'center' }}>{t.customers.actions}</th>

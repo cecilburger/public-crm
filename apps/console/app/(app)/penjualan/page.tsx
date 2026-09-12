@@ -1,7 +1,7 @@
 import { api, type Deal, type Stage } from '@/lib/api';
 import { rp } from '@/lib/format';
 import { t } from '@/lib/copy';
-import { DealCard } from '@/components/DealCard';
+import { SalesBoard } from '@/components/SalesBoard';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,33 +30,7 @@ export default async function SalesPage() {
         <span className="mono dim">{t.sales.autoNote}</span>
       </div>
 
-      {deals.length === 0 ? (
-        <div className="empty" style={{ margin: 'auto' }}>
-          <h2>{t.sales.noneYet}</h2>
-          <p>{t.sales.noneYetHelp}</p>
-        </div>
-      ) : (
-        <div className="board">
-          {stages.map((stage) => {
-            const cards = deals.filter((d) => d.stage_id === stage.id);
-            const value = cards.reduce((s, d) => s + Number(d.amount_idr), 0);
-            return (
-              <section key={stage.id} className={`column ${stage.is_won ? 'won' : ''} ${stage.is_lost ? 'lost' : ''}`}>
-                <header>
-                  <h2>{stage.name}</h2>
-                  <span className="n tnum">{cards.length}</span>
-                </header>
-                <div className="cards">
-                  {value > 0 ? <span className="mono dim" style={{ padding: '0 2px 2px' }}>{rp(value)}</span> : null}
-                  {cards.length === 0
-                    ? <p className="dim" style={{ fontSize: 12, padding: '6px 2px' }}>{t.sales.empty}</p>
-                    : cards.map((deal) => <DealCard key={deal.id} deal={deal} stages={stages} />)}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
+      <SalesBoard deals={deals} stages={stages} />
     </>
   );
 }

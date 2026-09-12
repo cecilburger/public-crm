@@ -18,11 +18,24 @@ export const t = {
     tagline: 'Semua chat pelanggan di satu tempat',
   },
 
+  search: {
+    trigger: 'Cari…',
+    shortcut: 'Ctrl+K',
+    placeholder: 'Cari pelanggan, pesanan, tugas, brand, atau deal…',
+    empty: (q: string) => `Tidak ada hasil untuk "${q}".`,
+    hint: 'Belum ada yang diketik.',
+    categoryLabel: {
+      contact: 'Pelanggan', order: 'Pesanan', task: 'Tugas', brand: 'Brand', deal: 'Penjualan',
+    } as Record<string, string>,
+  },
+
   notifications: {
     title: 'Notifikasi',
     empty: 'Tidak ada notifikasi baru.',
     needsReply: 'menunggu balasan',
-    seeAll: 'Lihat semua obrolan',
+    taskOverdue: 'lewat jatuh tempo',
+    taskDueToday: 'jatuh tempo hari ini',
+    seeAll: 'Lihat semua',
   },
 
   nav: {
@@ -37,7 +50,9 @@ export const t = {
     monitoring: 'Monitoring',
     waStatus: 'Status Nomor',
     agentPerformance: 'Performa Agen',
+    channelWa: 'Channel WhatsApp',
     sales: 'Penjualan',
+    target: 'Target',
     team: 'Tim',
     settings: 'Pengaturan',
     signOut: 'Keluar',
@@ -117,6 +132,8 @@ export const t = {
     emptyMessage: 'Tulis pesannya dulu',
     sendFailed: 'Pesan gagal dikirim',
     freeform: 'Masih dalam 24 jam — boleh balas bebas',
+    quickReplyButton: 'Balasan Cepat',
+    quickReplyEmpty: 'Belum ada balasan cepat. Tambahkan di Pengaturan.',
 
     sender: {
       contact: 'Pelanggan',
@@ -326,6 +343,38 @@ export const t = {
     autoNote: 'Tahap pindah sendiri kalau pelanggan sudah bayar atau membuka penawaran.',
     noneYet: 'Belum ada penjualan',
     noneYetHelp: 'Penjualan muncul di sini setelah dibuat dari sebuah obrolan.',
+    table: {
+      title: 'Judul',
+      contact: 'Pelanggan',
+      stage: 'Status',
+      amount: 'Nilai',
+      status: 'Kondisi',
+    },
+  },
+
+  target: {
+    title: 'Target Penjualan',
+    subtitle: 'Pasang target per periode, untuk seluruh tim atau per agen — pencapaiannya dihitung otomatis dari penjualan yang berhasil (won), jadi selalu sesuai data terbaru.',
+    wholeTeam: 'Seluruh Tim',
+    achieved: 'Tercapai',
+    ofTarget: 'dari target',
+    remaining: 'Kurang',
+    statusDone: 'Tercapai',
+    statusBehind: 'Belum tercapai',
+    period: 'Periode',
+    periodStart: 'Mulai',
+    periodEnd: 'Sampai',
+    owner: 'Untuk',
+    amount: 'Nilai Target',
+    notes: 'Catatan',
+    notesPlaceholder: 'Opsional',
+    add: 'Tambah Target',
+    save: 'Simpan',
+    saving: 'Menyimpan…',
+    remove: 'Hapus',
+    empty: 'Belum ada target. Tambahkan target penjualan pertama di bawah.',
+    failed: 'Gagal menyimpan target',
+    manage: 'Kelola Target',
   },
 
   dealDetail: {
@@ -456,6 +505,9 @@ export const t = {
     'message.sent': 'Kirim pesan',
     'conversation.assigned': 'Obrolan dibagi ke orang',
     'conversation.resolved': 'Obrolan ditandai selesai',
+    'conversation.started': 'Percakapan dimulai',
+    'contact.created': 'Pelanggan ditambahkan',
+    'contact.updated': 'Data pelanggan diperbarui',
     'deal.created': 'Penjualan dibuat',
     'deal.moved': 'Penjualan pindah tahap',
     'deal.updated': 'Detail deal diperbarui',
@@ -543,6 +595,59 @@ export const t = {
     actions: 'Aksi',
     viewQr: 'Lihat QR',
     noChannels: 'Belum ada nomor WhatsApp yang tersambung. Klik "Sambungkan" untuk menambahkan.',
+    maxPerDay: 'Maks/Hari',
+    maxPerDaySave: 'Simpan',
+    maxPerDaySaved: 'Tersimpan.',
+    maxPerDayFailed: 'Gagal menyimpan batas harian',
+    chat: 'Chat',
+    chatLabel: {
+      meeting: 'Meeting', minat: 'Minat', balas: 'Balas', belum: 'Belum', tolak: 'Tolak', bot: 'Bot',
+    } as Record<string, string>,
+    totalChats: 'Jumlah Chat',
+  },
+
+  messageTemplate: {
+    title: 'Template Pesan WhatsApp',
+    subtitle: 'Daftar template yang sudah disetujui Meta, supaya tim tahu nama dan format yang boleh dipakai untuk memulai chat di luar jendela 24 jam.',
+    hint: 'Pakai {{1}}, {{2}}, dst untuk variabel — sama seperti format template resmi WhatsApp.',
+    name: 'Nama Template',
+    namePlaceholder: 'konfirmasi_pesanan',
+    category: 'Kategori',
+    categoryLabel: {
+      marketing: 'Marketing', utility: 'Utility', authentication: 'Autentikasi',
+    } as Record<string, string>,
+    language: 'Bahasa',
+    body: 'Isi Template',
+    bodyPlaceholder: 'Halo {{1}}, pesanan Anda dengan kode {{2}} sudah kami proses.',
+    status: 'Status Persetujuan',
+    statusLabel: {
+      draft: 'Draf', pending: 'Menunggu Review', approved: 'Disetujui', rejected: 'Ditolak',
+    } as Record<string, string>,
+    notes: 'Catatan',
+    notesPlaceholder: 'Nomor pengajuan, alasan ditolak, dll (opsional)',
+    add: 'Tambah Template',
+    save: 'Simpan',
+    saving: 'Menyimpan…',
+    remove: 'Hapus',
+    empty: 'Belum ada template. Tambahkan template yang sudah disetujui Meta di sini.',
+    failed: 'Gagal menyimpan template',
+  },
+
+  quickReply: {
+    title: 'Balasan Cepat',
+    subtitle: 'Kalimat singkat yang sering dipakai CS — tinggal klik untuk ditempel ke kotak chat. Beda dengan Template Pesan: ini bebas diedit siapa saja dan hanya bisa dipakai selama masih dalam jendela 24 jam.',
+    name: 'Judul',
+    namePlaceholder: 'Tanya ukuran',
+    body: 'Isi Pesan',
+    bodyPlaceholder: 'Untuk ukuran, kami ada S, M, L, XL kak. Mau yang mana?',
+    shortcut: 'Kode (opsional)',
+    shortcutPlaceholder: 'ukuran',
+    add: 'Tambah Balasan',
+    save: 'Simpan',
+    saving: 'Menyimpan…',
+    remove: 'Hapus',
+    empty: 'Belum ada balasan cepat. Tambahkan yang sering dipakai tim di sini.',
+    failed: 'Gagal menyimpan balasan cepat',
   },
 
   waStatus: {
@@ -630,6 +735,12 @@ export const t = {
     tableWhen: 'Ditambahkan',
   },
 
+  timeline: {
+    title: 'Riwayat Aktivitas',
+    empty: 'Belum ada aktivitas tercatat untuk pelanggan ini.',
+    openChat: 'Buka Obrolan',
+  },
+
   customers: {
     title: 'Pelanggan',
     subtitle: 'Orang-orang yang sudah ditandai sebagai customer, dari chat maupun ditambah manual.',
@@ -673,6 +784,13 @@ export const t = {
     saved: 'Tersimpan',
     failed: 'Gagal menyimpan data pelanggan',
     notFound: 'Pelanggan ini tidak ditemukan — mungkin sudah dihapus.',
+    purchases: {
+      title: 'Riwayat Pembelian',
+      column: 'Total Pembelian',
+      count: 'Jumlah',
+      empty: 'Belum pernah belanja.',
+      itemsFallback: '—',
+    },
   },
 
   brand: {

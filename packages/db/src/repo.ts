@@ -172,6 +172,66 @@ export async function softDeleteContact(ctx: Ctx, args: { contactId: string }): 
   return !!rows[0];
 }
 
+export interface ContactTimelineEvent {
+  id: string; action: string; meta: Record<string, unknown>;
+  actorType: string; actorId: string | null; occurredAt: Date;
+}
+
+const TRACKED_TIMELINE_ACTIONS = [
+  'contact.created', 'contact.updated',
+  'deal.created', 'deal.moved', 'deal.updated',
+  'order.confirmed', 'order.paid_manually', 'order.fulfilled', 'order.released',
+  'task.created', 'task.completed', 'task.cancelled',
+];
+
+/**
+ * Everything that happened with this customer, gathered from where it
+ * already lives — the hash-chained audit log for deals/orders/tasks/contact
+ * changes, plus one synthetic entry per conversation. No second copy of the
+ * data, no new write path: this only reads what create/update/status-change
+ * already record.
+ */
+export async function contactTimeline(ctx: Ctx, contactId: string, limit = 100): Promise<ContactTimelineEvent[]> {
+  const [deals, orders, tasks, conversations] = await Promise.all([
+    ctx.tx.query<{ id: string }>('select id from deals where tenant_id = $1 and contact_id = $2', [ctx.tenantId, contactId]),
+    ctx.tx.query<{ id: string }>('select id from orders where tenant_id = $1 and contact_id = $2', [ctx.tenantId, contactId]),
+    ctx.tx.query<{ id: string }>('select id from tasks where tenant_id = $1 and contact_id = $2', [ctx.tenantId, contactId]),
+    ctx.tx.query<{ id: string; channel_kind: string; created_at: Date }>(
+      `select c.id, ch.kind as channel_kind, c.created_at
+         from conversations c join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+        where c.tenant_id = $1 and c.contact_id = $2`,
+      [ctx.tenantId, contactId],
+    ),
+  ]);
+
+  const resourceIds = [contactId, ...deals.map((d) => d.id), ...orders.map((o) => o.id), ...tasks.map((tk) => tk.id)];
+  const auditRows = await ctx.tx.query<{
+    id: number; actor_type: string; actor_id: string | null; action: string;
+    meta: Record<string, unknown>; created_at: Date;
+  }>(
+    `select id, actor_type, actor_id, action, meta, created_at
+       from audit_events
+      where tenant_id = $1 and resource_id = any($2::text[]) and action = any($3::text[])
+      order by created_at desc limit $4`,
+    [ctx.tenantId, resourceIds, TRACKED_TIMELINE_ACTIONS, limit],
+  );
+
+  const events: ContactTimelineEvent[] = auditRows.map((r) => ({
+    id: `audit-${r.id}`, action: r.action, meta: r.meta,
+    actorType: r.actor_type, actorId: r.actor_id, occurredAt: r.created_at,
+  }));
+  for (const c of conversations) {
+    events.push({
+      id: `conv-${c.id}`, action: 'conversation.started',
+      meta: { channel: c.channel_kind, conversationId: c.id },
+      actorType: 'system', actorId: null, occurredAt: c.created_at,
+    });
+  }
+
+  events.sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return events.slice(0, limit);
+}
+
 /* ----------------------------------------------------------- conversations */
 
 /** Reopens the contact's live thread on this channel, or starts one. */
@@ -446,15 +506,35 @@ export async function listWaBridgeChannels(ctx: Ctx) {
     id: string; display_name: string; status: string; phone_e164: string | null;
     session_status: string; qr_data: string | null; qr_expires_at: Date | null;
     last_seen_at: Date | null; last_error: string | null;
+    max_per_day: number; chat_meeting: number; chat_minat: number; chat_balas: number;
+    chat_belum: number; chat_tolak: number; chat_bot: number;
   }>(
     `select ch.id, ch.display_name, ch.status, ch.phone_e164,
-            s.status as session_status, s.qr_data, s.qr_expires_at, s.last_seen_at, s.last_error
+            s.status as session_status, s.qr_data, s.qr_expires_at, s.last_seen_at, s.last_error,
+            s.max_per_day, s.chat_meeting, s.chat_minat, s.chat_balas, s.chat_belum, s.chat_tolak, s.chat_bot
        from channels ch
        join wa_bridge_sessions s on s.channel_id = ch.id and s.tenant_id = ch.tenant_id
       where ch.tenant_id = $1 and ch.kind = 'whatsapp_web'
       order by ch.created_at desc`,
     [ctx.tenantId],
   );
+}
+
+/**
+ * The only field on this row an agent edits by hand — everything else about
+ * a session comes from the bridge itself. A plain cap, not enforced here;
+ * `apps/wa-bridge` is the one place that would ever need to read it back.
+ */
+export async function setWaBridgeMaxPerDay(
+  ctx: Ctx, args: { channelId: string; maxPerDay: number },
+): Promise<boolean> {
+  const rows = await ctx.tx.query<{ channel_id: string }>(
+    `update wa_bridge_sessions set max_per_day = $3, updated_at = now()
+      where tenant_id = $1 and channel_id = $2
+      returning channel_id`,
+    [ctx.tenantId, args.channelId, args.maxPerDay],
+  );
+  return !!rows[0];
 }
 
 export async function disableWaBridgeChannel(ctx: Ctx, args: { channelId: string }): Promise<boolean> {

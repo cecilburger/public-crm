@@ -5,9 +5,11 @@ import { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { initials } from '@/lib/format';
 import { t } from '@/lib/copy';
-import type { Me, WaBridgeChannel, ConversationSummary } from '@/lib/api';
+import type { Me, WaBridgeChannel } from '@/lib/api';
+import type { NotificationItem } from '@/lib/notifications';
 import { WaBridgeRailList } from '@/components/WaBridgeRailList';
 import { NotificationBell } from '@/components/NotificationBell';
+import { GlobalSearch } from '@/components/GlobalSearch';
 
 const ICONS = {
   dashboard: <><rect x="3" y="3" width="8" height="10" rx="1.5" /><rect x="13" y="3" width="8" height="6" rx="1.5" /><rect x="13" y="13" width="8" height="8" rx="1.5" /><rect x="3" y="15" width="8" height="6" rx="1.5" /></>,
@@ -22,6 +24,7 @@ const ICONS = {
   monitoring: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
   chevron: <path d="M9 6l6 6-6 6" />,
   sales: <><path d="M4 20V6m16 14V6M4 13h16" /><rect x="7" y="8" width="4" height="3" rx="1" /><rect x="13" y="15" width="4" height="3" rx="1" /></>,
+  target: <><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="0.8" fill="currentColor" /></>,
   team: <><circle cx="9" cy="9" r="3" /><path d="M3 19c0-3 2.7-4.6 6-4.6s6 1.6 6 4.6M16 6.5a3 3 0 0 1 0 5.6M18 19c0-2-.7-3.2-2-4" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" /></>,
 } as const;
@@ -41,21 +44,24 @@ const NAV = [
   { href: '/kontak', label: t.nav.contact, icon: 'contact' as const, badge: false },
   { href: '/brand', label: t.nav.brand, icon: 'brand' as const, badge: false },
   { href: '/penjualan', label: t.nav.sales, icon: 'sales' as const, badge: false },
+  { href: '/target', label: t.nav.target, icon: 'target' as const, badge: false },
   { href: '/tim', label: t.nav.team, icon: 'team' as const, badge: false },
 ];
 
 // A drawer of its own, same idea as Settings — reports an agent checks
-// occasionally, not the three things they do every day. Just one page in it
-// for now, but the group is the point: more monitoring views land here later
-// instead of crowding the main list.
+// occasionally, not the three things they do every day. Channel WhatsApp
+// used to be a Settings tab; it moved here because connecting a number aside,
+// Maks/Hari and the Chat funnel on that page are exactly the kind of thing an
+// agent checks, not configures, most of the time they open it.
 const MONITORING = [
   { href: '/status-nomor', label: t.nav.waStatus },
   { href: '/performa-agen', label: t.nav.agentPerformance },
+  { href: '/channel-wa', label: t.nav.channelWa },
 ];
 
 export function Rail({
   me, needsReply, notifications, waChannels,
-}: { me: Me; needsReply: number; notifications: ConversationSummary[]; waChannels: WaBridgeChannel[] }) {
+}: { me: Me; needsReply: number; notifications: NotificationItem[]; waChannels: WaBridgeChannel[] }) {
   const pathname = usePathname();
   const router = useRouter();
   const onChatWa = pathname === '/chat-wa' || pathname.startsWith('/chat-wa/');
@@ -89,6 +95,8 @@ export function Rail({
         <span className="mark"><i /></span>{t.app.name}
         <span style={{ marginLeft: 'auto' }}><NotificationBell items={notifications} /></span>
       </div>
+
+      <GlobalSearch />
 
       {NAV.map((n) => (
         <div key={n.href}>

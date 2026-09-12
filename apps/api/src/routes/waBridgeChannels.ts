@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { invalid, notFound } from '@kirana/core';
 import {
   audit, createWaBridgeChannel, listWaBridgeChannels, disableWaBridgeChannel,
-  deleteWaBridgeChannel, reconnectWaBridgeChannel,
+  deleteWaBridgeChannel, reconnectWaBridgeChannel, setWaBridgeMaxPerDay,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
@@ -66,7 +66,34 @@ export function registerWaBridgeChannelRoutes(app: FastifyInstance, ctx: AppCtx)
       qrExpiresAt: r.qr_expires_at,
       lastSeenAt: r.last_seen_at,
       lastError: r.last_error,
+      maxPerDay: r.max_per_day,
+      chat: {
+        meeting: r.chat_meeting, minat: r.chat_minat, balas: r.chat_balas,
+        belum: r.chat_belum, tolak: r.chat_tolak, bot: r.chat_bot,
+      },
     }));
+  });
+
+  app.patch('/v1/wa-bridge/channels/:id/limits', async (req, reply) => {
+    ctx.guard(req, 'channel:manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = z.object({ maxPerDay: z.coerce.number().int().min(0).max(100_000) }).safeParse(req.body);
+    if (!body.success) throw invalid('Maks per hari harus angka 0 atau lebih');
+
+    const updated = await ctx.asTenant(req, async (tx, actor) => {
+      const ok = await setWaBridgeMaxPerDay({ tx, tenantId: actor.tenantId, kek: ctx.kek },
+        { channelId: id, maxPerDay: body.data.maxPerDay });
+      if (ok) {
+        await audit(tx, actor.tenantId, {
+          actorType: 'user', actorId: actor.userId, action: 'channel.limit_updated',
+          resourceType: 'channel', resourceId: id, meta: { maxPerDay: body.data.maxPerDay },
+        });
+      }
+      return ok;
+    });
+    if (!updated) throw notFound('Channel');
+
+    return reply.send({ ok: true });
   });
 
   app.post('/v1/wa-bridge/channels/:id/disconnect', async (req) => {
