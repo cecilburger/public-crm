@@ -177,9 +177,8 @@ export async function createCustomer(_prev: ActionResult | null, form: FormData)
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const { displayName, phone, email, tags, address, notes } = readCustomerForm(form);
 
-  let created: { id: string };
   try {
-    created = await api<{ id: string }>('/v1/contacts', {
+    await api('/v1/contacts', {
       method: 'POST',
       body: {
         ...(displayName ? { displayName } : {}),
@@ -194,7 +193,7 @@ export async function createCustomer(_prev: ActionResult | null, form: FormData)
     return { ok: false, error: err instanceof ApiError ? err.message : t.customers.failed };
   }
   revalidatePath('/pelanggan');
-  redirect(`/pelanggan/${created.id}`);
+  redirect('/pelanggan');
 }
 
 export async function updateCustomer(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -552,6 +551,140 @@ export async function removeShippingRate(
   }
 }
 
+/* ----------------------------------------------------------- template pesan */
+
+/** One action for both adding and editing — the presence of an id decides. */
+export async function saveMessageTemplate(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+
+  const id = String(form.get('id') ?? '');
+  const payload = {
+    name: String(form.get('name') ?? '').trim(),
+    category: String(form.get('category') ?? 'utility'),
+    language: String(form.get('language') ?? '').trim() || undefined,
+    body: String(form.get('body') ?? '').trim(),
+    status: String(form.get('status') ?? 'draft'),
+    notes: String(form.get('notes') ?? '').trim() || undefined,
+  };
+  if (!payload.name || !payload.body) return { ok: false, error: t.messageTemplate.failed };
+
+  try {
+    if (id) {
+      await api(`/v1/message-templates/${id}`, { method: 'PATCH', body: payload });
+    } else {
+      await api('/v1/message-templates', { method: 'POST', body: payload });
+    }
+    revalidatePath('/pengaturan/template-pesan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.messageTemplate.failed };
+  }
+}
+
+export async function removeMessageTemplate(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api(`/v1/message-templates/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
+    revalidatePath('/pengaturan/template-pesan');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.messageTemplate.failed };
+  }
+}
+
+/* ------------------------------------------------------------ balasan cepat */
+
+/** One action for both adding and editing — the presence of an id decides. */
+export async function saveQuickReply(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+
+  const id = String(form.get('id') ?? '');
+  const payload = {
+    title: String(form.get('title') ?? '').trim(),
+    body: String(form.get('body') ?? '').trim(),
+    shortcut: String(form.get('shortcut') ?? '').trim() || undefined,
+  };
+  if (!payload.title || !payload.body) return { ok: false, error: t.quickReply.failed };
+
+  try {
+    if (id) {
+      await api(`/v1/quick-replies/${id}`, { method: 'PATCH', body: payload });
+    } else {
+      await api('/v1/quick-replies', { method: 'POST', body: payload });
+    }
+    revalidatePath('/pengaturan/balasan-cepat');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.quickReply.failed };
+  }
+}
+
+export async function removeQuickReply(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api(`/v1/quick-replies/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
+    revalidatePath('/pengaturan/balasan-cepat');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.quickReply.failed };
+  }
+}
+
+/* -------------------------------------------------------------------- target */
+
+/** One action for both adding and editing — the presence of an id decides. */
+export async function saveSalesTarget(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+
+  const id = String(form.get('id') ?? '');
+  const ownerId = String(form.get('ownerId') ?? '').trim();
+  const payload = {
+    periodStart: String(form.get('periodStart') ?? '').trim(),
+    periodEnd: String(form.get('periodEnd') ?? '').trim(),
+    ownerId: ownerId || undefined,
+    amountIdr: Number(form.get('amountIdr') ?? 0),
+    notes: String(form.get('notes') ?? '').trim() || undefined,
+  };
+  if (!payload.periodStart || !payload.periodEnd || !payload.amountIdr) {
+    return { ok: false, error: t.target.failed };
+  }
+
+  try {
+    if (id) {
+      await api(`/v1/sales-targets/${id}`, { method: 'PATCH', body: payload });
+    } else {
+      await api('/v1/sales-targets', { method: 'POST', body: payload });
+    }
+    revalidatePath('/target');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.target.failed };
+  }
+}
+
+export async function removeSalesTarget(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api(`/v1/sales-targets/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
+    revalidatePath('/target');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.target.failed };
+  }
+}
+
 /* ------------------------------------------------------------- chat wa */
 
 export async function createWaBridgeSession(
@@ -564,7 +697,7 @@ export async function createWaBridgeSession(
   try {
     await api('/v1/wa-bridge/channels', { method: 'POST', body: { displayName } });
     revalidatePath('/chat-wa', 'layout');
-    revalidatePath('/pengaturan/channel-wa');
+    revalidatePath('/channel-wa');
     revalidatePath('/', 'layout');
     return { ok: true };
   } catch (err) {
@@ -577,7 +710,7 @@ export async function disconnectWaBridgeSession(form: FormData): Promise<void> {
   const channelId = String(form.get('channelId') ?? '');
   await api(`/v1/wa-bridge/channels/${channelId}/disconnect`, { method: 'POST' });
   revalidatePath('/chat-wa', 'layout');
-  revalidatePath('/pengaturan/channel-wa');
+  revalidatePath('/channel-wa');
   revalidatePath('/', 'layout');
 }
 
@@ -587,7 +720,7 @@ export async function deleteWaBridgeSession(_prev: ActionResult | null, form: Fo
   try {
     await api(`/v1/wa-bridge/channels/${channelId}`, { method: 'DELETE' });
     revalidatePath('/chat-wa', 'layout');
-    revalidatePath('/pengaturan/channel-wa');
+    revalidatePath('/channel-wa');
     revalidatePath('/', 'layout');
     return { ok: true };
   } catch (err) {
@@ -600,8 +733,27 @@ export async function reconnectWaBridgeSession(form: FormData): Promise<void> {
   const channelId = String(form.get('channelId') ?? '');
   await api(`/v1/wa-bridge/channels/${channelId}/reconnect`, { method: 'POST' });
   revalidatePath('/chat-wa', 'layout');
-  revalidatePath('/pengaturan/channel-wa');
+  revalidatePath('/channel-wa');
   revalidatePath('/', 'layout');
+}
+
+export async function saveWaBridgeMaxPerDay(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const channelId = String(form.get('channelId') ?? '');
+  const maxPerDay = Number(form.get('maxPerDay') ?? NaN);
+  if (!channelId || !Number.isFinite(maxPerDay) || maxPerDay < 0) {
+    return { ok: false, error: t.waChannel.maxPerDayFailed };
+  }
+
+  try {
+    await api(`/v1/wa-bridge/channels/${channelId}/limits`, { method: 'PATCH', body: { maxPerDay } });
+    revalidatePath('/channel-wa');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.waChannel.maxPerDayFailed };
+  }
 }
 
 export async function markInvoicePaidAction(

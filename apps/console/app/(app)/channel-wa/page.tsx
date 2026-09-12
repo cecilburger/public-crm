@@ -1,6 +1,5 @@
 import { api, type WaBridgeChannel } from '@/lib/api';
 import { t } from '@/lib/copy';
-import { SettingsTabs } from '@/components/SettingsTabs';
 import { WaBridgeConnectButton } from '@/components/WaBridgeConnectButton';
 import { WaChannelTable } from '@/components/WaChannelTable';
 
@@ -19,7 +18,6 @@ export default async function ChannelWaPage() {
         <span className="spacer" />
         <WaBridgeConnectButton />
       </div>
-      <SettingsTabs />
 
       <div className="scroll pad stack">
         <WaChannelTable channels={channels} />

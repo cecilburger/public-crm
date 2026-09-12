@@ -12,7 +12,7 @@ import {
   connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
-  createTask, createBrand, setBrandStatus,
+  createTask, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import { buildApp } from '../apps/api/src/app.ts';
@@ -96,6 +96,53 @@ const now = Date.now();
 const min = 60_000;
 const hour = 60 * min;
 
+// The wa-bridge numbers behind "Status Nomor" — a spread of session states
+// (a couple actually live, one mid-pairing, one that errored out, one that
+// dropped) so the monitoring table isn't just a wall of green dots.
+const waBridgeSpecs: {
+  displayName: string; phone?: string; sessionStatus: string; channelStatus: string;
+  lastSeenAgo?: number; lastError?: string; maxPerDay: number;
+  chat: { meeting: number; minat: number; balas: number; belum: number; tolak: number; bot: number };
+}[] = [
+  // Matches the numbers on the settings mockup exactly — the busiest number, live.
+  { displayName: 'WA Toko — CS Utama',      phone: '+6281199000001', sessionStatus: 'ready',        channelStatus: 'connected',  lastSeenAgo: 2 * min,  maxPerDay: 150,
+    chat: { meeting: 3, minat: 5, balas: 88, belum: 812, tolak: 16, bot: 137 } },
+  { displayName: 'WA Toko — Reseller',      phone: '+6281199000002', sessionStatus: 'ready',        channelStatus: 'connected',  lastSeenAgo: 40 * min, maxPerDay: 100,
+    chat: { meeting: 1, minat: 8, balas: 42, belum: 210, tolak: 6, bot: 54 } },
+  // Never finished pairing — no chats to have a funnel over yet.
+  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'qr_pending',   channelStatus: 'connecting', maxPerDay: 50,
+    chat: { meeting: 0, minat: 0, balas: 0, belum: 0, tolak: 0, bot: 0 } },
+  { displayName: 'WA Toko — Admin Lama',    phone: '+6281199000004', sessionStatus: 'error',        channelStatus: 'error',      lastSeenAgo: 3 * 24 * hour, lastError: 'Sesi keluar otomatis — perangkat tertaut dicabut dari HP', maxPerDay: 80,
+    chat: { meeting: 0, minat: 2, balas: 10, belum: 305, tolak: 40, bot: 0 } },
+  { displayName: 'WA Toko — Gudang',        phone: '+6281199000005', sessionStatus: 'disconnected', channelStatus: 'connecting', lastSeenAgo: 26 * hour, maxPerDay: 60,
+    chat: { meeting: 0, minat: 1, balas: 15, belum: 96, tolak: 3, bot: 12 } },
+];
+
+const waBridgeChannels = await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const out: { id: string; displayName: string }[] = [];
+  for (const spec of waBridgeSpecs) {
+    const { channelId } = await createWaBridgeChannel(ctx, { displayName: spec.displayName });
+    await tx.query(
+      `update wa_bridge_sessions
+          set status = $3, last_seen_at = $4, last_error = $5, phone_e164 = $6, updated_at = now(),
+              max_per_day = $7, chat_meeting = $8, chat_minat = $9, chat_balas = $10,
+              chat_belum = $11, chat_tolak = $12, chat_bot = $13
+        where tenant_id = $1 and channel_id = $2`,
+      [tenantId, channelId, spec.sessionStatus,
+       spec.lastSeenAgo !== undefined ? new Date(now - spec.lastSeenAgo) : null,
+       spec.lastError ?? null, spec.phone ?? null, spec.maxPerDay,
+       spec.chat.meeting, spec.chat.minat, spec.chat.balas, spec.chat.belum, spec.chat.tolak, spec.chat.bot],
+    );
+    await tx.query(
+      `update channels set status = $3, phone_e164 = $4 where tenant_id = $1 and id = $2`,
+      [tenantId, channelId, spec.channelStatus, spec.phone ?? null],
+    );
+    out.push({ id: channelId, displayName: spec.displayName });
+  }
+  return out;
+});
+
 // A day's worth of inbox: some fresh, some ageing, some past the reply window.
 const inbound: [string, string, string, number, string][] = [
   ['08123456789', 'Bu Sari',        'Sis, batik parang size M masih ada? Kalau ambil 3 dapat harga grosir ga?', 4 * min,  wa.id],
@@ -114,6 +161,59 @@ for (const [phone, name, body, ago, channelId] of inbound) {
       providerMessageId: `wamid.seed.${phone}.${ago}`, providerTs: at, now: at,
     }));
 }
+
+// Chats on the wa-bridge numbers themselves, so "Status Nomor" has real
+// totals, an unanswered thread and a queue depth per number — not just a
+// row of session dots. The errored and disconnected numbers keep one old,
+// never-picked-up thread each, matching a number that went quiet.
+const waBridgeInbound: [string, string, string, number, string][] = [
+  ['081990000101', 'Citra Dewi', 'Halo kak, ready stock kemeja linen pria warna putih?', 6 * min, waBridgeChannels[0]!.id],
+  ['081990000101', 'Citra Dewi', 'Kalau size L ada ga ya kak',                            5 * min, waBridgeChannels[0]!.id],
+  ['081990000102', 'Pak Arif',   'Mau tanya ongkir ke Semarang berapa ya kak',            18 * min, waBridgeChannels[0]!.id],
+  ['081990000103', 'Mbak Fitri', 'Halo, pesanan kemarin sudah sampai mana ya kak',        45 * min, waBridgeChannels[1]!.id],
+  ['081990000104', 'Pak Joko',   'Selamat siang, minta katalog terbaru dong kak',         55 * min, waBridgeChannels[1]!.id],
+  ['081990000105', 'Bu Endang',  'Kak ini masih follow up pesanan minggu lalu ya',        3 * 24 * hour, waBridgeChannels[3]!.id],
+  ['081990000106', 'Pak Bram',   'Halo min, gudang masih buka ga hari ini',               26 * hour, waBridgeChannels[4]!.id],
+];
+
+for (const [phone, name, body, ago, channelId] of waBridgeInbound) {
+  const at = new Date(now - ago);
+  await withTenant(db, tenantId, (tx) =>
+    ingestInboundMessage({ tx, tenantId, kek }, {
+      channelId, from: phone, body, displayName: name,
+      providerMessageId: `wamid.seed.${phone}.${ago}`, providerTs: at, now: at,
+    }));
+}
+
+// Two of those threads already got a reply, so "Status Nomor" shows a real
+// average reply time instead of "Belum ada balasan" everywhere.
+await withTenant(db, tenantId, async (tx) => {
+  const convs = await tx.query<{ id: string; display_name: string }>(
+    `select c.id, ct.display_name
+       from conversations c join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
+      where c.tenant_id = $1 and c.channel_id = any($2::uuid[])`,
+    [tenantId, waBridgeChannels.slice(0, 2).map((c) => c.id)]);
+
+  const citra = convs.find((c) => c.display_name === 'Citra Dewi');
+  if (citra) {
+    await queueOutboundMessage({ tx, tenantId, kek }, {
+      conversationId: citra.id, senderType: 'agent', senderId: agents[0].id,
+      body: 'Halo Kak Citra, untuk kemeja linen putih size L masih ready ya kak.',
+    });
+    await tx.query(`update conversations set assignee_id = $2 where tenant_id = $1 and id = $3`,
+      [tenantId, agents[0].id, citra.id]);
+  }
+
+  const fitri = convs.find((c) => c.display_name === 'Mbak Fitri');
+  if (fitri) {
+    await queueOutboundMessage({ tx, tenantId, kek }, {
+      conversationId: fitri.id, senderType: 'agent', senderId: agents[1].id,
+      body: 'Halo Kak Fitri, pesanan sudah masuk resi dan dalam perjalanan ya kak.',
+    });
+    await tx.query(`update conversations set assignee_id = $2, status = 'resolved' where tenant_id = $1 and id = $3`,
+      [tenantId, agents[1].id, fitri.id]);
+  }
+});
 
 // A couple of threads already worked, so the console is not all unanswered.
 await withTenant(db, tenantId, async (tx) => {
@@ -189,6 +289,37 @@ await withTenant(db, tenantId, async (tx) => {
       expectedCloseOn: new Date(now + 2 * 24 * hour).toISOString().slice(0, 10),
     });
   }
+});
+
+// A contact only becomes a "Pelanggan" once someone marks them — the five
+// seeded contacts above messaged in, but never went through that step, so
+// Pelanggan opens empty on a fresh dev-stack. Tag them here, plus two added
+// by hand, matching the mix the page's own subtitle promises.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+
+  const customerTags: [string, string[]][] = [
+    ['Bu Sari', ['customer', 'vip']],
+    ['Pak Hendra', ['customer', 'korporat']],
+    ['Dinda Wardani', ['customer', 'reseller']],
+    ['Toko Melati', ['customer', 'grosir']],
+    ['Bu Ratna', ['customer', 'baru']],
+  ];
+  for (const [name, tags] of customerTags) {
+    await tx.query(`update contacts set tags = $3 where tenant_id = $1 and display_name = $2`,
+      [tenantId, name, tags]);
+  }
+
+  await createContact(ctx, {
+    displayName: 'Pak Yusuf Hidayat', phone: '081234511122', email: 'yusuf.hidayat@gmail.com',
+    tags: ['customer', 'grosir'], address: 'Jl. Kopo Sayati No. 45, Bandung',
+    notes: 'Langganan reseller batik, biasanya order tiap awal bulan.',
+  });
+  await createContact(ctx, {
+    displayName: 'Ibu Wulan Sari', phone: '081234522233', email: null,
+    tags: ['customer', 'vip'], address: 'Jl. Kaliurang KM 7, Yogyakarta',
+    notes: 'Sering repeat order dress linen, respon cepat kalau dihubungi pagi.',
+  });
 });
 
 // A handful of follow-ups spanning overdue, due today and upcoming, so Tugas

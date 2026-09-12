@@ -33,14 +33,19 @@ export function duration(ms: number): string {
   return mins === 0 ? `${hours} jam` : `${hours} jam ${mins} menit`;
 }
 
+/** A plain calendar date, no time — target periods, deal close dates. */
+export function dateOnly(iso: string): string {
+  return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');
 }
 
 export const CHANNEL_LABEL: Record<string, string> = {
-  whatsapp: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger', tiktok: 'TikTok',
-  telegram: 'Telegram', tokopedia: 'Tokopedia', shopee: 'Shopee', email: 'Email', webchat: 'Web',
+  whatsapp: 'WhatsApp', whatsapp_web: 'WhatsApp Web', instagram: 'Instagram', messenger: 'Messenger',
+  tiktok: 'TikTok', telegram: 'Telegram', tokopedia: 'Tokopedia', shopee: 'Shopee', email: 'Email', webchat: 'Web',
 };
 
 /**

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { actorCan, maskPhone, invalid } from '@kirana/core';
-import { listOrders, markOrderPaid, markOrderFulfilled, releaseOrder } from '@kirana/db';
+import { listOrders, markOrderPaid, markOrderFulfilled, releaseOrder, purchasesByContact } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
@@ -23,6 +23,13 @@ export function registerOrderRoutes(app: FastifyInstance, ctx: AppCtx): void {
         phone: o.phone ? (canReveal ? o.phone : maskPhone(o.phone)) : null,
       }));
     });
+  });
+
+  /** The Pelanggan list's "Jumlah" and "Pembelian" columns, one row per contact. */
+  app.get('/v1/orders/purchases-by-contact', async (req) => {
+    ctx.guard(req, 'deal:read');
+    return ctx.asTenant(req, (tx, actor) =>
+      purchasesByContact({ tx, tenantId: actor.tenantId, kek: ctx.kek }));
   });
 
   app.post('/v1/orders/:id/mark-paid', async (req) => {

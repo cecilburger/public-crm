@@ -13,3 +13,6 @@ export * from './rotation.ts';
 export * from './invoices.ts';
 export * from './tasks.ts';
 export * from './brands.ts';
+export * from './messageTemplates.ts';
+export * from './quickReplies.ts';
+export * from './salesTargets.ts';

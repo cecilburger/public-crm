@@ -340,10 +340,24 @@ export async function ordersForContact(ctx: Ctx, contactId: string, limit = 5) {
       where tenant_id = $1 and contact_id = $2 order by created_at desc limit $3`,
     [ctx.tenantId, contactId, limit],
   );
+  if (orders.length === 0) return [];
+
+  const items = await ctx.tx.query<{ order_id: string; title: string; qty: number }>(
+    `select order_id, title, qty from order_items
+      where tenant_id = $1 and order_id = any($2::uuid[]) order by title asc`,
+    [ctx.tenantId, orders.map((o) => o.id)],
+  );
+  const linesByOrder = new Map<string, { title: string; qty: number }[]>();
+  for (const item of items) {
+    if (!linesByOrder.has(item.order_id)) linesByOrder.set(item.order_id, []);
+    linesByOrder.get(item.order_id)!.push({ title: item.title, qty: item.qty });
+  }
+
   return orders.map((o) => ({
     id: o.id, code: o.code, status: o.status,
     totalIdr: fromMicros(Number(o.total_micros)),
     shipArea: o.ship_area, createdAt: o.created_at,
+    lines: linesByOrder.get(o.id) ?? [],
   }));
 }
 
@@ -360,6 +374,30 @@ export async function ordersForDeal(ctx: Ctx, dealId: string) {
     id: o.id, code: o.code, status: o.status,
     totalIdr: fromMicros(Number(o.total_micros)),
     shipArea: o.ship_area, createdAt: o.created_at,
+  }));
+}
+
+export interface ContactPurchaseSummary {
+  contactId: string;
+  count: number;
+  totalIdr: number;
+}
+
+/**
+ * What each customer has bought, one row per contact — the Pelanggan list's
+ * "Jumlah" and "Total Pembelian" columns. Draft baskets and cancelled orders
+ * were never a real purchase, so they don't count and don't show up here.
+ */
+export async function purchasesByContact(ctx: Ctx): Promise<ContactPurchaseSummary[]> {
+  const rows = await ctx.tx.query<{ contact_id: string; order_count: string; total_micros: string }>(
+    `select contact_id, count(*) as order_count, sum(total_micros) as total_micros
+       from orders
+      where tenant_id = $1 and status not in ('draft', 'cancelled')
+      group by contact_id`,
+    [ctx.tenantId],
+  );
+  return rows.map((r) => ({
+    contactId: r.contact_id, count: Number(r.order_count), totalIdr: fromMicros(Number(r.total_micros)),
   }));
 }
 

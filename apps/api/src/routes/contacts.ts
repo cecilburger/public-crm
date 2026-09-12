@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { actorCan, maskPhone, invalid, notFound } from '@kirana/core';
 import {
-  audit, listContacts, createContact, getContact, updateContact, softDeleteContact,
-  tenantKeys, openField,
+  audit, listContacts, createContact, getContact, updateContact, softDeleteContact, contactTimeline,
+  tenantKeys, openField, ordersForContact,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
@@ -159,5 +159,22 @@ export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
       });
       return { ok: true };
     });
+  });
+
+  app.get('/v1/contacts/:id/timeline', async (req) => {
+    ctx.guard(req, 'contact:read');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return ctx.asTenant(req, (tx, actor) =>
+      contactTimeline({ tx, tenantId: actor.tenantId, kek: ctx.kek }, id));
+  });
+
+  /** Every order this customer has placed, newest first — what and how much they've bought. */
+  app.get('/v1/contacts/:id/orders', async (req) => {
+    ctx.guard(req, 'contact:read');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return ctx.asTenant(req, (tx, actor) =>
+      ordersForContact({ tx, tenantId: actor.tenantId, kek: ctx.kek }, id, 50));
   });
 }

@@ -149,6 +149,8 @@ h3 { font-size: 13px; font-weight: 700; }
   flex-direction: column;
   padding: 14px 10px;
   gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .brand {
@@ -224,40 +226,173 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
   position: relative; width: 38px; height: 38px; border-radius: 9px;
   display: grid; place-items: center; background: none; border: none; cursor: pointer;
   color: var(--ink-2); flex: none;
+  transition: all 0.2s ease;
 }
-.notif-bell svg { width: 23px; height: 23px; }
+.notif-bell svg { width: 23px; height: 23px; transition: transform 0.2s; }
 .notif-bell:hover { background: var(--panel-2); color: var(--ink); }
+.notif-bell:hover svg { transform: scale(1.1); }
+.notif-bell.has-unread svg { animation: bell-ring 4s infinite cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+
+@keyframes bell-ring {
+  0%, 15%, 100% { transform: rotate(0deg); }
+  3%, 9% { transform: rotate(10deg); }
+  6%, 12% { transform: rotate(-10deg); }
+}
+
 .notif-badge {
-  position: absolute; top: 2px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px;
+  position: absolute; top: 0px; right: 0px; min-width: 18px; height: 18px; padding: 0 4px;
   border-radius: 9px; background: var(--danger); color: #fff;
-  font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; line-height: 1;
+  font-family: var(--f-mono); font-size: 10px; font-weight: 700; line-height: 1.8;
   display: grid; place-items: center;
+  box-shadow: 0 0 0 2px var(--panel);
+  animation: badge-pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
+@keyframes badge-pop {
+  0% { transform: scale(0); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 .notif-panel {
-  position: absolute; top: calc(100% + 8px); left: 0; z-index: 200;
-  width: 300px; max-height: 380px; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r);
-  box-shadow: var(--shadow);
+  position: absolute; top: calc(100% + 12px); left: 0; z-index: 200;
+  width: 280px; max-height: 300px; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 12px 32px -8px rgba(22, 24, 60, .15), 0 4px 12px -4px rgba(22, 24, 60, .08);
+  transform-origin: top left;
+  animation: panel-drop 0.2s ease-out;
 }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .notif-panel {
+    box-shadow: 0 12px 32px -8px rgba(0, 0, 0, .5), 0 4px 12px -4px rgba(0, 0, 0, .3);
+  }
+}
+:root[data-theme="dark"] .notif-panel {
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, .5), 0 4px 12px -4px rgba(0, 0, 0, .3);
+}
+
+.notif-panel::before {
+  content: ''; position: absolute; top: -5px; left: 14px;
+  width: 10px; height: 10px; background: var(--panel);
+  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+  transform: rotate(45deg);
+}
+@keyframes panel-drop {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .notif-panel > header {
-  padding: 11px 14px; border-bottom: 1px solid var(--line);
-  font-family: var(--f-display); font-weight: 700; font-size: 13px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-family: var(--f-display); font-weight: 600; font-size: 12.5px; color: var(--ink);
+  position: relative; z-index: 1; background: var(--panel);
 }
-.notif-panel .empty { padding: 22px 14px; font-size: 12.5px; text-align: center; }
-.notif-list { display: flex; flex-direction: column; }
+.notif-header-left { display: flex; align-items: center; gap: 6px; }
+.notif-count {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600;
+  background: var(--brand-soft); color: var(--brand);
+  padding: 1px 7px; border-radius: 20px;
+}
+.notif-see-all { font-size: 11px; font-weight: 600; color: var(--brand); transition: color 0.12s ease; }
+.notif-see-all:hover { color: var(--ink-2); }
+.notif-panel .empty { padding: 28px 14px; font-size: 12px; color: var(--ink-2); text-align: center; }
+.notif-list { display: flex; flex-direction: column; overflow-y: auto; }
 .notif-item {
-  display: flex; align-items: center; gap: 9px; padding: 10px 14px;
-  border-bottom: 1px solid var(--line); font-size: 12.5px;
+  display: flex; align-items: center; gap: 9px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); font-size: 12px; text-decoration: none;
+  transition: background 0.15s ease;
+  position: relative;
 }
-.notif-item .dot { margin-top: 1px; flex: none; }
+.notif-item:last-child { border-bottom: none; }
 .notif-item:hover { background: var(--panel-2); }
-.notif-time { margin-left: auto; font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
-.notif-footer {
-  display: block; padding: 9px 14px; text-align: center;
-  font-size: 12px; font-weight: 600; color: var(--brand);
-  border-top: 1px solid var(--line);
+.notif-avatar-wrap { position: relative; flex: none; }
+.notif-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--brand-soft); color: var(--brand);
+  display: grid; place-items: center;
+  font-family: var(--f-display); font-weight: 600; font-size: 11.5px;
 }
-.notif-footer:hover { background: var(--panel-2); }
+/* Every row here is by definition unread — a small badge on the avatar
+   says so at a glance, the way a chat app's contact list does, instead of
+   a heavier full-row tint that would just repeat on every single item. */
+.notif-dot {
+  position: absolute; top: -1px; right: -1px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--warn); border: 2px solid var(--panel);
+}
+.notif-dot.danger { background: var(--danger); }
+.notif-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.notif-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.notif-row b {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink); font-size: 12.5px; font-weight: 600; font-family: var(--f-display);
+}
+.notif-time {
+  margin-left: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-3); flex: none; white-space: nowrap;
+}
+.notif-meta {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--ink-2);
+}
+.notif-tag {
+  display: inline-flex; align-items: center; width: fit-content;
+  font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 20px;
+  background: var(--warn-soft); color: var(--warn);
+}
+.notif-tag.danger { background: var(--danger-soft); color: var(--danger); }
+
+/* ----------------------------------------------------------- global search */
+
+.gsearch-trigger {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  margin: 2px 0 6px; padding: 7px 9px; border-radius: var(--r);
+  background: var(--bg); border: 1px solid var(--line); color: var(--ink-3);
+  font-size: 12.5px; cursor: pointer; text-align: left;
+}
+.gsearch-trigger:hover { border-color: var(--line-2); color: var(--ink-2); }
+.gsearch-trigger svg { width: 15px; height: 15px; flex: none; }
+.gsearch-shortcut {
+  margin-left: auto; font-family: var(--f-mono); font-size: 10px;
+  background: var(--panel-2); color: var(--ink-3); padding: 1px 6px; border-radius: 5px;
+}
+
+.gsearch-overlay {
+  position: fixed; inset: 0; z-index: 400; background: rgba(8, 9, 28, .45);
+  display: flex; justify-content: center; padding-top: 12vh;
+}
+.gsearch-panel {
+  width: 560px; max-width: calc(100vw - 32px); max-height: 60vh;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden;
+  height: fit-content;
+}
+.gsearch-input-row {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  border-bottom: 1px solid var(--line); flex: none;
+}
+.gsearch-input-row svg { width: 18px; height: 18px; color: var(--ink-3); flex: none; }
+.gsearch-input {
+  flex: 1; border: none; background: none; font-size: 15px; color: var(--ink);
+  outline: none;
+}
+.gsearch-input::placeholder { color: var(--ink-3); }
+.gsearch-close {
+  font-family: var(--f-mono); font-size: 10px; color: var(--ink-3);
+  background: var(--panel-2); border: none; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+}
+.gsearch-results { overflow-y: auto; padding: 8px; }
+.gsearch-empty { padding: 28px 14px; font-size: 13px; color: var(--ink-2); text-align: center; }
+.gsearch-group { margin-bottom: 6px; }
+.gsearch-group-label {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); padding: 6px 8px 4px;
+}
+.gsearch-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px; border-radius: var(--r); border: none; background: none;
+  font-size: 13px; color: var(--ink); text-align: left; cursor: pointer;
+}
+.gsearch-item b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gsearch-item .dim { flex: none; margin-left: auto; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+.gsearch-item:hover, .gsearch-item.active { background: var(--panel-2); }
 
 .main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
 
@@ -622,6 +757,7 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .meter > span { display: block; height: 100%; background: var(--brand); border-radius: 20px; }
 .meter.warn > span { background: var(--warn); }
 .meter.danger > span { background: var(--danger); }
+.meter.good > span { background: var(--good); }
 
 .bignum {
   font-family: var(--f-display); font-variation-settings: "wdth" 118;
@@ -690,12 +826,25 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
   box-shadow: 0 4px 16px rgba(0,0,0,0.15); padding: 10px; display: flex; gap: 6px; 
   min-width: 200px; max-width: 300px;
 }
-.dropdown-body.column { flex-direction: column; align-items: stretch; gap: 4px; }
+.dropdown-body.vertical { flex-direction: column; align-items: stretch; gap: 4px; }
 .dropdown-check {
   display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 6px;
   border-radius: var(--r-sm, 7px); cursor: pointer;
 }
 .dropdown-check:hover { background: var(--panel-2); }
+.dropdown-body.upward { top: auto; bottom: calc(100% + 5px); }
+
+/* Quick Reply picker in the composer: a scrollable list of saved snippets. */
+.qr-list { max-height: 260px; overflow-y: auto; min-width: 260px; max-width: 340px; }
+.qr-item {
+  all: unset; box-sizing: border-box; width: 100%; display: flex; flex-direction: column; gap: 2px;
+  font-size: 13px; padding: 6px 8px; border-radius: var(--r-sm, 7px); cursor: pointer;
+}
+.qr-item:hover { background: var(--panel-2); }
+.qr-item-title { font-weight: 600; }
+.qr-item-body {
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Odoo-style list toolbar: search box plus Filters / Group By dropdowns. */
 .list-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -909,6 +1058,23 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
   text-transform: uppercase; color: var(--ink-3); margin-bottom: 5px;
 }
 .record-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
+
+.record-timeline { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.record-timeline h3 { font-size: 13px; margin-bottom: 14px; }
+.timeline-list { position: relative; display: flex; flex-direction: column; gap: 16px; }
+.timeline-list::before {
+  content: ''; position: absolute; left: 3px; top: 6px; bottom: 6px; width: 1px; background: var(--line);
+}
+.timeline-row { display: flex; gap: 10px; position: relative; }
+.timeline-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
+  margin-top: 5px; flex: none; position: relative; z-index: 1; box-shadow: 0 0 0 3px var(--panel);
+}
+.timeline-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.timeline-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.timeline-head b { font-size: 13px; font-weight: 600; }
+.timeline-link { font-size: 12.5px; color: var(--brand); width: fit-content; }
+.timeline-link:hover { text-decoration: underline; }
 
 /* Odoo-style fields: a grey rule underneath, not a boxed input. */
 .line-input {

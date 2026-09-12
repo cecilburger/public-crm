@@ -25,6 +25,9 @@ import { registerOrderRoutes } from './routes/orders.ts';
 import { registerDealRoutes } from './routes/deals.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
 import { registerBrandRoutes } from './routes/brands.ts';
+import { registerMessageTemplateRoutes } from './routes/messageTemplates.ts';
+import { registerQuickReplyRoutes } from './routes/quickReplies.ts';
+import { registerSalesTargetRoutes } from './routes/salesTargets.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -329,6 +332,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerDealRoutes(app, ctx);
   registerTaskRoutes(app, ctx);
   registerBrandRoutes(app, ctx);
+  registerMessageTemplateRoutes(app, ctx);
+  registerQuickReplyRoutes(app, ctx);
+  registerSalesTargetRoutes(app, ctx);
 
   return app;
 }

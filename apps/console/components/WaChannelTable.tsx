@@ -2,13 +2,52 @@
 
 import { useActionState, useEffect, useRef, useState } from 'react';
 import {
-  disconnectWaBridgeSession, deleteWaBridgeSession, reconnectWaBridgeSession, type ActionResult,
+  disconnectWaBridgeSession, deleteWaBridgeSession, reconnectWaBridgeSession,
+  saveWaBridgeMaxPerDay, type ActionResult,
 } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import type { WaBridgeChannel } from '@/lib/api';
 
 const LIVE = new Set(['ready', 'connected']);
+
+const CHAT_CHIP_CLASS: Record<keyof WaBridgeChannel['chat'], string> = {
+  meeting: 'chip good', minat: 'chip warn', balas: 'chip accent', belum: 'chip', tolak: 'chip danger', bot: 'chip',
+};
+
+function totalChats(chat: WaBridgeChannel['chat']): number {
+  return chat.meeting + chat.minat + chat.balas + chat.belum + chat.tolak + chat.bot;
+}
+
+/** One row's own form, same pattern as the message template and sales target
+ * editors — an inline number field that saves itself, no modal. */
+function MaxPerDayCell({ channel }: { channel: WaBridgeChannel }) {
+  const [saved, save, saving] = useActionState<ActionResult | null, FormData>(saveWaBridgeMaxPerDay, null);
+
+  return (
+    <form action={save} style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+      <CsrfField />
+      <input type="hidden" name="channelId" value={channel.id} />
+      <span style={{ display: 'flex', gap: 6 }}>
+        <input className="input" type="number" name="maxPerDay" min={0} defaultValue={channel.maxPerDay}
+               style={{ width: 90 }} />
+        <button className="btn ghost sm" type="submit" disabled={saving}>{t.waChannel.maxPerDaySave}</button>
+      </span>
+      {saved?.error ? <span className="dim" style={{ color: 'var(--danger)', fontSize: 11.5 }}>{saved.error}</span> : null}
+    </form>
+  );
+}
+
+function ChatCell({ chat }: { chat: WaBridgeChannel['chat'] }) {
+  const order: (keyof WaBridgeChannel['chat'])[] = ['meeting', 'minat', 'balas', 'belum', 'tolak', 'bot'];
+  return (
+    <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {order.map((key) => (
+        <span key={key} className={CHAT_CHIP_CLASS[key]}>{t.waChannel.chatLabel[key]} {chat[key]}</span>
+      ))}
+    </span>
+  );
+}
 
 /**
  * The same `wa_bridge_channels` the Chat WA rail manages, as a plain table
@@ -60,6 +99,9 @@ export function WaChannelTable({ channels }: { channels: WaBridgeChannel[] }) {
               <th>{t.waChannel.name}</th>
               <th>{t.waChannel.phone}</th>
               <th>{t.waChannel.status}</th>
+              <th>{t.waChannel.maxPerDay}</th>
+              <th className="num">{t.waChannel.totalChats}</th>
+              <th>{t.waChannel.chat}</th>
               <th style={{ textAlign: 'center' }}>{t.waChannel.actions}</th>
             </tr>
           </thead>
@@ -72,6 +114,9 @@ export function WaChannelTable({ channels }: { channels: WaBridgeChannel[] }) {
                   <td><b>{c.displayName}</b></td>
                   <td className="mono">{c.phoneE164 ?? <span className="dim">{t.waChannel.noPhone}</span>}</td>
                   <td><span className={`chip ${dotClass}`}>{t.waBridge.status[c.sessionStatus] ?? c.sessionStatus}</span></td>
+                  <td><MaxPerDayCell channel={c} /></td>
+                  <td className="num"><b>{totalChats(c.chat)}</b></td>
+                  <td><ChatCell chat={c.chat} /></td>
                   <td style={{ textAlign: 'center' }}>
                     <span style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
                       {canShowQr ? (

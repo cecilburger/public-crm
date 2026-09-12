@@ -6,17 +6,22 @@ import { createCustomer, updateCustomer, deleteCustomer, type ActionResult } fro
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import { initials } from '@/lib/format';
-import type { ContactDetail } from '@/lib/api';
+import { ContactTimeline } from '@/components/ContactTimeline';
+import { CustomerPurchases } from '@/components/CustomerPurchases';
+import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member } from '@/lib/api';
 
 /**
  * One sheet, two callers: a blank one for `/pelanggan/baru`, a filled-in one
  * for `/pelanggan/[id]`. Whether `contact` is set decides which — present,
- * it's an edit (and Delete becomes available); absent, whatever gets typed
- * here becomes a new contact.
+ * it's an edit (and Delete and the activity timeline become available);
+ * absent, whatever gets typed here becomes a new contact.
  */
 export function CustomerForm({
-  contact, conversationId = null,
-}: { contact: ContactDetail | null; conversationId?: string | null }) {
+  contact, conversationId = null, timeline, members = [], orders = [],
+}: {
+  contact: ContactDetail | null; conversationId?: string | null;
+  timeline?: ContactTimelineEvent[]; members?: Member[]; orders?: ContactOrder[];
+}) {
   const action = contact ? updateCustomer : createCustomer;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
@@ -131,6 +136,15 @@ export function CustomerForm({
                           defaultValue={contact?.notes ?? ''} placeholder={t.customers.notesPlaceholder} />
               </div>
             </div>
+
+            {contact ? <CustomerPurchases orders={orders} /> : null}
+
+            {contact && timeline ? (
+              <div className="record-timeline">
+                <h3>{t.timeline.title}</h3>
+                <ContactTimeline events={timeline} members={members} />
+              </div>
+            ) : null}
 
             {state?.error ? <p className="error" style={{ marginTop: 18 }}>{state.error}</p> : null}
           </div>

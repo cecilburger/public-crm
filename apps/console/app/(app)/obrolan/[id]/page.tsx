@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me } from '@/lib/api';
+import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply } from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { Composer } from '@/components/Composer';
@@ -20,10 +20,11 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
     throw err;
   }
 
-  const [me, members, deals] = await Promise.all([
+  const [me, members, deals, quickReplies] = await Promise.all([
     api<Me>('/v1/me'),
     api<Member[]>('/v1/members').catch(() => [] as Member[]),
     api<Deal[]>('/v1/deals').catch(() => [] as Deal[]),
+    api<QuickReply[]>('/v1/quick-replies').catch(() => [] as QuickReply[]),
   ]);
 
   const { conversation, contact, messages, draft } = detail;
@@ -101,7 +102,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}
 
         <Composer conversationId={conversation.id} windowOpen={conversation.serviceWindowOpen}
-                  customerName={contact.displayName ?? contact.phone ?? '—'} />
+                  customerName={contact.displayName ?? contact.phone ?? '—'} quickReplies={quickReplies} />
       </div>
 
       <aside className="context" aria-label={t.chats.aboutCustomer}>
