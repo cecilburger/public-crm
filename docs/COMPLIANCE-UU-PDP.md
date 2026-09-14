@@ -1,6 +1,6 @@
 # UU PDP compliance notes
 
-Indonesia's Undang-Undang Perlindungan Data Pribadi (UU 27/2022). Kirana is a
+Indonesia's Undang-Undang Perlindungan Data Pribadi (UU 27/2022). MCNASIA is a
 **processor** for its tenants, who are the controllers of their customers' data.
 This maps the obligations that fall on us to what the code does.
 

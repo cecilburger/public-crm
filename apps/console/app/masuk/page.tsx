@@ -17,7 +17,8 @@ export default async function LoginPage({
       <div className="card panel" style={{ boxShadow: 'var(--shadow)' }}>
         <div className="body">
           <div className="brand" style={{ padding: 0 }}>
-            <span className="mark"><i /></span>{t.app.name}
+            <img src="/logo.webp" alt="" className="mark" />
+            <span className="brand-name">{t.app.name}</span>
           </div>
           <div>
             <h1 style={{ fontSize: 19 }}>{t.login.title}</h1>

@@ -24,10 +24,14 @@ import { registerContactRoutes } from './routes/contacts.ts';
 import { registerOrderRoutes } from './routes/orders.ts';
 import { registerDealRoutes } from './routes/deals.ts';
 import { registerTaskRoutes } from './routes/tasks.ts';
+import { registerTaskKindRoutes } from './routes/taskKinds.ts';
 import { registerBrandRoutes } from './routes/brands.ts';
 import { registerMessageTemplateRoutes } from './routes/messageTemplates.ts';
 import { registerQuickReplyRoutes } from './routes/quickReplies.ts';
 import { registerSalesTargetRoutes } from './routes/salesTargets.ts';
+import { registerDocumentRoutes } from './routes/documents.ts';
+import { registerDocumentKindRoutes } from './routes/documentKinds.ts';
+import { registerDocumentModelRoutes } from './routes/documentModels.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -331,10 +335,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerOrderRoutes(app, ctx);
   registerDealRoutes(app, ctx);
   registerTaskRoutes(app, ctx);
+  registerTaskKindRoutes(app, ctx);
   registerBrandRoutes(app, ctx);
   registerMessageTemplateRoutes(app, ctx);
   registerQuickReplyRoutes(app, ctx);
   registerSalesTargetRoutes(app, ctx);
+  registerDocumentRoutes(app, ctx);
+  registerDocumentKindRoutes(app, ctx);
+  registerDocumentModelRoutes(app, ctx);
 
   return app;
 }

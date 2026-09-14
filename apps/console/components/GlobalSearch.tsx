@@ -90,11 +90,11 @@ export function GlobalSearch() {
 
   return (
     <>
-      <button type="button" className="gsearch-trigger" onClick={() => setOpen(true)}>
+      <button type="button" className="gsearch-trigger" onClick={() => setOpen(true)} title={t.search.trigger}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
         </svg>
-        {t.search.trigger}
+        <span className="gsearch-label">{t.search.trigger}</span>
         <span className="gsearch-shortcut">{t.search.shortcut}</span>
       </button>
 

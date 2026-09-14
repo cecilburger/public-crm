@@ -21,6 +21,9 @@ const STATUSES: Task['status'][] = ['open', 'done', 'cancelled'];
 const STATUS_CHIP: Record<Task['status'], string> = {
   open: 'chip brand', done: 'chip good', cancelled: 'chip danger',
 };
+const PRIORITY_CHIP: Record<Task['priority'], string> = {
+  low: 'chip', medium: 'chip brand', high: 'chip warn', urgent: 'chip danger',
+};
 
 function pillClass(tk: Task): string {
   if (tk.status === 'cancelled') return 'cancelled';
@@ -245,6 +248,7 @@ function DayDetailModal({
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
                     <span className={STATUS_CHIP[tk.status]}>{t.tasks.statusLabel[tk.status] ?? tk.status}</span>
                     {isTaskOverdue(tk) ? <span className="chip danger">{t.tasks.overdue}</span> : null}
+                    <span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span>
                   </div>
                 </div>
                 {tk.status === 'open' ? (

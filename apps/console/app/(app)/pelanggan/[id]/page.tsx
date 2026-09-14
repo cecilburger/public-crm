@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import {
   api, ApiError, type ContactDetail, type ContactOrder, type ContactTimelineEvent, type ConversationSummary,
-  type Member,
+  type Member, type Task,
 } from '@/lib/api';
 import { CustomerForm } from '@/components/CustomerForm';
 
@@ -18,20 +18,25 @@ export default async function EditCustomerPage({ params }: { params: Promise<{ i
     throw err;
   }
 
-  const [conversations, timeline, members, orders] = await Promise.all([
+  const [conversations, timeline, members, orders, tasks] = await Promise.all([
     // Newest first — if this customer has more than one thread, the Chat field
     // opens the live one.
     api<ConversationSummary[]>('/v1/conversations?limit=200'),
     api<ContactTimelineEvent[]>(`/v1/contacts/${id}/timeline`).catch(() => [] as ContactTimelineEvent[]),
     api<Member[]>('/v1/members').catch(() => [] as Member[]),
     api<ContactOrder[]>(`/v1/contacts/${id}/orders`).catch(() => [] as ContactOrder[]),
+    // No `contactId` filter on the list endpoint — this page is the only
+    // caller that needs one customer's tasks, so filtering here beats adding
+    // a query param nothing else would use.
+    api<Task[]>('/v1/tasks').catch(() => [] as Task[]),
   ]);
   const conversationId = conversations.find((c) => c.contact_id === id)?.id ?? null;
+  const contactTasks = tasks.filter((tsk) => tsk.contactId === id);
 
   return (
     <div className="scroll odoo-page stack">
       <CustomerForm contact={contact} conversationId={conversationId} timeline={timeline} members={members}
-                    orders={orders} />
+                    orders={orders} tasks={contactTasks} />
     </div>
   );
 }

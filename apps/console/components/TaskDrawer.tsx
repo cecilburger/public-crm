@@ -1,10 +1,11 @@
 'use client';
 
-import { useActionState, useEffect, useRef } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 import { createTaskInline, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import type { Contact, Member, Deal } from '@/lib/api';
+import { TaskKindField } from '@/components/TaskKindField';
+import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
 
 /**
  * A quick-add panel that slides in from the right, so adding a follow-up
@@ -13,20 +14,23 @@ import type { Contact, Member, Deal } from '@/lib/api';
  * a replacement for it.
  */
 export function TaskDrawer({
-  open, onClose, contacts, members, deals,
+  open, onClose, contacts, members, deals, taskKinds,
 }: {
   open: boolean;
   onClose: () => void;
   contacts: Contact[];
   members: Member[];
   deals: Deal[];
+  taskKinds: TaskKind[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTaskInline, null);
   const formRef = useRef<HTMLFormElement>(null);
+  const [kind, setKind] = useState('follow_up');
 
   useEffect(() => {
     if (state?.ok) {
       formRef.current?.reset();
+      setKind('follow_up');
       onClose();
     }
     // Only react to a fresh successful submit, not to `onClose` identity changes.
@@ -81,6 +85,25 @@ export function TaskDrawer({
                   <label htmlFor="d-dueAt">{t.tasks.formDueAt}</label>
                   <input className="line-input" id="d-dueAt" name="dueAt" type="datetime-local" required />
                 </div>
+
+                <TaskKindField id="d-kind" name="kind" value={kind} onChange={setKind} initialCustomKinds={taskKinds} />
+
+                <div className="record-field">
+                  <label htmlFor="d-priority">{t.tasks.formPriority}</label>
+                  <select className="line-input" id="d-priority" name="priority" defaultValue="medium">
+                    {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
+                      <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {kind === 'meeting' ? (
+                  <div className="record-field">
+                    <label htmlFor="d-meetingLink">{t.tasks.formMeetingLink}</label>
+                    <input className="line-input" id="d-meetingLink" name="meetingLink" type="url"
+                           placeholder={t.tasks.meetingLinkPlaceholder} />
+                  </div>
+                ) : null}
 
                 <div className="record-field">
                   <label htmlFor="d-assigneeId">{t.tasks.formAssignee}</label>

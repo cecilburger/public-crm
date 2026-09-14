@@ -52,7 +52,7 @@ export function BrandForm({ brand, members }: { brand: Brand | null; members: Me
         </div>
 
         <div className="main-content-area" style={{ padding: 16 }}>
-          <div className="record-sheet" style={{ margin: '0 auto', width: '100%', maxWidth: 900, marginTop: 16 }}>
+          <div className="record-sheet" style={{ margin: '0 auto', width: '100%', maxWidth: 1240, marginTop: 16 }}>
             <div className="record-grid">
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
                 <label htmlFor="name">{t.brand.name}</label>

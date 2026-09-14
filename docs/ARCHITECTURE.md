@@ -1,6 +1,6 @@
 # Architecture
 
-Kirana is a multi-tenant conversational CRM. The product thesis — *the chat is
+MCNASIA is a multi-tenant conversational CRM. The product thesis — *the chat is
 the record* — drives every structural decision below: conversations are the
 primary object, deals and analytics are derived from them, and the unit of
 billing is a conversation rather than a seat.

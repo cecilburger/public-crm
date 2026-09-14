@@ -42,9 +42,12 @@
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 
   --rail: 208px;
+  --rail-collapsed: 64px;
   --list: 340px;
   --r: 8px;
 }
+
+html.rail-collapsed { --rail: var(--rail-collapsed); }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -159,11 +162,8 @@ h3 { font-size: 13px; font-weight: 700; }
   font-family: var(--f-display); font-variation-settings: "wdth" 120;
   font-weight: 800; font-size: 16px; letter-spacing: -.02em;
 }
-.brand .mark {
-  width: 22px; height: 22px; border-radius: 6px; background: var(--brand);
-  display: grid; place-items: center; flex: none;
-}
-.brand .mark i { width: 8px; height: 8px; border-radius: 2px 6px 2px 6px; background: var(--accent); display: block; }
+.brand-notif { margin-left: auto; }
+.brand .mark { width: 26px; height: 26px; object-fit: contain; flex: none; }
 
 .navitem {
   display: flex; align-items: center; gap: 10px;
@@ -210,6 +210,30 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 
 .railfoot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px; }
 .whoami { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
+
+/* Icon-only mode: labels, badges and sub-menus go away, everything else stays
+   put at the same width so the icon column doesn't jump around. */
+.rail.collapsed { padding-left: 8px; padding-right: 8px; }
+.rail.collapsed .brand {
+  flex-direction: column; justify-content: center;
+  padding-left: 0; padding-right: 0; gap: 6px;
+}
+.rail.collapsed .brand-notif { margin-left: 0; }
+.rail.collapsed .brand .mark { width: 38px; height: 38px; }
+.rail.collapsed .navitem,
+.rail.collapsed .navitem-toggle,
+.rail.collapsed .gsearch-trigger { justify-content: center; padding: 10px; }
+.rail.collapsed .navitem svg,
+.rail.collapsed .gsearch-trigger svg { width: 20px; height: 20px; }
+.rail.collapsed .navitem-label,
+.rail.collapsed .count,
+.rail.collapsed .chev,
+.rail.collapsed .rail-sub,
+.rail.collapsed .brand-name,
+.rail.collapsed .whoami-info,
+.rail.collapsed .gsearch-label,
+.rail.collapsed .gsearch-shortcut { display: none; }
+.rail.collapsed .whoami { justify-content: center; padding-left: 0; padding-right: 0; }
 .avatar {
   width: 26px; height: 26px; border-radius: 50%; flex: none;
   background: var(--brand-soft); color: var(--brand);
@@ -253,8 +277,17 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 }
 
 .notif-panel {
-  position: absolute; top: calc(100% + 12px); left: 0; z-index: 200;
-  width: 280px; max-height: 300px; display: flex; flex-direction: column;
+  /* `position: fixed`, not `absolute` — this is portalled to `document.body`
+     (see NotificationBell.tsx) and positioned from the bell's own on-screen
+     rect via inline `top`/`left`, so it's never clipped by the rail's own
+     `overflow-y: auto` (which, per the CSS overflow spec, clips the x-axis
+     too the moment y isn't `visible` — that's what cut the panel's text off
+     at the left edge before this was pulled out of the rail entirely).
+     Anchored from the bell's left edge and opening rightward, over the main
+     content — the bell sits close to the screen's left edge (narrow rail),
+     so opening leftward ran the panel off the edge of the browser window. */
+  position: fixed; z-index: 200;
+  width: 260px; max-height: 300px; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--line);
   box-shadow: 0 12px 32px -8px rgba(22, 24, 60, .15), 0 4px 12px -4px rgba(22, 24, 60, .08);
   transform-origin: top left;
@@ -427,6 +460,11 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
 .btn.ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--ink); }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
+
+/* An icon-only link with no button chrome at all — hover is a color shift,
+   never a background box, since it sits inline in a table cell among chips. */
+.icon-link { display: inline-flex; align-items: center; justify-content: center; padding: 2px; color: var(--ink-2); }
+.icon-link:hover { color: var(--brand); }
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field label { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
@@ -663,7 +701,7 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .calendar-pill {
   font-size: 10.5px; padding: 2px 6px; border-radius: 5px; text-align: left;
   background: var(--brand-soft); color: var(--brand);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  white-space: normal; word-break: break-word; line-height: 1.3;
 }
 .calendar-pill.overdue { background: var(--danger-soft); color: var(--danger); }
 .calendar-pill.done { background: var(--good-soft); color: var(--good); text-decoration: line-through; opacity: .8; }
@@ -1028,6 +1066,34 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
   max-width: 1240px; margin: 0 auto; background: var(--panel);
   border: 1px solid var(--line); border-radius: var(--r); padding: 32px 40px;
 }
+
+/* Customer detail only: the sheet plus an activity sidebar next to it, so
+   `.record-sheet` above stays untouched for Brand/Tugas, which use it alone. */
+.record-with-side { display: flex; gap: 20px; align-items: flex-start; }
+.record-with-side .record-sheet { flex: 1 1 auto; min-width: 0; margin: 0; }
+.record-side { width: 320px; flex: none; }
+@media (max-width: 900px) {
+  .record-with-side { flex-direction: column; }
+  .record-side { width: 100%; }
+}
+
+/* ------------------------------------------------------- document editor */
+.doc-editor-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.doc-editor-body { display: flex; gap: 16px; align-items: flex-start; padding: 16px; overflow: auto; flex: 1; min-height: 0; }
+.doc-editor-stage-wrap { background: #fff; box-shadow: var(--shadow); flex: none; overflow: auto; }
+.doc-editor-panel {
+  width: 280px; flex: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 16px;
+}
+.doc-editor-refs { display: flex; gap: 6px; flex-wrap: wrap; }
+.doc-editor-ref-thumb {
+  width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--line);
+  border-radius: 4px; cursor: pointer;
+}
+
 .record-header { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 26px; }
 .record-avatar {
   width: 84px; height: 84px; border-radius: 10px; flex: none;
@@ -1075,6 +1141,27 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 .timeline-head b { font-size: 13px; font-weight: 600; }
 .timeline-link { font-size: 12.5px; color: var(--brand); width: fit-content; }
 .timeline-link:hover { text-decoration: underline; }
+
+.activity-panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 22px; position: sticky; top: 16px;
+}
+.activity-panel h3 { font-size: 13px; margin-bottom: 16px; }
+.activity-group + .activity-group { margin-top: 20px; }
+.activity-group-title {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px;
+}
+.activity-row { display: flex; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.activity-group .activity-row:first-child { border-top: none; padding-top: 0; }
+.activity-status {
+  width: 16px; height: 16px; border-radius: 50%; flex: none; margin-top: 3px; box-sizing: border-box;
+  display: grid; place-items: center; font-size: 10px; line-height: 1; color: #fff;
+  border: 2px solid var(--ink-3);
+}
+.activity-status.overdue { border-color: var(--danger); }
+.activity-status.done { border-color: var(--good); background: var(--good); }
+.activity-status.cancelled { border-color: var(--danger); background: var(--danger); }
 
 /* Odoo-style fields: a grey rule underneath, not a boxed input. */
 .line-input {

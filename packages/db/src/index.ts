@@ -16,3 +16,4 @@ export * from './brands.ts';
 export * from './messageTemplates.ts';
 export * from './quickReplies.ts';
 export * from './salesTargets.ts';
+export * from './documents.ts';

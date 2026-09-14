@@ -48,7 +48,7 @@ const shell = (title: string, body: string) => `<!doctype html>
 <div style="max-width:520px;margin:0 auto;background:#fff;border:1px solid #E0DFEC;border-radius:12px;padding:24px">
 ${body}
 <p style="color:#8A8DAC;font-size:12.5px;margin-top:24px;border-top:1px solid #E0DFEC;padding-top:14px">
-Kirana · Software untuk toko yang tumbuh di dalam chat.</p>
+MCNASIA · Software untuk toko yang tumbuh di dalam chat.</p>
 </div></body></html>`;
 
 const table = (rows: [string, string][]) => rows.map(([k, v]) =>
@@ -89,7 +89,7 @@ Jatuh tempo: ${idDate(input.dueAt)}${bank}
 Sebutkan nomor tagihan ${input.number} saat transfer supaya kami mudah mencocokkan.
 
 Terima kasih,
-Kirana`;
+MCNASIA`;
 
   const html = shell(`Tagihan ${input.number}`, `
     <h1 style="font-size:19px;margin:0 0 6px">Tagihan ${escapeHtml(input.number)}</h1>
@@ -134,7 +134,7 @@ Jatuh tempo: ${idDate(input.dueAt)}${bank}
 Kalau sudah ditransfer, abaikan pesan ini — mungkin kami belum sempat mencocokkan.
 
 Terima kasih,
-Kirana`;
+MCNASIA`;
 
   const html = shell(`Pengingat tagihan ${input.number}`, `
     <h1 style="font-size:19px;margin:0 0 6px">Pengingat tagihan</h1>
@@ -158,7 +158,7 @@ Pembayaran untuk tagihan ${input.number} sebesar ${formatInvoiceIdr(input.totalI
 Referensi: ${input.reference}
 
 Terima kasih,
-Kirana`;
+MCNASIA`;
 
   const html = shell(`Pembayaran diterima — ${input.number}`, `
     <h1 style="font-size:19px;margin:0 0 6px">Pembayaran diterima</h1>

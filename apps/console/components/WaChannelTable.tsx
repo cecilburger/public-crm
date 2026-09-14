@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useActionState, useEffect, useRef, useState } from 'react';
 import {
   disconnectWaBridgeSession, deleteWaBridgeSession, reconnectWaBridgeSession,
@@ -46,6 +47,20 @@ function ChatCell({ chat }: { chat: WaBridgeChannel['chat'] }) {
         <span key={key} className={CHAT_CHIP_CLASS[key]}>{t.waChannel.chatLabel[key]} {chat[key]}</span>
       ))}
     </span>
+  );
+}
+
+/** Jumps into Chat WA already scoped to this one number — same icon as the
+ * "Chat WA" rail item, so the two read as the same action wherever it shows up. */
+function OpenChatLink({ channelId }: { channelId: string }) {
+  return (
+    <Link href={`/chat-wa?channelId=${channelId}`} className="icon-link"
+          aria-label={t.waChannel.openChat} title={t.waChannel.openChat}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round" width="22" height="22">
+        <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z" />
+      </svg>
+    </Link>
   );
 }
 
@@ -101,7 +116,8 @@ export function WaChannelTable({ channels }: { channels: WaBridgeChannel[] }) {
               <th>{t.waChannel.status}</th>
               <th>{t.waChannel.maxPerDay}</th>
               <th className="num">{t.waChannel.totalChats}</th>
-              <th>{t.waChannel.chat}</th>
+              <th>{t.waChannel.statusChat}</th>
+              <th style={{ textAlign: 'center' }}>{t.waChannel.chat}</th>
               <th style={{ textAlign: 'center' }}>{t.waChannel.actions}</th>
             </tr>
           </thead>
@@ -117,6 +133,7 @@ export function WaChannelTable({ channels }: { channels: WaBridgeChannel[] }) {
                   <td><MaxPerDayCell channel={c} /></td>
                   <td className="num"><b>{totalChats(c.chat)}</b></td>
                   <td><ChatCell chat={c.chat} /></td>
+                  <td style={{ textAlign: 'center' }}><OpenChatLink channelId={c.id} /></td>
                   <td style={{ textAlign: 'center' }}>
                     <span style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
                       {canShowQr ? (

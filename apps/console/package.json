@@ -8,8 +8,12 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "jszip": "^3.10.2",
+    "konva": "^9.3.22",
     "next": "^15.1.6",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-konva": "^19.2.7",
+    "xlsx": "^0.18.5"
   }
 }

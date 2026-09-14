@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import type { Task, Member, Contact, Deal } from '@/lib/api';
+import type { Task, Member, Contact, Deal, TaskKind } from '@/lib/api';
 import { initials } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { formatTaskDue, isTaskOverdue, isTaskDueToday } from '@/lib/taskHelpers';
@@ -10,11 +10,16 @@ import { markTaskDone } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 import { TaskDrawer } from '@/components/TaskDrawer';
+import { TaskDetailDrawer } from '@/components/TaskDetailDrawer';
 import { TaskKanban } from '@/components/TaskKanban';
 import { TaskCalendar } from '@/components/TaskCalendar';
 
 const STATUS_CHIP: Record<Task['status'], string> = {
   open: 'chip brand', done: 'chip good', cancelled: 'chip danger',
+};
+
+const PRIORITY_CHIP: Record<Task['priority'], string> = {
+  low: 'chip', medium: 'chip brand', high: 'chip warn', urgent: 'chip danger',
 };
 
 const TABS: { key: 'all' | 'due' | Task['status']; label: string }[] = [
@@ -27,12 +32,13 @@ const TABS: { key: 'all' | 'due' | Task['status']; label: string }[] = [
 type ViewMode = 'table' | 'kanban' | 'calendar';
 
 export function TaskTable({
-  tasks, members, contacts, deals,
-}: { tasks: Task[]; members: Member[]; contacts: Contact[]; deals: Deal[] }) {
+  tasks, members, contacts, deals, taskKinds,
+}: { tasks: Task[]; members: Member[]; contacts: Contact[]; deals: Deal[]; taskKinds: TaskKind[] }) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'due' | Task['status']>('due');
   const [view, setView] = useState<ViewMode>('table');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [detailTask, setDetailTask] = useState<Task | null>(null);
 
   const names = new Map(members.map((m) => [m.id, m.name]));
 
@@ -125,6 +131,8 @@ export function TaskTable({
               <thead>
                 <tr>
                   <th>{t.tasks.taskTitle}</th>
+                  <th>{t.tasks.kind}</th>
+                  <th>{t.tasks.priority}</th>
                   <th>{t.tasks.contact}</th>
                   <th>{t.tasks.dueAt}</th>
                   <th>{t.tasks.assignee}</th>
@@ -140,6 +148,19 @@ export function TaskTable({
                       {tk.dealTitle ? <><br /><span className="mono dim" style={{ fontSize: 11 }}>{tk.dealTitle}</span></> : null}
                     </td>
                     <td>
+                      <span className="chip">{t.tasks.kindLabel[tk.kind] ?? tk.kind}</span>
+                      {tk.kind === 'meeting' && tk.meetingLink ? (
+                        <>
+                          <br />
+                          <a href={tk.meetingLink} target="_blank" rel="noreferrer"
+                             style={{ fontSize: 11.5, marginTop: 3, display: 'inline-block' }}>
+                            {t.tasks.joinMeeting}
+                          </a>
+                        </>
+                      ) : null}
+                    </td>
+                    <td><span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span></td>
+                    <td>
                       <Link href={`/pelanggan/${tk.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                         <span className="avatar" aria-hidden>{initials(tk.contactName)}</span>
                         <b>{tk.contactName ?? tk.contactPhone ?? '—'}</b>
@@ -153,18 +174,21 @@ export function TaskTable({
                     <td>{tk.assigneeId ? names.get(tk.assigneeId) ?? '—' : <span className="dim">{t.tasks.unassigned}</span>}</td>
                     <td><span className={STATUS_CHIP[tk.status]}>{t.tasks.statusLabel[tk.status] ?? tk.status}</span></td>
                     <td style={{ textAlign: 'center' }}>
-                      {tk.status === 'open' ? (
-                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                          <form action={markTaskDone}>
-                            <CsrfField />
-                            <input type="hidden" name="taskId" value={tk.id} />
-                            <button className="btn ghost sm" type="submit">{t.tasks.markDone}</button>
-                          </form>
-                          <CancelTaskButton task={tk} />
-                        </span>
-                      ) : (
-                        <span className="dim">—</span>
-                      )}
+                      <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        <button type="button" className="btn ghost sm" onClick={() => setDetailTask(tk)}>
+                          {t.tasks.detail}
+                        </button>
+                        {tk.status === 'open' ? (
+                          <>
+                            <form action={markTaskDone}>
+                              <CsrfField />
+                              <input type="hidden" name="taskId" value={tk.id} />
+                              <button className="btn ghost sm" type="submit">{t.tasks.markDone}</button>
+                            </form>
+                            <CancelTaskButton task={tk} />
+                          </>
+                        ) : null}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -175,7 +199,9 @@ export function TaskTable({
       </div>
 
       <TaskDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
-                  contacts={contacts} members={members} deals={deals} />
+                  contacts={contacts} members={members} deals={deals} taskKinds={taskKinds} />
+      <TaskDetailDrawer task={detailTask} open={detailTask !== null} onClose={() => setDetailTask(null)}
+                        members={members} deals={deals} taskKinds={taskKinds} />
     </>
   );
 }

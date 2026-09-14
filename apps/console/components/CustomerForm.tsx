@@ -8,7 +8,8 @@ import { CsrfField } from '@/components/Csrf';
 import { initials } from '@/lib/format';
 import { ContactTimeline } from '@/components/ContactTimeline';
 import { CustomerPurchases } from '@/components/CustomerPurchases';
-import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member } from '@/lib/api';
+import { CustomerActivities } from '@/components/CustomerActivities';
+import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member, Task } from '@/lib/api';
 
 /**
  * One sheet, two callers: a blank one for `/pelanggan/baru`, a filled-in one
@@ -17,10 +18,10 @@ import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member } from '
  * absent, whatever gets typed here becomes a new contact.
  */
 export function CustomerForm({
-  contact, conversationId = null, timeline, members = [], orders = [],
+  contact, conversationId = null, timeline, members = [], orders = [], tasks = [],
 }: {
   contact: ContactDetail | null; conversationId?: string | null;
-  timeline?: ContactTimelineEvent[]; members?: Member[]; orders?: ContactOrder[];
+  timeline?: ContactTimelineEvent[]; members?: Member[]; orders?: ContactOrder[]; tasks?: Task[];
 }) {
   const action = contact ? updateCustomer : createCustomer;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
@@ -77,7 +78,8 @@ export function CustomerForm({
         </div>
 
         <div className="main-content-area" style={{ padding: '16px' }}>
-          <div className="record-sheet" style={{ margin: '0 auto', width: '100%', maxWidth: 1240, marginTop: 16 }}>
+          <div className="record-with-side" style={{ maxWidth: contact ? 1560 : 1240, margin: '0 auto', marginTop: 16 }}>
+            <div className="record-sheet" style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 1240 }}>
             <div className="record-header">
               <label className="record-avatar" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
                 {photoPreview ? (
@@ -147,6 +149,13 @@ export function CustomerForm({
             ) : null}
 
             {state?.error ? <p className="error" style={{ marginTop: 18 }}>{state.error}</p> : null}
+          </div>
+
+          {contact ? (
+            <aside className="record-side">
+              <CustomerActivities tasks={tasks} members={members} />
+            </aside>
+          ) : null}
           </div>
         </div>
       </form>

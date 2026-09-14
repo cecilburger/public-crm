@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { actorCan, maskPhone, invalid, notFound } from '@kirana/core';
-import { listTasks, createTask, setTaskStatus } from '@kirana/db';
+import { listTasks, createTask, updateTask, setTaskStatus } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
@@ -33,6 +33,9 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
       notes: z.string().max(2000).optional(),
       dealId: z.string().uuid().optional(),
       assigneeId: z.string().uuid().optional(),
+      kind: z.string().min(1).max(60).optional(),
+      meetingLink: z.string().max(500).optional(),
+      priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the task fields');
 
@@ -44,8 +47,38 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
         contactId: body.data.contactId, title: body.data.title, dueAt,
         notes: body.data.notes ?? null, dealId: body.data.dealId ?? null,
         assigneeId: body.data.assigneeId ?? null, createdBy: actor.userId,
+        kind: body.data.kind, meetingLink: body.data.meetingLink ?? null, priority: body.data.priority,
       }));
     return reply.status(201).send(task);
+  });
+
+  app.patch('/v1/tasks/:id', async (req) => {
+    const actor = ctx.guard(req, 'contact:write');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = z.object({
+      title: z.string().min(1).max(200),
+      dueAt: z.string().min(1),
+      notes: z.string().max(2000).optional(),
+      dealId: z.string().uuid().optional(),
+      assigneeId: z.string().uuid().optional(),
+      kind: z.string().min(1).max(60),
+      meetingLink: z.string().max(500).optional(),
+      priority: z.enum(['low', 'medium', 'high', 'urgent']),
+    }).safeParse(req.body);
+    if (!body.success) throw invalid('Check the task fields');
+
+    const dueAt = new Date(body.data.dueAt);
+    if (Number.isNaN(dueAt.getTime())) throw invalid('Check the due date');
+
+    const ok = await ctx.asTenant(req, (tx) =>
+      updateTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+        taskId: id, title: body.data.title, dueAt, notes: body.data.notes ?? null,
+        dealId: body.data.dealId ?? null, assigneeId: body.data.assigneeId ?? null,
+        kind: body.data.kind, meetingLink: body.data.meetingLink ?? null,
+        priority: body.data.priority, actorId: actor.userId,
+      }));
+    if (!ok) throw notFound('Task');
+    return { ok: true };
   });
 
   app.post('/v1/tasks/:id/done', async (req) => {

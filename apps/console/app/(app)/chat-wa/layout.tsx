@@ -31,7 +31,7 @@ export default async function ChatWaLayout({ children }: { children: React.React
         <WaBridgeConnectButton />
       </div>
       <div className="inbox">
-        <ConversationList conversations={conversations} basePath="/chat-wa" />
+        <ConversationList conversations={conversations} basePath="/chat-wa" channels={channels} />
         {children}
       </div>
     </>

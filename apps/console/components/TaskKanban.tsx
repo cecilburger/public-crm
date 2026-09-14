@@ -14,6 +14,10 @@ const COLUMNS: { key: Task['status']; label: string }[] = [
   { key: 'cancelled', label: t.tasks.filterCancelled },
 ];
 
+const PRIORITY_CHIP: Record<Task['priority'], string> = {
+  low: 'chip', medium: 'chip brand', high: 'chip warn', urgent: 'chip danger',
+};
+
 /** One column per status — the same shape as the Penjualan board, so a
  *  follow-up reads the same way a deal does: cards you move by finishing
  *  or dropping them, not by dragging. */
@@ -43,6 +47,7 @@ export function TaskKanban({ tasks, members }: { tasks: Task[]; members: Member[
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
                     {isTaskOverdue(tk) ? <span className="chip danger">{t.tasks.overdue}</span> : null}
                     {!isTaskOverdue(tk) && isTaskDueToday(tk) ? <span className="chip warn">{t.tasks.dueToday}</span> : null}
+                    <span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span>
                     <span className="chip">{tk.assigneeId ? names.get(tk.assigneeId) ?? '—' : t.tasks.unassigned}</span>
                   </div>
                   {tk.status === 'open' ? (

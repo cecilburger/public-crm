@@ -1,4 +1,4 @@
-# Kirana
+# MCNASIA
 
 A multi-tenant conversational CRM for Indonesian teams. WhatsApp, Instagram,
 TikTok, Tokopedia and Shopee chats land in one inbox; deals are derived from the

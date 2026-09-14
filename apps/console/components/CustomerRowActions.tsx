@@ -16,6 +16,7 @@ export function CustomerRowActions({ id, name }: { id: string; name: string }) {
   return (
     <>
       <span style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+        <Link href={`/pelanggan/${id}`} className="btn ghost sm">{t.customers.detail}</Link>
         <Link href={`/pelanggan/${id}`} className="btn ghost sm">{t.customers.edit}</Link>
         <button type="button" className="btn ghost sm" style={{ color: 'var(--danger)' }}
                 onClick={() => dialogRef.current?.showModal()}>
