@@ -45,7 +45,7 @@ export function registerMfaRoutes(app: FastifyInstance, ctx: AppCtx): void {
         uri = otpauthUri({
           secret: base32Decode(secret),
           account: who[0]?.email ?? 'user',
-          issuer: `Kirana (${shop[0]?.name ?? 'workspace'})`,
+          issuer: `MCNASIA (${shop[0]?.name ?? 'workspace'})`,
         });
       }
 
@@ -74,7 +74,7 @@ export function registerMfaRoutes(app: FastifyInstance, ctx: AppCtx): void {
       const workspace = await tx.query<{ name: string }>('select name from tenants where id = $1', [actor.tenantId]);
       return {
         secret: base32Encode(secret),
-        uri: otpauthUri({ secret, account: users[0].email, issuer: `Kirana (${workspace[0]?.name ?? 'workspace'})` }),
+        uri: otpauthUri({ secret, account: users[0].email, issuer: `MCNASIA (${workspace[0]?.name ?? 'workspace'})` }),
       };
     });
   });

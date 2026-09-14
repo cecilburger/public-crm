@@ -24,7 +24,7 @@ const date = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 
 /**
- * The shop's own bill from Kirana. Collection is a bank transfer today, so the
+ * The shop's own bill from MCNASIA. Collection is a bank transfer today, so the
  * only action is recording the reference off the statement — which is exactly
  * what the first ten customers will need.
  */

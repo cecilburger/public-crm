@@ -14,6 +14,7 @@ import { audit } from './audit.ts';
  */
 export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
   { table: 'contacts', columns: ['phone_enc', 'email_enc'] },
+  { table: 'brands', columns: ['phone_enc', 'email_enc'] },
   { table: 'messages', columns: ['body_enc'] },
   { table: 'message_drafts', columns: ['body_enc'] },
   { table: 'channels', columns: ['credentials_enc'] },

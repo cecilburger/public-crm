@@ -4,6 +4,7 @@ import { audit } from './audit.ts';
 
 export interface TaskRow {
   id: string; title: string; notes: string | null; dueAt: Date; status: string;
+  kind: string; meetingLink: string | null; priority: string;
   contactId: string; contactName: string | null; contactPhone: string | null;
   dealId: string | null; dealTitle: string | null;
   assigneeId: string | null; createdBy: string | null; createdAt: Date; completedAt: Date | null;
@@ -14,11 +15,12 @@ export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promis
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const rows = await ctx.tx.query<{
     id: string; title: string; notes: string | null; due_at: Date; status: string;
+    kind: string; meeting_link: string | null; priority: string;
     contact_id: string; display_name: string | null; phone_enc: string | null;
     deal_id: string | null; deal_title: string | null;
     assignee_id: string | null; created_by: string | null; created_at: Date; completed_at: Date | null;
   }>(
-    `select tk.id, tk.title, tk.notes, tk.due_at, tk.status,
+    `select tk.id, tk.title, tk.notes, tk.due_at, tk.status, tk.kind, tk.meeting_link, tk.priority,
             tk.contact_id, ct.display_name, ct.phone_enc,
             tk.deal_id, d.title as deal_title,
             tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at
@@ -32,6 +34,7 @@ export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promis
   );
   return rows.map((r) => ({
     id: r.id, title: r.title, notes: r.notes, dueAt: r.due_at, status: r.status,
+    kind: r.kind, meetingLink: r.meeting_link, priority: r.priority,
     contactId: r.contact_id, contactName: r.display_name,
     contactPhone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
     dealId: r.deal_id, dealTitle: r.deal_title,
@@ -44,13 +47,15 @@ export async function createTask(
   args: {
     contactId: string; title: string; dueAt: Date; notes?: string | null;
     dealId?: string | null; conversationId?: string | null; assigneeId?: string | null; createdBy: string;
+    kind?: string; meetingLink?: string | null; priority?: string;
   },
 ): Promise<{ id: string }> {
   const rows = await ctx.tx.query<{ id: string }>(
-    `insert into tasks (tenant_id, contact_id, deal_id, conversation_id, title, notes, due_at, assignee_id, created_by)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
+    `insert into tasks (tenant_id, contact_id, deal_id, conversation_id, title, notes, due_at, assignee_id, created_by, kind, meeting_link, priority)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
     [ctx.tenantId, args.contactId, args.dealId ?? null, args.conversationId ?? null, args.title,
-     args.notes ?? null, args.dueAt, args.assigneeId ?? null, args.createdBy],
+     args.notes ?? null, args.dueAt, args.assigneeId ?? null, args.createdBy,
+     args.kind ?? 'follow_up', args.meetingLink ?? null, args.priority ?? 'medium'],
   );
   const id = rows[0]!.id;
   await audit(ctx.tx, ctx.tenantId, {
@@ -58,6 +63,68 @@ export async function createTask(
     resourceType: 'task', resourceId: id, meta: { contactId: args.contactId, dueAt: args.dueAt.toISOString() },
   });
   return { id };
+}
+
+/**
+ * A full re-save of the editable fields — the detail drawer submits the whole
+ * form every time, not a sparse patch, so every field here is written
+ * directly rather than coalesced against the existing row. Status and
+ * contact are deliberately absent: those change through `setTaskStatus` and
+ * are not something this edit view offers to move.
+ */
+export async function updateTask(
+  ctx: Ctx,
+  args: {
+    taskId: string; title: string; dueAt: Date; notes: string | null;
+    dealId: string | null; assigneeId: string | null; kind: string; meetingLink: string | null;
+    priority: string; actorId: string;
+  },
+): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update tasks set title = $3, due_at = $4, notes = $5, deal_id = $6,
+            assignee_id = $7, kind = $8, meeting_link = $9, priority = $10
+      where tenant_id = $1 and id = $2
+      returning id`,
+    [ctx.tenantId, args.taskId, args.title, args.dueAt, args.notes, args.dealId,
+     args.assigneeId, args.kind, args.meetingLink, args.priority],
+  );
+  if (!rows[0]) return false;
+
+  await audit(ctx.tx, ctx.tenantId, {
+    actorType: 'user', actorId: args.actorId, action: 'task.updated',
+    resourceType: 'task', resourceId: args.taskId,
+  });
+  return true;
+}
+
+export interface TaskKindRow {
+  id: string; name: string; createdAt: Date;
+}
+
+/** Every custom "Jenis" a tenant has added, for the task form's dropdown. */
+export async function listTaskKinds(ctx: Ctx): Promise<TaskKindRow[]> {
+  const rows = await ctx.tx.query<{ id: string; name: string; created_at: Date }>(
+    `select id, name, created_at from task_kinds where tenant_id = $1 order by lower(name) asc`,
+    [ctx.tenantId],
+  );
+  return rows.map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at }));
+}
+
+/**
+ * Adding the same name twice (racing tabs, or someone re-adding one that's
+ * already there) just hands back the existing row instead of erroring — this
+ * is a casual tag list, not a uniquely-named business record.
+ */
+export async function createTaskKind(
+  ctx: Ctx, args: { name: string; createdBy: string },
+): Promise<TaskKindRow> {
+  const rows = await ctx.tx.query<{ id: string; name: string; created_at: Date }>(
+    `insert into task_kinds (tenant_id, name, created_by) values ($1,$2,$3)
+     on conflict (tenant_id, lower(name)) do update set name = task_kinds.name
+     returning id, name, created_at`,
+    [ctx.tenantId, args.name, args.createdBy],
+  );
+  return { id: rows[0]!.id, name: rows[0]!.name, createdAt: rows[0]!.created_at };
 }
 
 /** Marking a task done or letting it go — the only two ways a follow-up ends. */

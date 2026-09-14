@@ -12,9 +12,10 @@ import {
   connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
-  createTask, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
+  createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
+import QRCode from 'qrcode';
 import { buildApp } from '../apps/api/src/app.ts';
 import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
@@ -99,9 +100,16 @@ const hour = 60 * min;
 // The wa-bridge numbers behind "Status Nomor" — a spread of session states
 // (a couple actually live, one mid-pairing, one that errored out, one that
 // dropped) so the monitoring table isn't just a wall of green dots.
+//
+// The "mid-pairing" one needs a real `qr_data` image, not just the
+// `qr_pending` status — the console only shows the "Lihat QR" button when
+// both are set (same as a real pending session mid-pairing would have),
+// so a QR-less pending row is invisible in the UI, not just unstyled.
+const demoQrDataUrl = await QRCode.toDataURL('https://wa.me/qr/demo-pairing-toko-demo');
+
 const waBridgeSpecs: {
   displayName: string; phone?: string; sessionStatus: string; channelStatus: string;
-  lastSeenAgo?: number; lastError?: string; maxPerDay: number;
+  lastSeenAgo?: number; lastError?: string; maxPerDay: number; qrData?: string;
   chat: { meeting: number; minat: number; balas: number; belum: number; tolak: number; bot: number };
 }[] = [
   // Matches the numbers on the settings mockup exactly — the busiest number, live.
@@ -110,7 +118,7 @@ const waBridgeSpecs: {
   { displayName: 'WA Toko — Reseller',      phone: '+6281199000002', sessionStatus: 'ready',        channelStatus: 'connected',  lastSeenAgo: 40 * min, maxPerDay: 100,
     chat: { meeting: 1, minat: 8, balas: 42, belum: 210, tolak: 6, bot: 54 } },
   // Never finished pairing — no chats to have a funnel over yet.
-  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'qr_pending',   channelStatus: 'connecting', maxPerDay: 50,
+  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'qr_pending',   channelStatus: 'connecting', maxPerDay: 50, qrData: demoQrDataUrl,
     chat: { meeting: 0, minat: 0, balas: 0, belum: 0, tolak: 0, bot: 0 } },
   { displayName: 'WA Toko — Admin Lama',    phone: '+6281199000004', sessionStatus: 'error',        channelStatus: 'error',      lastSeenAgo: 3 * 24 * hour, lastError: 'Sesi keluar otomatis — perangkat tertaut dicabut dari HP', maxPerDay: 80,
     chat: { meeting: 0, minat: 2, balas: 10, belum: 305, tolak: 40, bot: 0 } },
@@ -127,12 +135,13 @@ const waBridgeChannels = await withTenant(db, tenantId, async (tx) => {
       `update wa_bridge_sessions
           set status = $3, last_seen_at = $4, last_error = $5, phone_e164 = $6, updated_at = now(),
               max_per_day = $7, chat_meeting = $8, chat_minat = $9, chat_balas = $10,
-              chat_belum = $11, chat_tolak = $12, chat_bot = $13
+              chat_belum = $11, chat_tolak = $12, chat_bot = $13, qr_data = $14
         where tenant_id = $1 and channel_id = $2`,
       [tenantId, channelId, spec.sessionStatus,
        spec.lastSeenAgo !== undefined ? new Date(now - spec.lastSeenAgo) : null,
        spec.lastError ?? null, spec.phone ?? null, spec.maxPerDay,
-       spec.chat.meeting, spec.chat.minat, spec.chat.balas, spec.chat.belum, spec.chat.tolak, spec.chat.bot],
+       spec.chat.meeting, spec.chat.minat, spec.chat.balas, spec.chat.belum, spec.chat.tolak, spec.chat.bot,
+       spec.qrData ?? null],
     );
     await tx.query(
       `update channels set status = $3, phone_e164 = $4 where tenant_id = $1 and id = $2`,
@@ -330,18 +339,67 @@ await withTenant(db, tenantId, async (tx) => {
     `select ct.id as contact_id, ct.display_name from contacts ct where ct.tenant_id = $1`, [tenantId]);
   const byName = (name: string) => contacts.find((c) => c.display_name === name)?.contact_id;
 
-  const tasks: [string, string, number, string][] = [
-    ['Bu Sari',       'Follow-up harga grosir batik parang', -1 * 24 * hour, agents[0].id],
-    ['Pak Hendra',    'Kirim invoice PO korporat Q1',          2 * hour,        agents[0].id],
-    ['Toko Melati',   'Konfirmasi ukuran per warna restock',   1 * 24 * hour,  agents[1].id],
-    ['Bu Ratna',      'Cek kepuasan setelah pesanan diterima', 3 * 24 * hour,  agents[0].id],
+  const tasks: [string, string, number, string, string?, string?, string?][] = [
+    ['Bu Sari',       'Follow-up harga grosir batik parang', -1 * 24 * hour, agents[0].id,
+      undefined, undefined, 'high'],
+    ['Pak Hendra',    'Kirim invoice PO korporat Q1',          2 * hour,        agents[0].id,
+      undefined, undefined, 'urgent'],
+    ['Toko Melati',   'Konfirmasi ukuran per warna restock',   1 * 24 * hour,  agents[1].id,
+      undefined, undefined, 'medium'],
+    ['Bu Ratna',      'Cek kepuasan setelah pesanan diterima', 3 * 24 * hour,  agents[0].id,
+      undefined, undefined, 'low'],
+    ['Toko Melati',   'Meeting nego harga grosir 24 pcs',      4 * hour,       agents[1].id,
+      'meeting', 'https://meet.google.com/toko-demo-nego', 'urgent'],
   ];
-  for (const [contactName, title, offset, assigneeId] of tasks) {
+  for (const [contactName, title, offset, assigneeId, kind, meetingLink, priority] of tasks) {
     const contactId = byName(contactName);
     if (!contactId) continue;
     await createTask(ctx, {
       contactId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id,
+      kind, meetingLink, priority,
     });
+  }
+});
+
+// A closed-out history for the two newest contacts, so their detail page's
+// Activities panel opens with a real spread instead of an empty state — open
+// tasks under Upcoming, done/cancelled ones grouped across a couple of months.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const contacts = await tx.query<{ contact_id: string; display_name: string }>(
+    `select ct.id as contact_id, ct.display_name from contacts ct where ct.tenant_id = $1`, [tenantId]);
+  const byName = (name: string) => contacts.find((c) => c.display_name === name)?.contact_id;
+  const day = 24 * hour;
+
+  const upcoming: [string, string, number, string, string][] = [
+    ['Ibu Wulan Sari',    'Follow-up repeat order dress linen',   -1 * day, agents[0].id, 'high'],
+    ['Ibu Wulan Sari',    'Konfirmasi alamat kirim batch baru',    2 * day, agents[1].id, 'low'],
+    ['Pak Yusuf Hidayat', 'Follow-up order reseller bulan ini',    1 * day, agents[0].id, 'medium'],
+  ];
+  for (const [contactName, title, offset, assigneeId, priority] of upcoming) {
+    const contactId = byName(contactName);
+    if (!contactId) continue;
+    await createTask(ctx, {
+      contactId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id, priority,
+    });
+  }
+
+  const closed: [string, string, number, 'done' | 'cancelled', number, string][] = [
+    ['Ibu Wulan Sari',    'Follow-up ukuran dress linen',   -5 * day,  'done',      -5 * day,  agents[0].id],
+    ['Ibu Wulan Sari',    'Kirim katalog motif baru',        -40 * day, 'done',      -40 * day, agents[1].id],
+    ['Ibu Wulan Sari',    'Cek ongkir Yogyakarta',           -18 * day, 'cancelled', 0,         agents[0].id],
+    ['Pak Yusuf Hidayat', 'Follow-up restock batik reguler', -70 * day, 'done',      -70 * day, agents[0].id],
+  ];
+  for (const [contactName, title, dueOffset, status, completedOffset, assigneeId] of closed) {
+    const contactId = byName(contactName);
+    if (!contactId) continue;
+    const { id } = await createTask(ctx, {
+      contactId, title, dueAt: new Date(now + dueOffset), assigneeId, createdBy: agents[0].id,
+    });
+    await setTaskStatus(ctx, { taskId: id, status, actorId: assigneeId });
+    if (status === 'done') {
+      await tx.query(`update tasks set completed_at = $2 where id = $1`, [id, new Date(now + completedOffset)]);
+    }
   }
 });
 
@@ -548,7 +606,7 @@ const app = buildApp({
 await app.listen({ port: e.PORT, host: '127.0.0.1' });
 
 console.log(`
-  Kirana dev stack (in-memory Postgres, real API)
+  MCNASIA dev stack (in-memory Postgres, real API)
 
   API        http://localhost:${e.PORT}
   workspace  toko-demo

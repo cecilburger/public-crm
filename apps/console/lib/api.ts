@@ -234,6 +234,11 @@ export interface Task {
   notes: string | null;
   dueAt: string;
   status: 'open' | 'done' | 'cancelled';
+  // Free text, not a closed union — a tenant can add its own "Jenis" values
+  // (see TaskKind) on top of the four built into the UI.
+  kind: string;
+  meetingLink: string | null;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
   contactId: string;
   contactName: string | null;
   contactPhone: string | null;
@@ -243,6 +248,13 @@ export interface Task {
   createdBy: string | null;
   createdAt: string;
   completedAt: string | null;
+}
+
+/** A custom "Jenis" a tenant added from the task form's "+ Tambah Jenis" option. */
+export interface TaskKind {
+  id: string;
+  name: string;
+  createdAt: string;
 }
 
 export interface Brand {
@@ -298,6 +310,47 @@ export interface SalesTarget {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// Mirrors `packages/core/src/documentModels/standar.ts` — console can't import
+// a server package, and this shape is small/stable enough to repeat here.
+export type DocumentMergeField = 'tenant_name' | 'document_name';
+
+export type DocumentLayoutElement =
+  | {
+      id: string; type: 'text'; x: number; y: number; w: number; h: number;
+      fontSize: number; bold: boolean;
+      content: { kind: 'literal'; text: string } | { kind: 'field'; field: DocumentMergeField };
+    }
+  | { id: string; type: 'image'; x: number; y: number; w: number; h: number; dataUrl: string };
+
+// Named `DocRecord`, not `Document` — that name is already the DOM's global type.
+export interface DocRecord {
+  id: string;
+  name: string;
+  // Free text, not a closed union — a tenant can add its own "Jenis"/"Model"
+  // values (see DocumentKind/DocumentModel) on top of the ones built into the UI.
+  kind: string;
+  model: string;
+  useTemplate: boolean;
+  layout: DocumentLayoutElement[] | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A custom "Jenis" a tenant added from the Dokumen form's "+ Tambah Jenis" option. */
+export interface DocumentKind {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+/** A custom "Model" a tenant added from the Dokumen form's "+ Tambah Model" option. */
+export interface DocumentModel {
+  id: string;
+  name: string;
+  createdAt: string;
 }
 
 export interface ContactPurchaseSummary {

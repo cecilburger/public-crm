@@ -1,5 +1,6 @@
 'use client';
 
+import { createPortal } from 'react-dom';
 import { useActionState, useEffect, useRef, useState } from 'react';
 import {
   disconnectWaBridgeSession, deleteWaBridgeSession, reconnectWaBridgeSession, type ActionResult,
@@ -17,6 +18,18 @@ export function WaBridgeRailList({ channels }: { channels: WaBridgeChannel[] }) 
   const qrDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
+  // The manage ("⋮") menu is portalled to `document.body` and positioned from
+  // the button's own on-screen rect, same reasoning as `NotificationBell`:
+  // this list lives in the rail, a narrow scrolling column, and an
+  // absolutely-positioned menu anchored `right: 0` inside it either gets
+  // clipped by the rail's `overflow-y: auto` (one axis can't scroll-clip
+  // while the other stays visible) or, worse, lands over the wrong content
+  // entirely since its "container" is the ⋮ button itself, not the rail.
+  const [manageId, setManageId] = useState<string | null>(null);
+  const [manageCoords, setManageCoords] = useState<{ top: number; left: number } | null>(null);
+  const manageButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const manageMenuRef = useRef<HTMLDivElement>(null);
+
   // Looked up fresh every render, not captured at click time — the QR image
   // rotates roughly every 20-45s while the modal is open, and this keeps it
   // in step with whatever `channels` the rail was last refreshed with.
@@ -28,9 +41,35 @@ export function WaBridgeRailList({ channels }: { channels: WaBridgeChannel[] }) 
     qrDialogRef.current?.showModal();
   };
   const openDeleteConfirm = (c: WaBridgeChannel) => {
+    setManageId(null);
     setDeleteChannelId(c.id);
     deleteDialogRef.current?.showModal();
   };
+
+  const toggleManage = (channelId: string) => {
+    if (manageId === channelId) {
+      setManageId(null);
+      return;
+    }
+    const btn = manageButtonRefs.current[channelId];
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      setManageCoords({ top: r.bottom + 6, left: r.left });
+    }
+    setManageId(channelId);
+  };
+
+  useEffect(() => {
+    if (!manageId) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (manageButtonRefs.current[manageId]?.contains(target)) return;
+      if (manageMenuRef.current?.contains(target)) return;
+      setManageId(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [manageId]);
 
   useEffect(() => {
     if (deleteState?.ok) {
@@ -38,6 +77,8 @@ export function WaBridgeRailList({ channels }: { channels: WaBridgeChannel[] }) 
       setDeleteChannelId(null);
     }
   }, [deleteState]);
+
+  const manageChannel = channels.find((c) => c.id === manageId) ?? null;
 
   // Every hook above must run on every render regardless of `channels` —
   // this is the earliest point an early return is safe.
@@ -61,35 +102,43 @@ export function WaBridgeRailList({ channels }: { channels: WaBridgeChannel[] }) 
                 <span className="rail-sub-label">{c.displayName}</span>
               </span>
             )}
-            <details className="dropdown">
-              <summary className="rail-sub-more" aria-label={t.waBridge.manage}>⋮</summary>
-              <div className="dropdown-body" style={{ flexDirection: 'column', width: 176 }}>
-                {c.status === 'disabled' ? (
-                  <form action={reconnectWaBridgeSession}>
-                    <CsrfField />
-                    <input type="hidden" name="channelId" value={c.id} />
-                    <button className="btn ghost sm" type="submit" style={{ width: '100%', justifyContent: 'flex-start' }}>
-                      {t.waBridge.reconnect}
-                    </button>
-                  </form>
-                ) : (
-                  <form action={disconnectWaBridgeSession}>
-                    <CsrfField />
-                    <input type="hidden" name="channelId" value={c.id} />
-                    <button className="btn ghost sm" type="submit" style={{ width: '100%', justifyContent: 'flex-start' }}>
-                      {t.waBridge.disconnect}
-                    </button>
-                  </form>
-                )}
-                <button type="button" className="btn ghost sm" onClick={() => openDeleteConfirm(c)}
-                        style={{ width: '100%', justifyContent: 'flex-start', color: 'var(--danger)' }}>
-                  {t.waBridge.delete}
-                </button>
-              </div>
-            </details>
+            <button type="button" className="rail-sub-more" aria-label={t.waBridge.manage}
+                    aria-expanded={manageId === c.id}
+                    ref={(el) => { manageButtonRefs.current[c.id] = el; }}
+                    onClick={() => toggleManage(c.id)}>
+              ⋮
+            </button>
           </div>
         );
       })}
+
+      {manageId && manageChannel && manageCoords ? createPortal(
+        <div className="dropdown-body vertical" ref={manageMenuRef}
+             style={{ position: 'fixed', top: manageCoords.top, left: manageCoords.left, width: 176 }}>
+          {manageChannel.status === 'disabled' ? (
+            <form action={reconnectWaBridgeSession} onSubmit={() => setManageId(null)}>
+              <CsrfField />
+              <input type="hidden" name="channelId" value={manageChannel.id} />
+              <button className="btn ghost sm" type="submit" style={{ width: '100%', justifyContent: 'flex-start' }}>
+                {t.waBridge.reconnect}
+              </button>
+            </form>
+          ) : (
+            <form action={disconnectWaBridgeSession} onSubmit={() => setManageId(null)}>
+              <CsrfField />
+              <input type="hidden" name="channelId" value={manageChannel.id} />
+              <button className="btn ghost sm" type="submit" style={{ width: '100%', justifyContent: 'flex-start' }}>
+                {t.waBridge.disconnect}
+              </button>
+            </form>
+          )}
+          <button type="button" className="btn ghost sm" onClick={() => openDeleteConfirm(manageChannel)}
+                  style={{ width: '100%', justifyContent: 'flex-start', color: 'var(--danger)' }}>
+            {t.waBridge.delete}
+          </button>
+        </div>,
+        document.body,
+      ) : null}
 
       <dialog ref={qrDialogRef} className="modal">
         <header className="modal-head">

@@ -1,6 +1,6 @@
 # Threat model
 
-Scope: the Kirana CRM control plane and data plane as built in this repository —
+Scope: the MCNASIA CRM control plane and data plane as built in this repository —
 API, workers, Postgres, Redis, and the Meta integration. STRIDE per component,
 then the attack scenarios that actually keep this class of product awake.
 

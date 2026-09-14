@@ -16,3 +16,9 @@ export function CsrfField() {
   const token = useContext(CsrfContext);
   return <input type="hidden" name="csrf" value={token} />;
 }
+
+/** For the rare action called directly (no `<form>` submit) that still needs
+ *  to build its own FormData — e.g. an inline "add" button. */
+export function useCsrfToken(): string {
+  return useContext(CsrfContext);
+}

@@ -87,8 +87,8 @@ describe('base32', () => {
 
 describe('enrollment material', () => {
   it('builds a scannable otpauth URI with the issuer encoded', () => {
-    const uri = otpauthUri({ secret: RFC_SECRET, account: 'rani@toko demo.id', issuer: 'Kirana' });
-    expect(uri).toMatch(/^otpauth:\/\/totp\/Kirana%3Arani%40toko%20demo\.id\?/);
+    const uri = otpauthUri({ secret: RFC_SECRET, account: 'rani@toko demo.id', issuer: 'MCNASIA' });
+    expect(uri).toMatch(/^otpauth:\/\/totp\/MCNASIA%3Arani%40toko%20demo\.id\?/);
     expect(uri).toContain('secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ');
     expect(uri).toContain('digits=6');
     expect(uri).toContain('period=30');

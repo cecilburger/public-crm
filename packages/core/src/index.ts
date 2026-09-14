@@ -16,3 +16,4 @@ export * from './email.ts';
 export * from './health.ts';
 export * from './phone.ts';
 export * from './env.ts';
+export * from './documentModels/index.ts';

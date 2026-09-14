@@ -38,6 +38,25 @@ export function dateOnly(iso: string): string {
   return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+/** ISO timestamp → the value a `datetime-local` input needs to show it in the
+ *  browser's own local time, for pre-filling an edit form. */
+export function toDatetimeLocal(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * A `wa.me` deep link — for prospects like Brand outreach, who aren't
+ * necessarily a contact with a conversation in this CRM yet, so this opens
+ * WhatsApp itself rather than an inbox thread. `phone` is expected E.164
+ * (`+62…`); wa.me wants the digits alone, no `+`.
+ */
+export function waMeLink(phone: string, text?: string): string {
+  const digits = phone.replace(/\D/g, '');
+  return text ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}` : `https://wa.me/${digits}`;
+}
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');

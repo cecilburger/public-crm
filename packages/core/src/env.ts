@@ -70,7 +70,7 @@ const schema = z.object({
   METRICS_TOKEN: z.string().default(''),
 
   SMTP_URL: z.string().default(''),
-  EMAIL_FROM: z.string().default('Kirana <halo@kirana.id>'),
+  EMAIL_FROM: z.string().default('MCNASIA <halo@kirana.id>'),
 
   PUBLIC_BASE_URL: z.string().default('http://localhost:8080'),
   CORS_ORIGINS: z.string().default('http://localhost:3000'),

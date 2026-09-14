@@ -1,14 +1,18 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import Link from 'next/link';
 import { createTask, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import type { Contact, Member, Deal } from '@/lib/api';
+import { TaskKindField } from '@/components/TaskKindField';
+import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
 
-export function TaskForm({ contacts, members, deals }: { contacts: Contact[]; members: Member[]; deals: Deal[] }) {
+export function TaskForm({
+  contacts, members, deals, taskKinds,
+}: { contacts: Contact[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[] }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTask, null);
+  const [kind, setKind] = useState('follow_up');
 
   return (
     <form id="task-form" action={formAction} className="odoo-form-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -60,6 +64,16 @@ export function TaskForm({ contacts, members, deals }: { contacts: Contact[]; me
                 <label htmlFor="dueAt">{t.tasks.formDueAt}</label>
                 <input className="line-input" id="dueAt" name="dueAt" type="datetime-local" required />
               </div>
+
+              <TaskKindField id="kind" name="kind" value={kind} onChange={setKind} initialCustomKinds={taskKinds} />
+
+              {kind === 'meeting' ? (
+                <div className="record-field" style={{ gridColumn: '1 / -1' }}>
+                  <label htmlFor="meetingLink">{t.tasks.formMeetingLink}</label>
+                  <input className="line-input" id="meetingLink" name="meetingLink" type="url"
+                         placeholder={t.tasks.meetingLinkPlaceholder} />
+                </div>
+              ) : null}
 
               <div className="record-field">
                 <label htmlFor="assigneeId">{t.tasks.formAssignee}</label>

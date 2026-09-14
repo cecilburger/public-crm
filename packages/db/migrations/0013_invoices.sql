@@ -1,4 +1,4 @@
--- Charging the shop for their Kirana plan.
+-- Charging the shop for their MCNASIA plan.
 --
 -- Until now usage was metered perfectly and nobody was ever billed. An invoice
 -- is a durable, numbered record — not a computed view — because once it is sent

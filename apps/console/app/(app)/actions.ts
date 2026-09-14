@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, type DocumentLayoutElement } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { assertCsrf, CsrfError } from '@/lib/csrf';
 
@@ -98,6 +98,9 @@ export async function createTask(_prev: ActionResult | null, form: FormData): Pr
   const notes = String(form.get('notes') ?? '').trim();
   const dealId = String(form.get('dealId') ?? '').trim();
   const assigneeId = String(form.get('assigneeId') ?? '').trim();
+  const kind = String(form.get('kind') ?? '').trim();
+  const meetingLink = String(form.get('meetingLink') ?? '').trim();
+  const priority = String(form.get('priority') ?? '').trim();
 
   if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
 
@@ -107,6 +110,7 @@ export async function createTask(_prev: ActionResult | null, form: FormData): Pr
       body: {
         contactId, title, dueAt,
         notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
+        kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
       },
     });
     revalidatePath('/tugas');
@@ -129,6 +133,9 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
   const notes = String(form.get('notes') ?? '').trim();
   const dealId = String(form.get('dealId') ?? '').trim();
   const assigneeId = String(form.get('assigneeId') ?? '').trim();
+  const kind = String(form.get('kind') ?? '').trim();
+  const meetingLink = String(form.get('meetingLink') ?? '').trim();
+  const priority = String(form.get('priority') ?? '').trim();
 
   if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
 
@@ -138,6 +145,37 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
       body: {
         contactId, title, dueAt,
         notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
+        kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
+      },
+    });
+    revalidatePath('/tugas');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
+  }
+}
+
+export async function updateTask(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const taskId = String(form.get('taskId') ?? '');
+  const title = String(form.get('title') ?? '').trim();
+  const dueAt = String(form.get('dueAt') ?? '').trim();
+  const notes = String(form.get('notes') ?? '').trim();
+  const dealId = String(form.get('dealId') ?? '').trim();
+  const assigneeId = String(form.get('assigneeId') ?? '').trim();
+  const kind = String(form.get('kind') ?? '').trim();
+  const meetingLink = String(form.get('meetingLink') ?? '').trim();
+  const priority = String(form.get('priority') ?? '').trim();
+
+  if (!taskId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
+
+  try {
+    await api(`/v1/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: {
+        title, dueAt,
+        notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
+        kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
       },
     });
     revalidatePath('/tugas');
@@ -159,6 +197,33 @@ export async function cancelTask(form: FormData): Promise<void> {
   const taskId = String(form.get('taskId') ?? '');
   await api(`/v1/tasks/${taskId}/cancel`, { method: 'POST' });
   revalidatePath('/tugas');
+}
+
+export interface AddTaskKindResult {
+  ok: boolean;
+  error?: string;
+  kind?: { id: string; name: string };
+}
+
+/**
+ * Called directly from the Jenis field's "+ Tambah" button, not a `<form>`
+ * submit — the caller builds its own FormData (via `useCsrfToken`) so it can
+ * read the created kind back and drop it straight into the dropdown, without
+ * a full page reload.
+ */
+export async function addTaskKind(form: FormData): Promise<AddTaskKindResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const name = String(form.get('name') ?? '').trim();
+  if (!name) return { ok: false, error: t.tasks.addKindFailed };
+
+  try {
+    const kind = await api<{ id: string; name: string }>('/v1/task-kinds', { method: 'POST', body: { name } });
+    revalidatePath('/tugas');
+    revalidatePath('/tugas/baru');
+    return { ok: true, kind };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.addKindFailed };
+  }
 }
 
 /* ------------------------------------------------------------- pelanggan */
@@ -320,6 +385,124 @@ export async function deleteBrand(form: FormData): Promise<void> {
   await api(`/v1/brands/${id}`, { method: 'DELETE' });
   revalidatePath('/brand');
   redirect('/brand');
+}
+
+/* --------------------------------------------------------------- dokumen */
+
+function readDocumentForm(form: FormData) {
+  return {
+    name: String(form.get('name') ?? '').trim(),
+    kind: String(form.get('kind') ?? '').trim(),
+    model: String(form.get('model') ?? '').trim(),
+    useTemplate: String(form.get('useTemplate') ?? '') === 'ya',
+  };
+}
+
+export async function createDocument(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const { name, kind, model, useTemplate } = readDocumentForm(form);
+  if (!name || !kind || !model) return { ok: false, error: t.document.failed };
+
+  try {
+    await api('/v1/documents', { method: 'POST', body: { name, kind, model, useTemplate } });
+    revalidatePath('/customize/dokumen');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.document.failed };
+  }
+}
+
+export async function updateDocument(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const { name, kind, model, useTemplate } = readDocumentForm(form);
+  if (!name || !kind || !model) return { ok: false, error: t.document.failed };
+
+  try {
+    await api(`/v1/documents/${id}`, { method: 'PATCH', body: { name, kind, model, useTemplate } });
+    revalidatePath('/customize/dokumen');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.document.failed };
+  }
+}
+
+export interface AddDocumentKindResult {
+  ok: boolean;
+  error?: string;
+  kind?: { id: string; name: string };
+}
+
+/** Called directly from the Jenis field's "+ Tambah" button — same shape as `addTaskKind`. */
+export async function addDocumentKind(form: FormData): Promise<AddDocumentKindResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const name = String(form.get('name') ?? '').trim();
+  if (!name) return { ok: false, error: t.document.addKindFailed };
+
+  try {
+    const kind = await api<{ id: string; name: string }>('/v1/document-kinds', { method: 'POST', body: { name } });
+    revalidatePath('/customize/dokumen');
+    return { ok: true, kind };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.document.addKindFailed };
+  }
+}
+
+export interface AddDocumentModelResult {
+  ok: boolean;
+  error?: string;
+  model?: { id: string; name: string };
+}
+
+/** Called directly from the Model field's "+ Tambah" button — same shape as `addTaskKind`. */
+export async function addDocumentModel(form: FormData): Promise<AddDocumentModelResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const name = String(form.get('name') ?? '').trim();
+  if (!name) return { ok: false, error: t.document.addModelFailed };
+
+  try {
+    const model = await api<{ id: string; name: string }>('/v1/document-models', { method: 'POST', body: { name } });
+    revalidatePath('/customize/dokumen');
+    return { ok: true, model };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.document.addModelFailed };
+  }
+}
+
+/**
+ * Called from the canvas editor's "Simpan" button, not a `<form>` submit —
+ * the caller builds its own FormData (via `useCsrfToken`) with the whole
+ * element array serialized as JSON, same pattern as `addTaskKind`.
+ */
+export async function saveDocumentLayout(form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const documentId = String(form.get('documentId') ?? '');
+  const raw = String(form.get('layout') ?? '');
+  if (!documentId || !raw) return { ok: false, error: t.document.editorFailed };
+
+  let layout: DocumentLayoutElement[];
+  try {
+    layout = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: t.document.editorFailed };
+  }
+
+  try {
+    await api(`/v1/documents/${documentId}/layout`, { method: 'PATCH', body: { layout } });
+    revalidatePath('/customize/dokumen');
+    revalidatePath(`/customize/dokumen/${documentId}/editor`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.document.editorFailed };
+  }
+}
+
+export async function deleteDocument(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('id') ?? '');
+  await api(`/v1/documents/${id}`, { method: 'DELETE' });
+  revalidatePath('/customize/dokumen');
+  redirect('/customize/dokumen');
 }
 
 export async function moveDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {

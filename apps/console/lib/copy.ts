@@ -14,7 +14,7 @@
  */
 export const t = {
   app: {
-    name: 'Kirana',
+    name: 'MCNASIA',
     tagline: 'Semua chat pelanggan di satu tempat',
   },
 
@@ -25,7 +25,7 @@ export const t = {
     empty: (q: string) => `Tidak ada hasil untuk "${q}".`,
     hint: 'Belum ada yang diketik.',
     categoryLabel: {
-      contact: 'Pelanggan', order: 'Pesanan', task: 'Tugas', brand: 'Brand', deal: 'Penjualan',
+      contact: 'Pelanggan', order: 'Pesanan', task: 'Tugas', brand: 'Tracker Brand', deal: 'Penjualan',
     } as Record<string, string>,
   },
 
@@ -40,13 +40,14 @@ export const t = {
 
   nav: {
     dashboard: 'Dashboard',
+    inbox: 'Inbox',
     chats: 'Obrolan',
     chatWa: 'Chat WA',
     customers: 'Pelanggan',
     orders: 'Pesanan',
     tasks: 'Tugas',
     contact: 'Contact',
-    brand: 'Brand',
+    brand: 'Tracker Brand',
     monitoring: 'Monitoring',
     waStatus: 'Status Nomor',
     agentPerformance: 'Performa Agen',
@@ -54,8 +55,12 @@ export const t = {
     sales: 'Penjualan',
     target: 'Target',
     team: 'Tim',
+    customize: 'Customize',
+    document: 'Dokumen',
     settings: 'Pengaturan',
     signOut: 'Keluar',
+    collapse: 'Ciutkan menu',
+    expand: 'Perluas menu',
   },
 
   roles: {
@@ -468,8 +473,8 @@ export const t = {
     countedHowBody:
       'Satu pelanggan yang chat dihitung 1 obrolan untuk 24 jam ke depan — mau dia kirim 2 pesan atau 50 pesan, tetap 1. Kalau dia chat lagi tiga hari kemudian, baru dihitung lagi.',
 
-    invoices: 'Tagihan dari Kirana',
-    invoicesNote: 'Ini tagihan toko Anda ke Kirana. Pembayaran lewat transfer bank.',
+    invoices: 'Tagihan dari MCNASIA',
+    invoicesNote: 'Ini tagihan toko Anda ke MCNASIA. Pembayaran lewat transfer bank.',
     invoicesEmpty: 'Belum ada tagihan. Tagihan pertama terbit di akhir periode.',
     invNumber: 'Nomor',
     invIssued: 'Terbit',
@@ -542,7 +547,7 @@ export const t = {
     user: 'Orang',
     api_key: 'Aplikasi lain',
     system: 'Sistem',
-    support: 'Tim Kirana',
+    support: 'Tim MCNASIA',
   } as Record<string, string>,
 
   channels: {
@@ -583,6 +588,8 @@ export const t = {
       ready: 'Tersambung', disconnected: 'Terputus', logged_out: 'Diputuskan', error: 'Gagal',
       connecting: 'Menyambungkan', connected: 'Tersambung', disabled: 'Nonaktif',
     } as Record<string, string>,
+    filteringNumber: (name: string) => `Nomor: ${name}`,
+    clearFilter: 'Lihat semua nomor',
   },
 
   waChannel: {
@@ -599,11 +606,13 @@ export const t = {
     maxPerDaySave: 'Simpan',
     maxPerDaySaved: 'Tersimpan.',
     maxPerDayFailed: 'Gagal menyimpan batas harian',
-    chat: 'Chat',
+    statusChat: 'Status Chat',
     chatLabel: {
       meeting: 'Meeting', minat: 'Minat', balas: 'Balas', belum: 'Belum', tolak: 'Tolak', bot: 'Bot',
     } as Record<string, string>,
     totalChats: 'Jumlah Chat',
+    chat: 'Chat',
+    openChat: 'Buka Chat',
   },
 
   messageTemplate: {
@@ -648,6 +657,67 @@ export const t = {
     remove: 'Hapus',
     empty: 'Belum ada balasan cepat. Tambahkan yang sering dipakai tim di sini.',
     failed: 'Gagal menyimpan balasan cepat',
+  },
+
+  document: {
+    title: 'Dokumen',
+    add: 'Tambah Dokumen',
+    name: 'Nama',
+    namePlaceholder: 'Contoh: Penawaran Batik Grosir',
+    kind: 'Jenis',
+    kindLabel: {
+      penawaran: 'Penawaran', invoice: 'Invoice', kwitansi: 'Kwitansi', lainnya: 'Lainnya',
+    } as Record<string, string>,
+    addKind: 'Tambah Jenis Baru',
+    addKindPlaceholder: 'Nama jenis, misal: Kontrak',
+    addKindFailed: 'Gagal menambah jenis',
+    model: 'Model',
+    modelLabel: {
+      standar: 'Standar',
+    } as Record<string, string>,
+    addModel: 'Tambah Model Baru',
+    addModelPlaceholder: 'Nama model, misal: Formal',
+    addModelFailed: 'Gagal menambah model',
+    useTemplate: 'Template',
+    useTemplateYes: 'Ya',
+    useTemplateNo: 'Tidak',
+    generate: 'Unduh (.docx)',
+    generateFailed: 'Gagal membuat dokumen',
+    actions: 'Aksi',
+    detail: 'Detail',
+    delete: 'Hapus',
+    deleteTitle: 'Hapus dokumen ini?',
+    deleteWarning: (name: string) => `Dokumen "${name}" akan dihapus permanen. Tindakan ini tidak bisa dibatalkan.`,
+    deleteConfirm: 'Ya, hapus',
+    discard: 'Batal',
+    newTitle: 'Dokumen Baru',
+    detailTitle: 'Detail Dokumen',
+    close: 'Tutup',
+    save: 'Simpan',
+    saving: 'Menyimpan…',
+    failed: 'Gagal menyimpan dokumen',
+    empty: 'Belum ada dokumen. Tambahkan dokumen pertama di bawah.',
+
+    editLayout: 'Kustomisasi Tampilan',
+    editorTitle: 'Kustomisasi Tampilan',
+    backToDetail: 'Kembali',
+    addText: 'Tambah Teks',
+    addLogo: 'Tambah Logo',
+    uploadReference: 'Upload Referensi (.docx)',
+    uploadReferenceHint: 'Ambil gambar yang ada di dalam file .docx ini untuk dipakai sebagai logo.',
+    uploadReferenceEmpty: 'Tidak ada gambar yang ditemukan di file ini.',
+    uploadReferenceFailed: 'Gagal membaca file .docx',
+    fixedText: 'Teks tetap',
+    autoData: 'Data otomatis',
+    mergeFieldLabel: {
+      tenant_name: 'Nama Toko', document_name: 'Nama Dokumen',
+    } as Record<string, string>,
+    fontSize: 'Ukuran Teks',
+    bold: 'Tebal',
+    removeElement: 'Hapus elemen',
+    editorSaved: 'Tampilan tersimpan',
+    editorFailed: 'Gagal menyimpan tampilan',
+    selectElementHint: 'Klik salah satu elemen untuk mengaturnya.',
   },
 
   waStatus: {
@@ -741,6 +811,16 @@ export const t = {
     openChat: 'Buka Obrolan',
   },
 
+  activities: {
+    title: 'Aktivitas',
+    upcoming: 'Akan Datang',
+    empty: 'Belum ada tugas untuk pelanggan ini.',
+    assignedTo: (name: string) => `Tugas untuk ${name}`,
+    overdue: (date: string) => `Terlambat: ${date}`,
+    due: (date: string) => `Jatuh tempo: ${date}`,
+    cancelled: (date: string) => `Dibatalkan: ${date}`,
+  },
+
   customers: {
     title: 'Pelanggan',
     subtitle: 'Orang-orang yang sudah ditandai sebagai customer, dari chat maupun ditambah manual.',
@@ -758,6 +838,7 @@ export const t = {
     noChat: 'Belum ada obrolan dengan pelanggan ini',
     noCustomers: 'Belum ada pelanggan. Tandai dari halaman chat, atau tambah manual.',
     add: 'Tambah Pelanggan',
+    detail: 'Detail',
     edit: 'Edit',
     actions: 'Aksi',
     photoUpload: 'Unggah foto pelanggan',
@@ -794,7 +875,7 @@ export const t = {
   },
 
   brand: {
-    title: 'Brand',
+    title: 'Tracker Brand',
     subtitle: 'Daftar brand yang mau dihubungi untuk kerja sama — hasil scrape maupun ditambah manual.',
     searchPlaceholder: 'Cari nama brand, PIC, atau kota…',
     add: 'Tambah Brand',
@@ -846,6 +927,34 @@ export const t = {
     deleteTitle: 'Hapus brand ini?',
     deleteWarning: (name: string) => `Brand "${name}" akan dihapus permanen dari daftar outreach. Tindakan ini tidak bisa dibatalkan.`,
     deleteConfirm: 'Ya, hapus',
+    chat: 'Chat',
+    openChat: 'Buka Chat WhatsApp',
+    noPhoneForChat: 'Belum ada nomor WhatsApp',
+    exportExcel: 'Ekspor Excel',
+    exporting: 'Mengekspor…',
+    dateAll: 'Semua Tanggal',
+    dateToday: 'Hari Ini',
+    date7d: '7 Hari',
+    date30d: '30 Hari',
+    dateCustom: 'Rentang Tanggal',
+    dateMonth: 'Bulan Tertentu',
+    dateYear: 'Tahun Tertentu',
+    dateYearRange: 'Rentang Tahun',
+    dateFrom: 'Dari',
+    dateTo: 'Sampai',
+    exportSheetName: 'Brand',
+    exportColName: 'Nama',
+    exportColPic: 'PIC',
+    exportColPhone: 'Telepon',
+    exportColEmail: 'Email',
+    exportColInstagram: 'Instagram',
+    exportColCategory: 'Kategori',
+    exportColCity: 'Kota',
+    exportColSource: 'Sumber',
+    exportColStatus: 'Status',
+    exportColAssignee: 'CS yang Menangani',
+    exportColLastContacted: 'Terakhir Dihubungi',
+    exportColCreated: 'Dibuat',
     noBrands: 'Belum ada brand. Tambahkan hasil scrape atau brand incaran secara manual.',
     noMatches: 'Tidak ada brand yang cocok dengan pencarian/filter ini.',
     failed: 'Gagal menyimpan data brand',
@@ -910,6 +1019,15 @@ export const t = {
     statusLabel: {
       open: 'Berjalan', done: 'Selesai', cancelled: 'Dihapus',
     } as Record<string, string>,
+    kind: 'Jenis',
+    kindLabel: {
+      follow_up: 'Follow-up', call: 'Telepon', meeting: 'Meeting', other: 'Lainnya',
+    } as Record<string, string>,
+    priority: 'Prioritas',
+    priorityLabel: {
+      low: 'Rendah', medium: 'Sedang', high: 'Tinggi', urgent: 'Mendesak',
+    } as Record<string, string>,
+    joinMeeting: 'Gabung Meeting',
     overdue: 'Lewat jatuh tempo',
     dueToday: 'Hari ini',
     markDone: 'Tandai Selesai',
@@ -922,6 +1040,8 @@ export const t = {
     noMatches: 'Tidak ada tugas yang cocok dengan pencarian/filter ini.',
 
     newTitle: 'Tugas Baru',
+    detail: 'Detail',
+    detailTitle: 'Detail Tugas',
     formTitle: 'Judul',
     titlePlaceholder: 'Contoh: Follow-up penawaran batik parang',
     formContact: 'Pelanggan',
@@ -930,6 +1050,13 @@ export const t = {
     formAssignee: 'Ditugaskan ke',
     formDeal: 'Deal terkait',
     noDeal: 'Tidak ada',
+    formKind: 'Jenis',
+    addKind: 'Tambah Jenis Baru',
+    addKindPlaceholder: 'Nama jenis, misal: Survei Lokasi',
+    addKindFailed: 'Gagal menambah jenis',
+    formPriority: 'Prioritas',
+    formMeetingLink: 'Link Video Conference',
+    meetingLinkPlaceholder: 'https://meet.google.com/xxx-yyyy-zzz',
     formNotes: 'Catatan',
     notesPlaceholder: 'Detail tambahan (opsional)',
     save: 'Simpan',
