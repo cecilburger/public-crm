@@ -8,6 +8,10 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "@tiptap/core": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/react": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
     "jszip": "^3.10.2",
     "konva": "^9.3.22",
     "next": "^15.1.6",

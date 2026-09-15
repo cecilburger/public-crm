@@ -74,10 +74,10 @@ export async function GET(req: NextRequest) {
   }
 
   for (const d of deals) {
-    if (!haystack(d.title, d.contact_name).includes(needle)) continue;
+    if (!haystack(d.title, d.brand_name, d.contact_name).includes(needle)) continue;
     results.push({
-      id: d.id, category: 'deal', title: d.title,
-      subtitle: d.contact_name, href: `/penjualan/${d.id}`,
+      id: d.id, category: 'deal', title: d.brand_name ?? d.title,
+      subtitle: d.contact_name, href: `/deal/${d.id}`,
     });
     if (results.filter((r) => r.category === 'deal').length >= LIMIT_PER_CATEGORY) break;
   }

@@ -57,6 +57,25 @@ export function waMeLink(phone: string, text?: string): string {
   return text ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}` : `https://wa.me/${digits}`;
 }
 
+/**
+ * "Hari ini" / "Besok" / "3 hari lagi" / "Terlambat 2 hari" — the same
+ * relative-countdown language a kanban due date reads in, so a target close
+ * date carries as much at-a-glance urgency on a deal card as it would for a task.
+ * Accepts either a plain "YYYY-MM-DD" or a full ISO timestamp — only the date
+ * part is ever used, parsed at local midnight so it never shifts a day off.
+ */
+export function dueLabel(dateOnlyIso: string | null): string | null {
+  if (!dateOnlyIso) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(`${dateOnlyIso.slice(0, 10)}T00:00:00`);
+  const days = Math.round((target.getTime() - today.getTime()) / 86_400_000);
+  if (days === 0) return 'Hari ini';
+  if (days === 1) return 'Besok';
+  if (days === -1) return 'Kemarin';
+  if (days > 1) return `${days} hari lagi`;
+  return `Terlambat ${Math.abs(days)} hari`;
+}
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');

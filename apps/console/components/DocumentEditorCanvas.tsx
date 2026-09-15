@@ -4,17 +4,46 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import Link from 'next/link';
 import JSZip from 'jszip';
 import Konva from 'konva';
-import { Stage, Layer, Text as KonvaText, Image as KonvaImage, Rect, Transformer } from 'react-konva';
+import { Stage, Layer, Text as KonvaText, Image as KonvaImage, Rect, Group, Transformer } from 'react-konva';
+import { useEditor, EditorContent, type JSONContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
 import { saveDocumentLayout } from '@/app/(app)/actions';
 import { useCsrfToken } from '@/components/Csrf';
+import { MergeFieldExtension } from '@/components/MergeFieldExtension';
 import { t } from '@/lib/copy';
-import type { DocRecord, DocumentLayoutElement, DocumentMergeField } from '@/lib/api';
+import type { DocRecord, DocumentLayoutElement, DocumentMergeField, DocumentPageSize, RichTextJson } from '@/lib/api';
 
-const PAGE_WIDTH_PX = 794;
-const PAGE_HEIGHT_PX = 1123;
+// Mirrors `packages/core/src/documentModels/standar.ts` — console can't
+// import a server package, same reasoning as `DocumentKindOption` elsewhere.
+const PAGE_SIZES_MM: Record<DocumentPageSize, { width: number; height: number }> = {
+  a4: { width: 210, height: 297 },
+  letter: { width: 215.9, height: 279.4 },
+  legal: { width: 215.9, height: 355.6 },
+  f4: { width: 215, height: 330 },
+};
+const MM_PER_INCH = 25.4;
+const PX_PER_INCH = 96;
+const mmToPx = (mm: number) => Math.round((mm / MM_PER_INCH) * PX_PER_INCH);
+const pageSizePx = (size: DocumentPageSize) => {
+  const mm = PAGE_SIZES_MM[size];
+  return { width: mmToPx(mm.width), height: mmToPx(mm.height) };
+};
 
 type TextElement = Extract<DocumentLayoutElement, { type: 'text' }>;
 type ImageElement = Extract<DocumentLayoutElement, { type: 'image' }>;
+type RichTextElement = Extract<DocumentLayoutElement, { type: 'richtext' }>;
+
+/** Plain-text preview for the canvas — formatting only really shows up in
+ *  the side panel's Tiptap editor, this is just enough to recognise the block. */
+function flattenRichText(node: RichTextJson): string {
+  if (node.type === 'mergeField') {
+    const field = node.attrs?.field as DocumentMergeField | undefined;
+    return field ? `[${t.document.mergeFieldLabel[field]}]` : '';
+  }
+  if (node.text) return node.text;
+  const joined = (node.content ?? []).map(flattenRichText).join(node.type === 'bulletList' ? '\n' : ' ');
+  return node.type === 'listItem' ? `• ${joined}` : joined;
+}
 
 function displayText(el: TextElement): string {
   return el.content.kind === 'literal' ? el.content.text : `[${t.document.mergeFieldLabel[el.content.field]}]`;
@@ -89,6 +118,89 @@ function TextShape({
   );
 }
 
+function RichTextShape({
+  el, isSelected, onSelect, onChange, shapeRef,
+}: {
+  el: RichTextElement; isSelected: boolean; onSelect: () => void;
+  onChange: (patch: Partial<RichTextElement>) => void; shapeRef: (node: Konva.Node | null) => void;
+}) {
+  const preview = flattenRichText(el.content).slice(0, 400);
+  const onTransformEnd = (e: Konva.KonvaEventObject<Event>) => {
+    const node = e.target;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+    node.scaleX(1);
+    node.scaleY(1);
+    onChange({ x: node.x(), y: node.y(), w: Math.max(40, el.w * scaleX), minHeight: Math.max(20, el.minHeight * scaleY) });
+  };
+
+  // A Group, not two separately-positioned nodes — the border and the
+  // preview text drag/resize together as one unit instead of the border
+  // lagging a frame behind during the gesture.
+  return (
+    <Group
+      ref={shapeRef} x={el.x} y={el.y} draggable
+      onClick={onSelect} onTap={onSelect}
+      onDragEnd={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
+      onTransformEnd={onTransformEnd}
+    >
+      <Rect width={el.w} height={el.minHeight}
+            fill={isSelected ? 'rgba(47,49,168,0.05)' : undefined}
+            stroke={isSelected ? '#2F31A8' : '#C9C7DD'} dash={isSelected ? undefined : [4, 4]} />
+      <KonvaText text={preview || t.document.richTextPlaceholder} width={el.w} height={el.minHeight}
+                 fontSize={11} fill={preview ? '#16183C' : '#8A8DAC'} wrap="word" padding={4} listening={false} />
+    </Group>
+  );
+}
+
+/** The rich-text editing surface itself — lives in the side panel, keyed by
+ *  element id so switching the selected block always starts a fresh editor
+ *  instance instead of needing to manually re-sync Tiptap's own state. */
+function RichTextPanel({ element, onChange }: { element: RichTextElement; onChange: (content: RichTextJson) => void }) {
+  const editor = useEditor({
+    extensions: [StarterKit, MergeFieldExtension],
+    content: element.content as JSONContent,
+    onUpdate: ({ editor: ed }) => onChange(ed.getJSON() as RichTextJson),
+  });
+
+  if (!editor) return null;
+
+  return (
+    <div className="doc-editor-tiptap">
+      <div className="doc-editor-tiptap-toolbar">
+        <button type="button" className={editor.isActive('bold') ? 'active' : ''}
+                onClick={() => editor.chain().focus().toggleBold().run()} title={t.document.boldTip}>
+          <b>B</b>
+        </button>
+        <button type="button" className={editor.isActive('italic') ? 'active' : ''}
+                onClick={() => editor.chain().focus().toggleItalic().run()} title={t.document.italicTip}>
+          <i>I</i>
+        </button>
+        <button type="button" className={editor.isActive('bulletList') ? 'active' : ''}
+                onClick={() => editor.chain().focus().toggleBulletList().run()} title={t.document.bulletTip}>
+          •≡
+        </button>
+        <button type="button" className={editor.isActive('heading', { level: 2 }) ? 'active' : ''}
+                onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} title={t.document.headingTip}>
+          H
+        </button>
+        <select className="line-input" value="" style={{ fontSize: 11.5 }}
+                onChange={(e) => {
+                  const field = e.target.value as DocumentMergeField | '';
+                  if (field) editor.chain().focus().insertMergeField(field).run();
+                  e.target.value = '';
+                }}>
+          <option value="">+ {t.document.insertMergeField}</option>
+          {(['tenant_name', 'document_name'] as const).map((f) => (
+            <option key={f} value={f}>{t.document.mergeFieldLabel[f]}</option>
+          ))}
+        </select>
+      </div>
+      <EditorContent editor={editor} />
+    </div>
+  );
+}
+
 /**
  * The customize step: drag/resize text and a logo on an A4-sized canvas,
  * saved as a plain positioned-element array that `renderDocumentLayout`
@@ -103,6 +215,17 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
   const [saveState, setSaveState] = useState<{ ok: boolean; error?: string } | null>(null);
   const [referenceImages, setReferenceImages] = useState<{ name: string; dataUrl: string }[]>([]);
   const [referenceError, setReferenceError] = useState<string | null>(null);
+
+  const [pageSize, setPageSize] = useState<DocumentPageSize>(doc.pageSize ?? 'a4');
+  const [marginTop, setMarginTop] = useState(doc.marginTopMm ?? 25);
+  const [marginRight, setMarginRight] = useState(doc.marginRightMm ?? 25);
+  const [marginBottom, setMarginBottom] = useState(doc.marginBottomMm ?? 25);
+  const [marginLeft, setMarginLeft] = useState(doc.marginLeftMm ?? 25);
+  const { width: pageWidthPx, height: pageHeightPx } = pageSizePx(pageSize);
+  const marginTopPx = mmToPx(marginTop);
+  const marginRightPx = mmToPx(marginRight);
+  const marginBottomPx = mmToPx(marginBottom);
+  const marginLeftPx = mmToPx(marginLeft);
 
   const shapeRefs = useRef<Record<string, Konva.Node | null>>({});
   const trRef = useRef<Konva.Transformer>(null);
@@ -141,6 +264,15 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
   const addImage = (dataUrl: string) => {
     const id = crypto.randomUUID();
     setElements((prev) => [...prev, { id, type: 'image', x: 60, y: 300, w: 140, h: 80, dataUrl }]);
+    setSelectedId(id);
+  };
+
+  const addRichText = () => {
+    const id = crypto.randomUUID();
+    setElements((prev) => [...prev, {
+      id, type: 'richtext', x: 60, y: 400, w: 400, minHeight: 60,
+      content: { type: 'doc', content: [{ type: 'paragraph' }] },
+    }]);
     setSelectedId(id);
   };
 
@@ -196,6 +328,11 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
     fd.set('csrf', csrf);
     fd.set('documentId', doc.id);
     fd.set('layout', JSON.stringify(elements));
+    fd.set('pageSize', pageSize);
+    fd.set('marginTopMm', String(marginTop));
+    fd.set('marginRightMm', String(marginRight));
+    fd.set('marginBottomMm', String(marginBottom));
+    fd.set('marginLeftMm', String(marginLeft));
     const res = await saveDocumentLayout(fd);
     setSaveState(res);
     setSaving(false);
@@ -207,6 +344,7 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
         <Link href="/customize/dokumen" className="btn ghost sm">{t.document.backToDetail}</Link>
         <h2 style={{ fontSize: 14, marginRight: 'auto' }}>{doc.name}</h2>
         <button type="button" className="btn ghost sm" onClick={addText}>+ {t.document.addText}</button>
+        <button type="button" className="btn ghost sm" onClick={addRichText}>+ {t.document.addRichText}</button>
         <label className="btn ghost sm" style={{ cursor: 'pointer' }}>
           + {t.document.addLogo}
           <input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
@@ -241,16 +379,25 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
       <div className="doc-editor-body">
         <div className="doc-editor-stage-wrap">
           <Stage
-            width={PAGE_WIDTH_PX} height={PAGE_HEIGHT_PX}
+            width={pageWidthPx} height={pageHeightPx}
             onMouseDown={(e) => { if (e.target === e.target.getStage()) setSelectedId(null); }}
           >
             <Layer>
+              <Rect x={marginLeftPx} y={marginTopPx}
+                    width={Math.max(0, pageWidthPx - marginLeftPx - marginRightPx)}
+                    height={Math.max(0, pageHeightPx - marginTopPx - marginBottomPx)}
+                    stroke="#C9C7DD" dash={[4, 4]} listening={false} />
               {elements.map((el) => (
                 el.type === 'image' ? (
                   <ImageShape key={el.id} el={el} isSelected={el.id === selectedId}
                               onSelect={() => setSelectedId(el.id)}
                               onChange={(patch) => updateElement(el.id, patch)}
                               shapeRef={(node) => { shapeRefs.current[el.id] = node; }} />
+                ) : el.type === 'richtext' ? (
+                  <RichTextShape key={el.id} el={el} isSelected={el.id === selectedId}
+                                 onSelect={() => setSelectedId(el.id)}
+                                 onChange={(patch) => updateElement(el.id, patch)}
+                                 shapeRef={(node) => { shapeRefs.current[el.id] = node; }} />
                 ) : (
                   <TextShape key={el.id} el={el} isSelected={el.id === selectedId}
                              onSelect={() => setSelectedId(el.id)}
@@ -265,6 +412,42 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
         </div>
 
         <div className="doc-editor-panel">
+          <div className="doc-editor-page-setup">
+            <h3 style={{ fontSize: 12.5, marginBottom: 10 }}>{t.document.pageSetup}</h3>
+            <div className="record-field">
+              <label>{t.document.pageSize}</label>
+              <select className="line-input" value={pageSize}
+                      onChange={(e) => setPageSize(e.target.value as DocumentPageSize)}>
+                {(['a4', 'letter', 'legal', 'f4'] as const).map((size) => (
+                  <option key={size} value={size}>{t.document.pageSizeLabel[size]}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div className="record-field">
+                <label>{t.document.marginTop} ({t.document.marginUnit})</label>
+                <input className="line-input" type="number" min={0} max={100} value={marginTop}
+                       onChange={(e) => setMarginTop(Number(e.target.value) || 0)} />
+              </div>
+              <div className="record-field">
+                <label>{t.document.marginRight} ({t.document.marginUnit})</label>
+                <input className="line-input" type="number" min={0} max={100} value={marginRight}
+                       onChange={(e) => setMarginRight(Number(e.target.value) || 0)} />
+              </div>
+              <div className="record-field">
+                <label>{t.document.marginBottom} ({t.document.marginUnit})</label>
+                <input className="line-input" type="number" min={0} max={100} value={marginBottom}
+                       onChange={(e) => setMarginBottom(Number(e.target.value) || 0)} />
+              </div>
+              <div className="record-field">
+                <label>{t.document.marginLeft} ({t.document.marginUnit})</label>
+                <input className="line-input" type="number" min={0} max={100} value={marginLeft}
+                       onChange={(e) => setMarginLeft(Number(e.target.value) || 0)} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
           {selected?.type === 'text' ? (
             <>
               <div className="record-field">
@@ -316,6 +499,11 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
             </div>
           ) : null}
 
+          {selected?.type === 'richtext' ? (
+            <RichTextPanel key={selected.id} element={selected}
+                           onChange={(content) => updateElement(selected.id, { content })} />
+          ) : null}
+
           {selected ? (
             <button type="button" className="btn ghost sm" style={{ color: 'var(--danger)' }} onClick={removeSelected}>
               {t.document.removeElement}
@@ -323,6 +511,7 @@ export function DocumentEditorCanvas({ doc }: { doc: DocRecord }) {
           ) : (
             <p className="dim" style={{ fontSize: 12.5 }}>{t.document.selectElementHint}</p>
           )}
+          </div>
         </div>
       </div>
     </div>

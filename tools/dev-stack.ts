@@ -13,6 +13,7 @@ import {
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
   createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
+  ensureConversation,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import QRCode from 'qrcode';
@@ -331,6 +332,28 @@ await withTenant(db, tenantId, async (tx) => {
   });
 });
 
+// Broadcast needs a contact to both consent to marketing AND already have a
+// conversation on the chosen number — most contacts above have neither yet,
+// so the feature would look permanently empty without a couple seeded here.
+// Bu Sari gets both (shows up "eligible"); Ibu Wulan Sari consents but has no
+// thread on either wa-bridge number (shows up skipped "no_conversation"); the
+// rest are left alone on purpose (skipped "no_consent") for a realistic mix.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+
+  await tx.query(
+    `update contacts set consent = jsonb_build_object('marketing', true, 'source', 'seed', 'at', now())
+      where tenant_id = $1 and display_name in ('Bu Sari', 'Ibu Wulan Sari')`,
+    [tenantId],
+  );
+
+  const buSari = await tx.query<{ id: string }>(
+    `select id from contacts where tenant_id = $1 and display_name = 'Bu Sari'`, [tenantId]);
+  if (buSari[0]) {
+    await ensureConversation(ctx, { contactId: buSari[0].id, channelId: waBridgeChannels[0]!.id });
+  }
+});
+
 // A handful of follow-ups spanning overdue, due today and upcoming, so Tugas
 // opens with a real spread across its table, kanban and calendar views.
 await withTenant(db, tenantId, async (tx) => {
@@ -449,6 +472,29 @@ await withTenant(db, tenantId, async (tx) => {
   }
 });
 
+// Brands only exist from here on, so the deals seeded earlier are linked back
+// to one now — otherwise Deal's Brand/Kategori columns stay blank on a fresh
+// dev-stack. Matched by what each deal's free-text title is actually about.
+await withTenant(db, tenantId, async (tx) => {
+  const brandRows = await tx.query<{ id: string; name: string }>(
+    `select id, name from brands where tenant_id = $1`, [tenantId]);
+  const brandIdByName = (name: string) => brandRows.find((b) => b.name === name)?.id ?? null;
+
+  const dealBrands: [string, string][] = [
+    ['Paket reseller starter', 'Rumah Tenun Ikat'],
+    ['Batik Parang grosir — 3 pcs', 'Batik Nusantara Store'],
+    ['Restock 24 pcs', 'Sepatu Lokal Jaya'],
+    ['PO korporat Q1', 'Kerajinan Rotan Asri'],
+    ['Pesanan ulang — 6 pcs', 'Teh Herbal Sehat'],
+  ];
+  for (const [dealTitle, brandName] of dealBrands) {
+    const brandId = brandIdByName(brandName);
+    if (!brandId) continue;
+    await tx.query(`update deals set brand_id = $3 where tenant_id = $1 and title = $2`,
+      [tenantId, dealTitle, brandId]);
+  }
+});
+
 // The same choice the worker makes: a real model when a key is configured,
 // a deterministic stand-in otherwise, through the identical guardrail path.
 const autopilot: AutopilotModel = process.env.ANTHROPIC_API_KEY
@@ -500,6 +546,17 @@ await withTenant(db, tenantId, async (tx) => {
     { contact: 'Dinda Wardani',  sku: 'DRS-RBY',    qty: 1,  area: 'Jakarta', outcome: 'cancelled' },
   ];
 
+  // Confirming an order opens its own deal (see `confirmOrder`), titled after
+  // the order code rather than a product — same brand-blank problem the named
+  // deals above had, so it's linked back to Brand Tracker here too, by which
+  // brand actually sells the SKU on the order.
+  const skuBrand: Record<string, string> = {
+    'BTK-PRG-M': 'Batik Nusantara Store', 'KML-01': 'Rumah Tenun Ikat', 'DRS-RBY': 'Rumah Tenun Ikat',
+  };
+  const brandRows = await tx.query<{ id: string; name: string }>(
+    `select id, name from brands where tenant_id = $1`, [tenantId]);
+  const brandIdByName = (name: string) => brandRows.find((b) => b.name === name)?.id ?? null;
+
   for (const seed of seeds) {
     const contact = byName(seed.contact);
     if (!contact) continue;
@@ -516,6 +573,12 @@ await withTenant(db, tenantId, async (tx) => {
     });
     const confirmed = await confirmOrder(ctx, { orderId: draft.id, publicBaseUrl: e.PUBLIC_BASE_URL });
     if (!confirmed.ok) continue;
+
+    const brandId = brandIdByName(skuBrand[seed.sku] ?? '');
+    if (brandId && confirmed.order.dealId) {
+      await tx.query(`update deals set brand_id = $3 where tenant_id = $1 and id = $2`,
+        [tenantId, confirmed.order.dealId, brandId]);
+    }
 
     if (seed.outcome === 'cancelled') {
       await releaseOrder(ctx, { orderId: confirmed.order.id, reason: 'Pelanggan membatalkan pesanan' });
@@ -566,7 +629,11 @@ const realtime = createRealtimeHub();
 
 const app = buildApp({
   db, control: db, kek, env: e, realtime,
-  dispatch: async ({ queue, payload }) => {
+  dispatch: async ({ queue, payload, delayMs }) => {
+    // No real queue here to schedule a delayed job on — a plain wait keeps a
+    // broadcast's pacing (`sendRatePerSecond`) actually observable locally
+    // instead of silently collapsing to "everything at once".
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     if (queue === 'inbound.normalise') {
       await processInboundWebhook(
         {

@@ -36,11 +36,19 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
       kind: z.string().min(1).max(60).optional(),
       meetingLink: z.string().max(500).optional(),
       priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+      repeatUnit: z.enum(['day', 'week', 'month', 'year']).optional(),
+      repeatInterval: z.number().int().positive().max(365).optional(),
+      repeatUntil: z.string().optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the task fields');
 
     const dueAt = new Date(body.data.dueAt);
     if (Number.isNaN(dueAt.getTime())) throw invalid('Check the due date');
+    let repeatUntil: Date | undefined;
+    if (body.data.repeatUntil) {
+      repeatUntil = new Date(body.data.repeatUntil);
+      if (Number.isNaN(repeatUntil.getTime())) throw invalid('Check the repeat-until date');
+    }
 
     const task = await ctx.asTenant(req, (tx) =>
       createTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
@@ -48,6 +56,7 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
         notes: body.data.notes ?? null, dealId: body.data.dealId ?? null,
         assigneeId: body.data.assigneeId ?? null, createdBy: actor.userId,
         kind: body.data.kind, meetingLink: body.data.meetingLink ?? null, priority: body.data.priority,
+        repeatUnit: body.data.repeatUnit, repeatInterval: body.data.repeatInterval, repeatUntil,
       }));
     return reply.status(201).send(task);
   });
@@ -64,18 +73,27 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
       kind: z.string().min(1).max(60),
       meetingLink: z.string().max(500).optional(),
       priority: z.enum(['low', 'medium', 'high', 'urgent']),
+      repeatUnit: z.enum(['day', 'week', 'month', 'year']).nullable(),
+      repeatInterval: z.number().int().positive().max(365),
+      repeatUntil: z.string().nullable(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the task fields');
 
     const dueAt = new Date(body.data.dueAt);
     if (Number.isNaN(dueAt.getTime())) throw invalid('Check the due date');
+    let repeatUntil: Date | null = null;
+    if (body.data.repeatUntil) {
+      repeatUntil = new Date(body.data.repeatUntil);
+      if (Number.isNaN(repeatUntil.getTime())) throw invalid('Check the repeat-until date');
+    }
 
     const ok = await ctx.asTenant(req, (tx) =>
       updateTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         taskId: id, title: body.data.title, dueAt, notes: body.data.notes ?? null,
         dealId: body.data.dealId ?? null, assigneeId: body.data.assigneeId ?? null,
         kind: body.data.kind, meetingLink: body.data.meetingLink ?? null,
-        priority: body.data.priority, actorId: actor.userId,
+        priority: body.data.priority, repeatUnit: body.data.repeatUnit,
+        repeatInterval: body.data.repeatInterval, repeatUntil, actorId: actor.userId,
       }));
     if (!ok) throw notFound('Task');
     return { ok: true };

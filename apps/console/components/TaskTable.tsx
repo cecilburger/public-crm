@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
-import type { Task, Member, Contact, Deal, TaskKind } from '@/lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import type { Task, Member, Contact, Deal, TaskKind, GoogleCalendarStatus, GoogleCalendarEvent } from '@/lib/api';
 import { initials } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { formatTaskDue, isTaskOverdue, isTaskDueToday } from '@/lib/taskHelpers';
@@ -13,6 +13,11 @@ import { TaskDrawer } from '@/components/TaskDrawer';
 import { TaskDetailDrawer } from '@/components/TaskDetailDrawer';
 import { TaskKanban } from '@/components/TaskKanban';
 import { TaskCalendar } from '@/components/TaskCalendar';
+import { KindIcon } from '@/components/KindIcon';
+
+const GOOGLE_WINDOW_DAYS = 30;
+
+type Row = { kind: 'task'; task: Task } | { kind: 'google'; event: GoogleCalendarEvent };
 
 const STATUS_CHIP: Record<Task['status'], string> = {
   open: 'chip brand', done: 'chip good', cancelled: 'chip danger',
@@ -32,8 +37,11 @@ const TABS: { key: 'all' | 'due' | Task['status']; label: string }[] = [
 type ViewMode = 'table' | 'kanban' | 'calendar';
 
 export function TaskTable({
-  tasks, members, contacts, deals, taskKinds,
-}: { tasks: Task[]; members: Member[]; contacts: Contact[]; deals: Deal[]; taskKinds: TaskKind[] }) {
+  tasks, members, contacts, deals, taskKinds, googleStatus,
+}: {
+  tasks: Task[]; members: Member[]; contacts: Contact[]; deals: Deal[]; taskKinds: TaskKind[];
+  googleStatus: GoogleCalendarStatus;
+}) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'due' | Task['status']>('due');
   const [view, setView] = useState<ViewMode>('table');
@@ -58,6 +66,50 @@ export function TaskTable({
       return haystack.includes(q);
     });
   }, [tasks, query, tab]);
+
+  // Table and Kanban have no date range of their own the way Kalender does —
+  // this asks Google for a fixed "next 30 days" window instead, once, up
+  // here, so both views merge in the exact same events.
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
+  useEffect(() => {
+    if (!googleStatus.connected) { setGoogleEvents([]); return; }
+    const from = new Date();
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    to.setDate(to.getDate() + GOOGLE_WINDOW_DAYS);
+    const controller = new AbortController();
+    fetch(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data: { events?: GoogleCalendarEvent[] }) => setGoogleEvents(data.events ?? []))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [googleStatus.connected]);
+
+  // "Done"/"Batal" are task-only states an event has no equivalent for, so
+  // Google only folds into the "Semua"/"Perlu ditindak" tabs — the two that
+  // already read as "what's coming up".
+  const showGoogle = googleStatus.connected && (tab === 'all' || tab === 'due');
+  const filteredGoogleEvents = useMemo(() => {
+    if (!showGoogle) return [];
+    const q = query.trim().toLowerCase();
+    return q ? googleEvents.filter((ev) => ev.title.toLowerCase().includes(q)) : googleEvents;
+  }, [googleEvents, query, showGoogle]);
+
+  const rows: Row[] = useMemo(() => {
+    const taskRows: Row[] = filtered.map((task) => ({ kind: 'task', task }));
+    const googleRows: Row[] = filteredGoogleEvents.map((event) => ({ kind: 'google', event }));
+    return [...taskRows, ...googleRows].sort((a, b) => {
+      const da = new Date(a.kind === 'task' ? a.task.dueAt : a.event.start).getTime();
+      const db = new Date(b.kind === 'task' ? b.task.dueAt : b.event.start).getTime();
+      return da - db;
+    });
+  }, [filtered, filteredGoogleEvents]);
+
+  const showEmptyState = view === 'table'
+    ? rows.length === 0
+    : view === 'kanban'
+      ? filtered.length === 0 && !(showGoogle && filteredGoogleEvents.length > 0)
+      : filtered.length === 0;
 
   return (
     <>
@@ -115,16 +167,19 @@ export function TaskTable({
       </div>
 
       <div className="main-content-area">
-        {filtered.length === 0 ? (
+        {showEmptyState ? (
           <div className="panel" style={{ marginTop: 14 }}>
             <p className="empty" style={{ padding: '24px 0' }}>
               {tasks.length === 0 ? t.tasks.empty : t.tasks.noMatches}
             </p>
           </div>
         ) : view === 'calendar' ? (
-          <TaskCalendar tasks={filtered} onAddTask={() => setDrawerOpen(true)} />
+          <TaskCalendar tasks={filtered} onAddTask={() => setDrawerOpen(true)} onOpenTaskDetail={setDetailTask}
+                        googleStatus={googleStatus} />
         ) : view === 'kanban' ? (
-          <div style={{ marginTop: 14 }}><TaskKanban tasks={filtered} members={members} /></div>
+          <div style={{ marginTop: 14 }}>
+            <TaskKanban tasks={filtered} members={members} googleEvents={googleEvents} showGoogleColumn={showGoogle} />
+          </div>
         ) : (
           <div className="panel" style={{ marginTop: 14, border: 'none', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
             <table className="odoo-table">
@@ -141,51 +196,90 @@ export function TaskTable({
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((tk) => (
-                  <tr key={tk.id}>
+                {rows.map((row) => row.kind === 'google' ? (
+                  <tr key={`g-${row.event.id}`}>
                     <td>
-                      <b>{tk.title}</b>
-                      {tk.dealTitle ? <><br /><span className="mono dim" style={{ fontSize: 11 }}>{tk.dealTitle}</span></> : null}
+                      <b>{row.event.title}</b>
+                      <br /><span className="mono dim" style={{ fontSize: 11 }}>{t.tasks.googleSource}</span>
                     </td>
                     <td>
-                      <span className="chip">{t.tasks.kindLabel[tk.kind] ?? tk.kind}</span>
-                      {tk.kind === 'meeting' && tk.meetingLink ? (
+                      {row.event.meetingLink ? (
+                        <>
+                          <span className="chip"><KindIcon kind="meeting" /> {t.tasks.kindLabel.meeting}</span>
+                          <br />
+                          <a href={row.event.meetingLink} target="_blank" rel="noreferrer"
+                             style={{ fontSize: 11.5, marginTop: 3, display: 'inline-block' }}>
+                            {t.tasks.joinMeeting}
+                          </a>
+                        </>
+                      ) : (
+                        <span className="chip"><span className="google-dot" aria-hidden /> {t.tasks.googleSource}</span>
+                      )}
+                    </td>
+                    <td className="dim">—</td>
+                    <td className="dim">—</td>
+                    <td>
+                      {new Date(row.event.start).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      {row.event.allDay ? '' : ` · ${new Date(row.event.start).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`}
+                    </td>
+                    <td className="dim">—</td>
+                    <td className="dim">—</td>
+                    <td style={{ textAlign: 'center' }}>
+                      <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        <a href={row.event.htmlLink} target="_blank" rel="noreferrer" className="btn ghost sm">
+                          {t.tasks.openInGoogle}
+                        </a>
+                      </span>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={row.task.id}>
+                    <td>
+                      <b>{row.task.title}</b>
+                      {row.task.dealTitle ? <><br /><span className="mono dim" style={{ fontSize: 11 }}>{row.task.dealTitle}</span></> : null}
+                    </td>
+                    <td>
+                      <span className="chip">{t.tasks.kindLabel[row.task.kind] ?? row.task.kind}</span>
+                      {row.task.kind === 'meeting' && row.task.meetingLink ? (
                         <>
                           <br />
-                          <a href={tk.meetingLink} target="_blank" rel="noreferrer"
+                          <a href={row.task.meetingLink} target="_blank" rel="noreferrer"
                              style={{ fontSize: 11.5, marginTop: 3, display: 'inline-block' }}>
                             {t.tasks.joinMeeting}
                           </a>
                         </>
                       ) : null}
                     </td>
-                    <td><span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span></td>
+                    <td><span className={PRIORITY_CHIP[row.task.priority]}>{t.tasks.priorityLabel[row.task.priority] ?? row.task.priority}</span></td>
                     <td>
-                      <Link href={`/pelanggan/${tk.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                        <span className="avatar" aria-hidden>{initials(tk.contactName)}</span>
-                        <b>{tk.contactName ?? tk.contactPhone ?? '—'}</b>
+                      <Link href={`/pelanggan/${row.task.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                        <span className="avatar" aria-hidden>{initials(row.task.contactName)}</span>
+                        <b>{row.task.contactName ?? row.task.contactPhone ?? '—'}</b>
                       </Link>
                     </td>
                     <td>
-                      {formatTaskDue(tk.dueAt)}
-                      {isTaskOverdue(tk) ? <><br /><span className="chip danger" style={{ marginTop: 3 }}>{t.tasks.overdue}</span></> : null}
-                      {!isTaskOverdue(tk) && isTaskDueToday(tk) ? <><br /><span className="chip warn" style={{ marginTop: 3 }}>{t.tasks.dueToday}</span></> : null}
+                      {formatTaskDue(row.task.dueAt)}
+                      {isTaskOverdue(row.task) ? <><br /><span className="chip danger" style={{ marginTop: 3 }}>{t.tasks.overdue}</span></> : null}
+                      {!isTaskOverdue(row.task) && isTaskDueToday(row.task) ? <><br /><span className="chip warn" style={{ marginTop: 3 }}>{t.tasks.dueToday}</span></> : null}
+                      {row.task.repeatUnit ? (
+                        <><br /><span className="chip" style={{ marginTop: 3 }}>{t.tasks.repeatBadge(row.task.repeatUnit, row.task.repeatInterval)}</span></>
+                      ) : null}
                     </td>
-                    <td>{tk.assigneeId ? names.get(tk.assigneeId) ?? '—' : <span className="dim">{t.tasks.unassigned}</span>}</td>
-                    <td><span className={STATUS_CHIP[tk.status]}>{t.tasks.statusLabel[tk.status] ?? tk.status}</span></td>
+                    <td>{row.task.assigneeId ? names.get(row.task.assigneeId) ?? '—' : <span className="dim">{t.tasks.unassigned}</span>}</td>
+                    <td><span className={STATUS_CHIP[row.task.status]}>{t.tasks.statusLabel[row.task.status] ?? row.task.status}</span></td>
                     <td style={{ textAlign: 'center' }}>
                       <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                        <button type="button" className="btn ghost sm" onClick={() => setDetailTask(tk)}>
+                        <button type="button" className="btn ghost sm" onClick={() => setDetailTask(row.task)}>
                           {t.tasks.detail}
                         </button>
-                        {tk.status === 'open' ? (
+                        {row.task.status === 'open' ? (
                           <>
                             <form action={markTaskDone}>
                               <CsrfField />
-                              <input type="hidden" name="taskId" value={tk.id} />
+                              <input type="hidden" name="taskId" value={row.task.id} />
                               <button className="btn ghost sm" type="submit">{t.tasks.markDone}</button>
                             </form>
-                            <CancelTaskButton task={tk} />
+                            <CancelTaskButton task={row.task} />
                           </>
                         ) : null}
                       </span>

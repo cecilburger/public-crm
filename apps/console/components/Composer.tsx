@@ -28,8 +28,26 @@ export function Composer({
   const ref = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDetailsElement>(null);
+  // The textarea only clears once the action round-trips back (see the effect
+  // below) — without this, holding Enter a beat too long fires a second
+  // keydown while the old text is still sitting there, sending it twice.
+  const sendingRef = useRef(false);
 
-  useEffect(() => { if (state?.ok) ref.current?.reset(); }, [state]);
+  useEffect(() => {
+    sendingRef.current = false;
+    if (state?.ok) ref.current?.reset();
+  }, [state]);
+
+  // Enter sends, same as WhatsApp itself; Shift+Enter still breaks the line.
+  // `isComposing` guards an IME's own Enter-to-confirm keystroke (e.g. typing
+  // Indonesian is fine, but a pinyin/kana composition mid-word is not a send).
+  function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    if (e.repeat || sendingRef.current || !e.currentTarget.value.trim()) return;
+    sendingRef.current = true;
+    ref.current?.requestSubmit();
+  }
 
   // The textarea is uncontrolled on purpose (see below), so a snippet is
   // spliced into it at the cursor the same way a browser's own paste would.
@@ -69,6 +87,7 @@ export function Composer({
         required
         placeholder={windowOpen ? `${t.chats.writeReply.replace('…', '')} untuk ${customerName}…` : t.chats.writeTemplate}
         aria-label={t.chats.writeReply}
+        onKeyDown={onTextareaKeyDown}
       />
 
       <div className="row">

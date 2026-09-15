@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { api, ApiError, type DocumentLayoutElement } from '@/lib/api';
+import { api, ApiError, type DocumentLayoutElement, type BroadcastPreview, type BroadcastDetail } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { assertCsrf, CsrfError } from '@/lib/csrf';
 
@@ -63,6 +63,7 @@ export async function markAsCustomer(form: FormData): Promise<void> {
   await api(`/v1/conversations/${conversationId}/mark-customer`, { method: 'POST' });
   revalidatePath('/chat-wa', 'layout');
   revalidatePath('/pelanggan');
+  revalidatePath('/deal');
 }
 
 /* ----------------------------------------------------------------- pesanan */
@@ -101,6 +102,9 @@ export async function createTask(_prev: ActionResult | null, form: FormData): Pr
   const kind = String(form.get('kind') ?? '').trim();
   const meetingLink = String(form.get('meetingLink') ?? '').trim();
   const priority = String(form.get('priority') ?? '').trim();
+  const repeatUnit = String(form.get('repeatUnit') ?? '').trim();
+  const repeatInterval = String(form.get('repeatInterval') ?? '').trim();
+  const repeatUntil = String(form.get('repeatUntil') ?? '').trim();
 
   if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
 
@@ -111,6 +115,9 @@ export async function createTask(_prev: ActionResult | null, form: FormData): Pr
         contactId, title, dueAt,
         notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
         kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
+        repeatUnit: repeatUnit || undefined,
+        repeatInterval: repeatUnit ? (Number(repeatInterval) || 1) : undefined,
+        repeatUntil: repeatUnit && repeatUntil ? repeatUntil : undefined,
       },
     });
     revalidatePath('/tugas');
@@ -136,6 +143,9 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
   const kind = String(form.get('kind') ?? '').trim();
   const meetingLink = String(form.get('meetingLink') ?? '').trim();
   const priority = String(form.get('priority') ?? '').trim();
+  const repeatUnit = String(form.get('repeatUnit') ?? '').trim();
+  const repeatInterval = String(form.get('repeatInterval') ?? '').trim();
+  const repeatUntil = String(form.get('repeatUntil') ?? '').trim();
 
   if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
 
@@ -146,6 +156,9 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
         contactId, title, dueAt,
         notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
         kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
+        repeatUnit: repeatUnit || undefined,
+        repeatInterval: repeatUnit ? (Number(repeatInterval) || 1) : undefined,
+        repeatUntil: repeatUnit && repeatUntil ? repeatUntil : undefined,
       },
     });
     revalidatePath('/tugas');
@@ -166,6 +179,9 @@ export async function updateTask(_prev: ActionResult | null, form: FormData): Pr
   const kind = String(form.get('kind') ?? '').trim();
   const meetingLink = String(form.get('meetingLink') ?? '').trim();
   const priority = String(form.get('priority') ?? '').trim();
+  const repeatUnit = String(form.get('repeatUnit') ?? '').trim();
+  const repeatInterval = String(form.get('repeatInterval') ?? '').trim();
+  const repeatUntil = String(form.get('repeatUntil') ?? '').trim();
 
   if (!taskId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
 
@@ -176,6 +192,9 @@ export async function updateTask(_prev: ActionResult | null, form: FormData): Pr
         title, dueAt,
         notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
         kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
+        repeatUnit: repeatUnit || null,
+        repeatInterval: repeatUnit ? (Number(repeatInterval) || 1) : 1,
+        repeatUntil: repeatUnit && repeatUntil ? repeatUntil : null,
       },
     });
     revalidatePath('/tugas');
@@ -478,7 +497,15 @@ export async function saveDocumentLayout(form: FormData): Promise<ActionResult> 
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const documentId = String(form.get('documentId') ?? '');
   const raw = String(form.get('layout') ?? '');
-  if (!documentId || !raw) return { ok: false, error: t.document.editorFailed };
+  const pageSize = String(form.get('pageSize') ?? '');
+  const marginTopMm = Number(form.get('marginTopMm'));
+  const marginRightMm = Number(form.get('marginRightMm'));
+  const marginBottomMm = Number(form.get('marginBottomMm'));
+  const marginLeftMm = Number(form.get('marginLeftMm'));
+  if (!documentId || !raw || !pageSize) return { ok: false, error: t.document.editorFailed };
+  if ([marginTopMm, marginRightMm, marginBottomMm, marginLeftMm].some((n) => !Number.isFinite(n))) {
+    return { ok: false, error: t.document.editorFailed };
+  }
 
   let layout: DocumentLayoutElement[];
   try {
@@ -488,7 +515,9 @@ export async function saveDocumentLayout(form: FormData): Promise<ActionResult> 
   }
 
   try {
-    await api(`/v1/documents/${documentId}/layout`, { method: 'PATCH', body: { layout } });
+    await api(`/v1/documents/${documentId}/layout`, {
+      method: 'PATCH', body: { layout, pageSize, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm },
+    });
     revalidatePath('/customize/dokumen');
     revalidatePath(`/customize/dokumen/${documentId}/editor`);
     return { ok: true };
@@ -511,10 +540,69 @@ export async function moveDeal(_prev: ActionResult | null, form: FormData): Prom
   const stageId = String(form.get('stageId') ?? '');
   try {
     await api(`/v1/deals/${dealId}`, { method: 'PATCH', body: { stageId } });
-    revalidatePath('/penjualan');
+    revalidatePath('/deal');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.sales.moveFailed };
+  }
+}
+
+/**
+ * The Meeting/Call/Online Meet quick-action row on a deal card — one click,
+ * no form: a follow-up task opens tomorrow at 10:00 for that deal's contact,
+ * already tagged with which kind of touchpoint it is.
+ */
+export async function quickCreateTaskFromDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const contactId = String(form.get('contactId') ?? '');
+  const dealId = String(form.get('dealId') ?? '');
+  const contactName = String(form.get('contactName') ?? '').trim();
+  const kind = String(form.get('kind') ?? '').trim();
+  if (!contactId || !kind) return { ok: false, error: t.sales.actionFailed };
+
+  const dueAt = new Date();
+  dueAt.setDate(dueAt.getDate() + 1);
+  dueAt.setHours(10, 0, 0, 0);
+  const kindLabel = t.sales.quickTaskLabel[kind] ?? kind;
+
+  try {
+    await api('/v1/tasks', {
+      method: 'POST',
+      body: {
+        contactId, dealId: dealId || undefined, kind,
+        title: contactName ? `${kindLabel} — ${contactName}` : kindLabel,
+        dueAt: dueAt.toISOString(),
+      },
+    });
+    revalidatePath('/deal');
+    revalidatePath('/tugas');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.sales.actionFailed };
+  }
+}
+
+/** The "+" on a kanban column — creates the deal already in that stage. */
+export async function createDealAction(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const contactId = String(form.get('contactId') ?? '');
+  const brandId = String(form.get('brandId') ?? '');
+  const title = String(form.get('title') ?? '').trim();
+  const amountIdr = Number(form.get('amountIdr') ?? 0);
+  const stageId = String(form.get('stageId') ?? '');
+  if (!contactId || !brandId || !title || !stageId || !Number.isFinite(amountIdr) || amountIdr < 0) {
+    return { ok: false, error: t.sales.addFailed };
+  }
+
+  try {
+    await api('/v1/deals', {
+      method: 'POST',
+      body: { contactId, brandId, title, amountIdr: Math.round(amountIdr), stageId },
+    });
+    revalidatePath('/deal');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.sales.addFailed };
   }
 }
 
@@ -523,13 +611,15 @@ export async function updateDealDetails(_prev: ActionResult | null, form: FormDa
   const id = String(form.get('id') ?? '');
   const notes = String(form.get('notes') ?? '').trim();
   const expectedCloseOn = String(form.get('expectedCloseOn') ?? '').trim();
+  const brandId = String(form.get('brandId') ?? '').trim();
 
   try {
     await api(`/v1/deals/${id}/details`, {
       method: 'PATCH',
-      body: { notes: notes || null, expectedCloseOn: expectedCloseOn || null },
+      body: { notes: notes || null, expectedCloseOn: expectedCloseOn || null, brandId: brandId || null },
     });
-    revalidatePath(`/penjualan/${id}`);
+    revalidatePath(`/deal/${id}`);
+    revalidatePath('/deal');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.dealDetail.failed };
@@ -759,7 +849,7 @@ export async function saveMessageTemplate(
     } else {
       await api('/v1/message-templates', { method: 'POST', body: payload });
     }
-    revalidatePath('/pengaturan/template-pesan');
+    revalidatePath('/broadcast/template-pesan');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.messageTemplate.failed };
@@ -772,7 +862,7 @@ export async function removeMessageTemplate(
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   try {
     await api(`/v1/message-templates/${String(form.get('id') ?? '')}`, { method: 'DELETE' });
-    revalidatePath('/pengaturan/template-pesan');
+    revalidatePath('/broadcast/template-pesan');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.messageTemplate.failed };
@@ -954,4 +1044,64 @@ export async function markInvoicePaidAction(
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.settings.invFailed };
   }
+}
+
+/* ---------------------------------------------------------------- broadcast */
+
+export async function createBroadcastAction(
+  _prev: ActionResult | null, form: FormData,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+
+  const name = String(form.get('name') ?? '').trim();
+  const templateId = String(form.get('templateId') ?? '');
+  const channelId = String(form.get('channelId') ?? '');
+  const tags = String(form.get('tags') ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  if (!name || !templateId || !channelId || tags.length === 0) {
+    return { ok: false, error: t.broadcast.failed };
+  }
+
+  try {
+    await api('/v1/broadcasts', { method: 'POST', body: { name, templateId, channelId, tags } });
+    revalidatePath('/broadcast');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.broadcast.failed };
+  }
+}
+
+/**
+ * Called directly from `BroadcastDrawer` (not through `<form action>`) so the
+ * segment size can refresh on every channel/tags change without a full submit
+ * — same "plain async function, called by hand" shape as `addDocumentKind`.
+ */
+export async function previewBroadcast(
+  channelId: string, tagsCsv: string,
+): Promise<BroadcastPreview | null> {
+  const tags = tagsCsv.split(',').map((v) => v.trim()).filter(Boolean);
+  if (!channelId || tags.length === 0) return null;
+  try {
+    return await api<BroadcastPreview>(
+      `/v1/broadcasts/preview?channelId=${encodeURIComponent(channelId)}&tags=${encodeURIComponent(tags.join(','))}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Called from `BroadcastDetailDrawer` on open — same reasoning as `previewBroadcast`. */
+export async function getBroadcastDetail(broadcastId: string): Promise<BroadcastDetail | null> {
+  try {
+    return await api<BroadcastDetail>(`/v1/broadcasts/${broadcastId}`);
+  } catch {
+    return null;
+  }
+}
+
+/* -------------------------------------------------------------- google calendar */
+
+export async function disconnectGoogleCalendar(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  await api('/v1/google-calendar/disconnect', { method: 'POST' });
+  revalidatePath('/tugas');
 }

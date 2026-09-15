@@ -26,11 +26,13 @@ export function TaskDrawer({
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTaskInline, null);
   const formRef = useRef<HTMLFormElement>(null);
   const [kind, setKind] = useState('follow_up');
+  const [repeatUnit, setRepeatUnit] = useState('');
 
   useEffect(() => {
     if (state?.ok) {
       formRef.current?.reset();
       setKind('follow_up');
+      setRepeatUnit('');
       onClose();
     }
     // Only react to a fresh successful submit, not to `onClose` identity changes.
@@ -96,6 +98,32 @@ export function TaskDrawer({
                     ))}
                   </select>
                 </div>
+
+                <div className="record-field">
+                  <label htmlFor="d-repeatUnit">{t.tasks.repeat}</label>
+                  <select className="line-input" id="d-repeatUnit" name="repeatUnit" value={repeatUnit}
+                          onChange={(e) => setRepeatUnit(e.target.value)}>
+                    <option value="">{t.tasks.repeatNone}</option>
+                    {(['day', 'week', 'month', 'year'] as const).map((u) => (
+                      <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {repeatUnit ? (
+                  <>
+                    <div className="record-field">
+                      <label htmlFor="d-repeatInterval">{t.tasks.repeatEvery}</label>
+                      <input className="line-input" id="d-repeatInterval" name="repeatInterval" type="number"
+                             min={1} max={365} defaultValue={1} />
+                    </div>
+                    <div className="record-field">
+                      <label htmlFor="d-repeatUntil">{t.tasks.repeatUntil}</label>
+                      <input className="line-input" id="d-repeatUntil" name="repeatUntil" type="date" />
+                      <p className="record-hint">{t.tasks.repeatUntilHint}</p>
+                    </div>
+                  </>
+                ) : null}
 
                 {kind === 'meeting' ? (
                   <div className="record-field">

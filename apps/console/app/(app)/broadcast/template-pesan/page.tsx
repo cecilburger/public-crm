@@ -1,6 +1,5 @@
 import { api, type MessageTemplate } from '@/lib/api';
 import { t } from '@/lib/copy';
-import { SettingsTabs } from '@/components/SettingsTabs';
 import { MessageTemplateEditor } from '@/components/MessageTemplateEditor';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +15,6 @@ export default async function MessageTemplatePage() {
           <p className="subtitle">{t.messageTemplate.subtitle}</p>
         </div>
       </div>
-      <SettingsTabs />
 
       <div className="scroll pad stack">
         <MessageTemplateEditor templates={templates} />

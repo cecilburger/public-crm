@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import Link from 'next/link';
 import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply } from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
@@ -145,10 +146,10 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
           {contactDeals.length === 0 ? (
             <p className="dim" style={{ fontSize: 12.5 }}>{t.chats.noSales}</p>
           ) : contactDeals.map((d) => (
-            <div key={d.id} className="kv">
-              <span>{d.title}<br /><span className="mono dim">{d.stage}</span></span>
+            <Link key={d.id} href={`/deal/${d.id}`} className="kv">
+              <span>{d.brand_name ?? d.title}<br /><span className="mono dim">{d.stage}</span></span>
               <span className="v">{rp(d.amount_idr)}</span>
-            </div>
+            </Link>
           ))}
         </section>
 

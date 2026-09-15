@@ -12,7 +12,7 @@ const COLUMNS: { key: Brand['status']; label: string }[] = [
   { key: 'rejected', label: t.brand.filterRejected },
 ];
 
-/** One column per funnel stage, same shape as the Penjualan board — a brand
+/** One column per funnel stage, same shape as the Deal board — a brand
  *  moves by picking a stage on its card, not by dragging it. */
 export function BrandKanban({ brands, members }: { brands: Brand[]; members: Member[] }) {
   return (

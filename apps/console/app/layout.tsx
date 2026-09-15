@@ -15,8 +15,16 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="id">
+    <html lang="id" suppressHydrationWarning>
       <head>
+        <script
+          // Runs before first paint so a saved 'light'/'dark' choice applies
+          // immediately — without this, the page would flash the OS default
+          // for a beat before Rail's own effect corrects it after mount.
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('kirana-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`,
+          }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link

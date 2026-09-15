@@ -35,10 +35,26 @@ export interface BridgeEvent {
 export class SessionManager {
   private clients = new Map<string, WAClient>();
 
+  // `message_create` fires for a message this process just sent via `send()`
+  // just as much as for one a customer sent — WhatsApp echoes both directions
+  // through the same event. `send()`'s own caller already records that
+  // message once; without this, the echo reports it a second time as if it
+  // were new, racing whichever side's write lands first. `selfSentIds` covers
+  // the common case (the echo arrives after `send()` has the real id to
+  // match); `inFlightSends` covers the rarer case where the echo fires before
+  // `send()` itself has resolved, so there is no id yet to match against.
+  private selfSentIds = new Set<string>();
+  private inFlightSends = new Map<string, number>();
+
   constructor(private authDir: string, private onEvent: (ev: BridgeEvent) => void) {}
 
   isConnected(channelId: string): boolean {
     return this.clients.has(channelId);
+  }
+
+  private isSelfEcho(channelId: string, providerMessageId: string): boolean {
+    if (this.selfSentIds.delete(providerMessageId)) return true;
+    return (this.inFlightSends.get(channelId) ?? 0) > 0;
   }
 
   async start(channelId: string): Promise<void> {
@@ -114,6 +130,7 @@ export class SessionManager {
       // trying to parse it as a phone number instead of just being skipped.
       if (!counterpart.endsWith('@c.us') && !counterpart.endsWith('@lid')) return;
       if (SYSTEM_MESSAGE_TYPES.has(msg.type)) return;
+      if (msg.fromMe && this.isSelfEcho(channelId, msg.id._serialized)) return;
 
       // Same LID privacy ID that `ready` resolves for our own number can show
       // up on either side of a chat — the customer's id is then a `…@lid`,
@@ -180,7 +197,15 @@ export class SessionManager {
       chatId = numberId._serialized;
     }
 
-    const sent = await client.sendMessage(chatId, body);
+    this.inFlightSends.set(channelId, (this.inFlightSends.get(channelId) ?? 0) + 1);
+    let sent;
+    try {
+      sent = await client.sendMessage(chatId, body);
+    } finally {
+      const remaining = (this.inFlightSends.get(channelId) ?? 1) - 1;
+      if (remaining <= 0) this.inFlightSends.delete(channelId);
+      else this.inFlightSends.set(channelId, remaining);
+    }
     // Belt and suspenders: whatsapp-web.js resolves `chatId` to a chat before
     // sending anything, and returns `undefined` — not a rejected promise —
     // if that somehow still fails. Retrying that would just fail the same
@@ -191,7 +216,13 @@ export class SessionManager {
       err.status = 400;
       throw err;
     }
-    return { providerMessageId: sent.id._serialized };
+    // The echo can still take a moment to round-trip back through
+    // `message_create` after this call already returned, so the id is kept
+    // around rather than cleared the instant `inFlightSends` drops.
+    const providerMessageId = sent.id._serialized;
+    this.selfSentIds.add(providerMessageId);
+    setTimeout(() => this.selfSentIds.delete(providerMessageId), 15_000);
+    return { providerMessageId };
   }
 
   async stop(channelId: string): Promise<void> {

@@ -17,3 +17,5 @@ export * from './messageTemplates.ts';
 export * from './quickReplies.ts';
 export * from './salesTargets.ts';
 export * from './documents.ts';
+export * from './broadcasts.ts';
+export * from './googleCalendar.ts';
