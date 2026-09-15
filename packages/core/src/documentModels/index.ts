@@ -1,7 +1,9 @@
-import { buildStandarDocument, renderDocumentLayout, type DocumentLayoutElement } from './standar.ts';
+import { buildStandarDocument, renderDocumentLayout, type DocumentLayoutElement, type DocumentPageSetup } from './standar.ts';
 
-export type { DocumentKindOption, MergeField, DocumentLayoutElement } from './standar.ts';
-export { defaultDocumentLayout, PAGE_WIDTH_PX, PAGE_HEIGHT_PX } from './standar.ts';
+export type {
+  DocumentKindOption, MergeField, DocumentLayoutElement, DocumentPageSize, DocumentPageSetup, RichTextNode,
+} from './standar.ts';
+export { defaultDocumentLayout, PAGE_WIDTH_PX, PAGE_HEIGHT_PX, pageSizePx, DEFAULT_PAGE_SETUP } from './standar.ts';
 
 /**
  * One entry point regardless of which model a document picked. `model` is
@@ -13,6 +15,7 @@ export { defaultDocumentLayout, PAGE_WIDTH_PX, PAGE_HEIGHT_PX } from './standar.
  */
 export async function generateDocumentDocx(args: {
   model: string; kind: string; tenantName: string; documentName: string; layout: DocumentLayoutElement[] | null;
+  pageSetup: DocumentPageSetup;
 }): Promise<Buffer> {
   const { layout, ...rest } = args;
   if (layout && layout.length > 0) return renderDocumentLayout({ ...rest, layout });

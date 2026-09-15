@@ -26,13 +26,14 @@ export function TaskDetailDrawer({
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(updateTask, null);
   const [kind, setKind] = useState(incoming?.kind ?? 'follow_up');
+  const [repeatUnit, setRepeatUnit] = useState(incoming?.repeatUnit ?? '');
   // The caller clears `task` to null the moment it closes the drawer, so the
   // panel would otherwise vanish instantly instead of sliding out — this
   // keeps rendering the last task while `open` drives the CSS transition.
   const [task, setTask] = useState<Task | null>(incoming);
 
   useEffect(() => {
-    if (incoming) { setTask(incoming); setKind(incoming.kind); }
+    if (incoming) { setTask(incoming); setKind(incoming.kind); setRepeatUnit(incoming.repeatUnit ?? ''); }
   }, [incoming]);
 
   useEffect(() => {
@@ -96,6 +97,33 @@ export function TaskDetailDrawer({
                   ))}
                 </select>
               </div>
+
+              <div className="record-field">
+                <label htmlFor="e-repeatUnit">{t.tasks.repeat}</label>
+                <select className="line-input" id="e-repeatUnit" name="repeatUnit" value={repeatUnit}
+                        onChange={(e) => setRepeatUnit(e.target.value)}>
+                  <option value="">{t.tasks.repeatNone}</option>
+                  {(['day', 'week', 'month', 'year'] as const).map((u) => (
+                    <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
+                  ))}
+                </select>
+              </div>
+
+              {repeatUnit ? (
+                <>
+                  <div className="record-field">
+                    <label htmlFor="e-repeatInterval">{t.tasks.repeatEvery}</label>
+                    <input className="line-input" id="e-repeatInterval" name="repeatInterval" type="number"
+                           min={1} max={365} defaultValue={task.repeatInterval} />
+                  </div>
+                  <div className="record-field">
+                    <label htmlFor="e-repeatUntil">{t.tasks.repeatUntil}</label>
+                    <input className="line-input" id="e-repeatUntil" name="repeatUntil" type="date"
+                           defaultValue={task.repeatUntil ? task.repeatUntil.slice(0, 10) : ''} />
+                    <p className="record-hint">{t.tasks.repeatUntilHint}</p>
+                  </div>
+                </>
+              ) : null}
 
               {kind === 'meeting' ? (
                 <div className="record-field">

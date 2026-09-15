@@ -606,22 +606,34 @@ export async function reconnectWaBridgeChannel(ctx: Ctx, args: { channelId: stri
 
 export async function createDeal(
   ctx: Ctx,
-  args: { contactId: string; title: string; amountIdr: number; ownerId?: string | null; sourceConversationId?: string | null },
+  args: {
+    contactId: string; title: string; amountIdr: number; ownerId?: string | null;
+    sourceConversationId?: string | null; brandId?: string | null; stageId?: string | null;
+  },
 ) {
-  const stage = await ctx.tx.query<{ id: string; pipeline_id: string }>(
-    `select s.id, s.pipeline_id from pipeline_stages s
-       join pipelines p on p.id = s.pipeline_id and p.tenant_id = s.tenant_id
-      where s.tenant_id = $1 and p.is_default order by s.position asc limit 1`,
-    [ctx.tenantId],
-  );
+  // A "+" on a specific kanban column opens the deal directly in that stage;
+  // everything else (mark-customer, the plain create form) still falls back
+  // to wherever the default pipeline actually starts.
+  const stage = args.stageId
+    ? await ctx.tx.query<{ id: string; pipeline_id: string }>(
+        `select id, pipeline_id from pipeline_stages where tenant_id = $1 and id = $2`,
+        [ctx.tenantId, args.stageId],
+      )
+    : await ctx.tx.query<{ id: string; pipeline_id: string }>(
+        `select s.id, s.pipeline_id from pipeline_stages s
+           join pipelines p on p.id = s.pipeline_id and p.tenant_id = s.tenant_id
+          where s.tenant_id = $1 and p.is_default order by s.position asc limit 1`,
+        [ctx.tenantId],
+      );
   if (!stage[0]) throw new Error('No default pipeline configured');
 
   const rows = await ctx.tx.query<{ id: string }>(
     `insert into deals (tenant_id, contact_id, pipeline_id, stage_id, title, amount_micros,
-                        owner_id, source_conversation_id, rots_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8, now() + interval '7 days') returning id`,
+                        owner_id, source_conversation_id, brand_id, rots_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9, now() + interval '7 days') returning id`,
     [ctx.tenantId, args.contactId, stage[0].pipeline_id, stage[0].id, args.title,
-     Math.round(args.amountIdr * 1_000_000), args.ownerId ?? null, args.sourceConversationId ?? null],
+     Math.round(args.amountIdr * 1_000_000), args.ownerId ?? null, args.sourceConversationId ?? null,
+     args.brandId ?? null],
   );
   return { id: rows[0]!.id };
 }
@@ -632,6 +644,7 @@ export interface DealDetail {
   isWon: boolean; isLost: boolean;
   contactId: string; contactName: string | null; contactPhone: string | null;
   ownerId: string | null; sourceConversationId: string | null;
+  brandId: string | null; brandName: string | null; brandCategory: string | null;
   expectedCloseOn: string | null; notes: string | null;
   rotsAt: Date | null; closedAt: Date | null; createdAt: Date; updatedAt: Date;
 }
@@ -645,6 +658,7 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
     is_won: boolean; is_lost: boolean;
     contact_id: string; contact_name: string | null; phone_enc: string | null;
     owner_id: string | null; source_conversation_id: string | null;
+    brand_id: string | null; brand_name: string | null; brand_category: string | null;
     expected_close_on: Date | null; notes: string | null;
     rots_at: Date | null; closed_at: Date | null; created_at: Date; updated_at: Date;
   }>(
@@ -652,12 +666,13 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
             d.stage_id, s.name as stage_name, d.pipeline_id, p.name as pipeline_name,
             s.is_won, s.is_lost,
             d.contact_id, ct.display_name as contact_name, ct.phone_enc,
-            d.owner_id, d.source_conversation_id,
+            d.owner_id, d.source_conversation_id, d.brand_id, br.name as brand_name, br.category as brand_category,
             d.expected_close_on, d.notes, d.rots_at, d.closed_at, d.created_at, d.updated_at
        from deals d
        join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id
        join pipelines p on p.id = d.pipeline_id and p.tenant_id = d.tenant_id
        join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
+       left join brands br on br.id = d.brand_id and br.tenant_id = d.tenant_id
       where d.tenant_id = $1 and d.id = $2`,
     [ctx.tenantId, dealId],
   );
@@ -672,26 +687,30 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
     contactId: row.contact_id, contactName: row.contact_name,
     contactPhone: row.phone_enc ? openField(keys, ctx.tenantId, row.phone_enc) : null,
     ownerId: row.owner_id, sourceConversationId: row.source_conversation_id,
+    brandId: row.brand_id, brandName: row.brand_name, brandCategory: row.brand_category,
     expectedCloseOn: row.expected_close_on ? row.expected_close_on.toISOString().slice(0, 10) : null,
     notes: row.notes,
     rotsAt: row.rots_at, closedAt: row.closed_at, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 
-/** Notes and the target close date — the two fields a deal card has no room for. */
+/** Notes, the target close date, and which brand it's about — the fields a deal card has no room for. */
 export async function updateDeal(
-  ctx: Ctx, args: { dealId: string; notes?: string | null; expectedCloseOn?: string | null },
+  ctx: Ctx,
+  args: { dealId: string; notes?: string | null; expectedCloseOn?: string | null; brandId?: string | null },
 ): Promise<boolean> {
   const rows = await ctx.tx.query<{ id: string }>(
     `update deals set
         notes = case when $3 then $4 else notes end,
         expected_close_on = case when $5 then $6::date else expected_close_on end,
+        brand_id = case when $7 then $8 else brand_id end,
         updated_at = now()
       where tenant_id = $1 and id = $2
       returning id`,
     [ctx.tenantId, args.dealId,
      args.notes !== undefined, args.notes ?? null,
-     args.expectedCloseOn !== undefined, args.expectedCloseOn ?? null],
+     args.expectedCloseOn !== undefined, args.expectedCloseOn ?? null,
+     args.brandId !== undefined, args.brandId ?? null],
   );
   return !!rows[0];
 }

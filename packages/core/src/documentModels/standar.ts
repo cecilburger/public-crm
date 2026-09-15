@@ -1,6 +1,6 @@
 import {
   AlignmentType, Document, HeadingLevel, HorizontalPositionRelativeFrom, ImageRun, Packer, Paragraph, TextRun,
-  VerticalPositionRelativeFrom, FrameAnchorType, TextWrappingType,
+  VerticalPositionRelativeFrom, FrameAnchorType, TextWrappingType, HeightRule, type ISectionPropertiesOptions,
 } from 'docx';
 
 /**
@@ -36,17 +36,74 @@ const INTROS: Record<DocumentKindOption, string> = {
  */
 export type MergeField = 'tenant_name' | 'document_name';
 
+/**
+ * A minimal structural mirror of Tiptap/ProseMirror's JSON document shape —
+ * only what `renderRichTextParagraphs` below actually walks, not a re-import
+ * of Tiptap's own types. Tiptap itself is a console-only, browser-only
+ * dependency; this package never imports it, only interprets its JSON output.
+ */
+export interface RichTextNode {
+  type: string;
+  attrs?: Record<string, unknown>;
+  content?: RichTextNode[];
+  text?: string;
+  marks?: { type: string }[];
+}
+
 export type DocumentLayoutElement =
   | {
       id: string; type: 'text'; x: number; y: number; w: number; h: number;
       fontSize: number; bold: boolean;
       content: { kind: 'literal'; text: string } | { kind: 'field'; field: MergeField };
     }
+  | {
+      id: string; type: 'richtext'; x: number; y: number; w: number; minHeight: number;
+      content: RichTextNode;
+    }
   | { id: string; type: 'image'; x: number; y: number; w: number; h: number; dataUrl: string };
 
-/** A4 at 96dpi — fixed so canvas pixels and generated-docx positions always agree. */
-export const PAGE_WIDTH_PX = 794;
-export const PAGE_HEIGHT_PX = 1123;
+export type DocumentPageSize = 'a4' | 'letter' | 'legal' | 'f4';
+
+const PAGE_SIZES_MM: Record<DocumentPageSize, { width: number; height: number }> = {
+  a4: { width: 210, height: 297 },
+  letter: { width: 215.9, height: 279.4 },
+  legal: { width: 215.9, height: 355.6 },
+  // Folio — the size most Indonesian official letters/invoices are still printed on.
+  f4: { width: 215, height: 330 },
+};
+
+const MM_PER_INCH = 25.4;
+const PX_PER_INCH = 96;
+const TWIP_PER_INCH = 1440;
+
+function mmToPx(mm: number): number { return Math.round((mm / MM_PER_INCH) * PX_PER_INCH); }
+function mmToTwip(mm: number): number { return Math.round((mm / MM_PER_INCH) * TWIP_PER_INCH); }
+
+/**
+ * A4 at 96dpi — every layout element's x/y/w/h is expressed against this one
+ * fixed coordinate system regardless of which paper size a document ends up
+ * generated on. Changing paper size only moves the page boundary and margin
+ * guide drawn around those same coordinates in the editor; it doesn't
+ * rescale the elements themselves (same reasoning Word uses — page setup and
+ * content position are independent).
+ */
+export const PAGE_WIDTH_PX = mmToPx(PAGE_SIZES_MM.a4.width);
+export const PAGE_HEIGHT_PX = mmToPx(PAGE_SIZES_MM.a4.height);
+
+export function pageSizePx(pageSize: DocumentPageSize): { width: number; height: number } {
+  const mm = PAGE_SIZES_MM[pageSize];
+  return { width: mmToPx(mm.width), height: mmToPx(mm.height) };
+}
+
+export interface DocumentPageSetup {
+  pageSize: DocumentPageSize;
+  marginTopMm: number; marginRightMm: number; marginBottomMm: number; marginLeftMm: number;
+}
+
+/** Matches Word's own "Normal" preset — 2.54cm (1") on every side. */
+export const DEFAULT_PAGE_SETUP: DocumentPageSetup = {
+  pageSize: 'a4', marginTopMm: 25, marginRightMm: 25, marginBottomMm: 25, marginLeftMm: 25,
+};
 
 /**
  * The layout a new document starts with — arranged to read the same as the
@@ -71,8 +128,8 @@ export function defaultDocumentLayout(args: { kind: string; documentName: string
       fontSize: 11, bold: true, content: { kind: 'field', field: 'document_name' },
     },
     {
-      id: 'intro', type: 'text', x: 60, y: 220, w: PAGE_WIDTH_PX - 120, h: 60,
-      fontSize: 11, bold: false, content: { kind: 'literal', text: intro },
+      id: 'intro', type: 'richtext', x: 60, y: 220, w: PAGE_WIDTH_PX - 120, minHeight: 60,
+      content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: intro }] }] },
     },
   ];
 }
@@ -94,6 +151,80 @@ function imageTypeFromDataUrl(dataUrl: string): 'png' | 'jpg' | 'gif' | 'bmp' {
   return (kind as 'png' | 'jpg' | 'gif' | 'bmp' | undefined) ?? 'png';
 }
 
+function pageSectionProperties(setup: DocumentPageSetup): ISectionPropertiesOptions {
+  const mm = PAGE_SIZES_MM[setup.pageSize];
+  return {
+    page: {
+      size: { width: mmToTwip(mm.width), height: mmToTwip(mm.height) },
+      margin: {
+        top: mmToTwip(setup.marginTopMm), right: mmToTwip(setup.marginRightMm),
+        bottom: mmToTwip(setup.marginBottomMm), left: mmToTwip(setup.marginLeftMm),
+      },
+    },
+  };
+}
+
+function resolveField(field: MergeField, args: { tenantName: string; documentName: string }): string {
+  return field === 'tenant_name' ? args.tenantName : args.documentName;
+}
+
+/** Inline content (plain text runs + our custom merge-field atom) → TextRuns. */
+function inlineRuns(nodes: RichTextNode[] | undefined, args: { tenantName: string; documentName: string }): TextRun[] {
+  if (!nodes) return [];
+  return nodes.map((node) => {
+    if (node.type === 'mergeField') {
+      const field = node.attrs?.field as MergeField | undefined;
+      return new TextRun({ text: field ? resolveField(field, args) : '' });
+    }
+    const marks = new Set((node.marks ?? []).map((m) => m.type));
+    return new TextRun({ text: node.text ?? '', bold: marks.has('bold'), italics: marks.has('italic') });
+  });
+}
+
+/**
+ * Walks a Tiptap/ProseMirror JSON document into a flat list of `docx`
+ * Paragraphs, every one sharing the same absolute `frame` — position/width
+ * fixed, but `height` is only a minimum (`rule: HeightRule.ATLEAST`). Word
+ * groups consecutively-framed paragraphs into one continuous frame that
+ * grows to fit, so a long paragraph or an extra bullet makes the frame
+ * taller instead of overflowing a fixed box the way a plain `'text'`
+ * element would.
+ */
+function renderRichTextParagraphs(
+  node: RichTextNode, args: { tenantName: string; documentName: string },
+  frame: { x: number; y: number; w: number; minHeight: number },
+): Paragraph[] {
+  const framePr = {
+    type: 'absolute' as const,
+    position: { x: Math.round(frame.x * PX_TO_TWIP), y: Math.round(frame.y * PX_TO_TWIP) },
+    width: Math.round(frame.w * PX_TO_TWIP),
+    height: Math.round(frame.minHeight * PX_TO_TWIP),
+    rule: HeightRule.ATLEAST,
+    anchor: { horizontal: FrameAnchorType.PAGE, vertical: FrameAnchorType.PAGE },
+  };
+
+  const paragraphs: Paragraph[] = [];
+  for (const block of node.content ?? []) {
+    if (block.type === 'bulletList') {
+      for (const item of block.content ?? []) {
+        for (const itemBlock of item.content ?? []) {
+          paragraphs.push(new Paragraph({ frame: framePr, bullet: { level: 0 }, children: inlineRuns(itemBlock.content, args) }));
+        }
+      }
+      continue;
+    }
+    if (block.type === 'heading') {
+      const level = Number(block.attrs?.level) || 1;
+      const heading = level <= 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3;
+      paragraphs.push(new Paragraph({ frame: framePr, heading, children: inlineRuns(block.content, args) }));
+      continue;
+    }
+    // paragraph, and anything else unrecognised — treated as plain text.
+    paragraphs.push(new Paragraph({ frame: framePr, children: inlineRuns(block.content, args) }));
+  }
+  return paragraphs.length > 0 ? paragraphs : [new Paragraph({ frame: framePr, children: [] })];
+}
+
 /**
  * Renders a saved canvas layout straight into a real `.docx` using the
  * `docx` library's absolute-position frames (text) and floating images —
@@ -102,12 +233,13 @@ function imageTypeFromDataUrl(dataUrl: string): 'png' | 'jpg' | 'gif' | 'bmp' {
  * browser or a PDF render pipeline.
  */
 export async function renderDocumentLayout(args: {
-  layout: DocumentLayoutElement[]; tenantName: string; documentName: string;
+  layout: DocumentLayoutElement[]; tenantName: string; documentName: string; pageSetup: DocumentPageSetup;
 }): Promise<Buffer> {
-  const children = args.layout.map((el) => {
+  const children: Paragraph[] = [];
+  for (const el of args.layout) {
     if (el.type === 'image') {
       const base64 = el.dataUrl.slice(el.dataUrl.indexOf(',') + 1);
-      return new Paragraph({
+      children.push(new Paragraph({
         children: [
           new ImageRun({
             type: imageTypeFromDataUrl(el.dataUrl),
@@ -120,10 +252,16 @@ export async function renderDocumentLayout(args: {
             },
           }),
         ],
-      });
+      }));
+      continue;
     }
 
-    return new Paragraph({
+    if (el.type === 'richtext') {
+      children.push(...renderRichTextParagraphs(el.content, args, { x: el.x, y: el.y, w: el.w, minHeight: el.minHeight }));
+      continue;
+    }
+
+    children.push(new Paragraph({
       frame: {
         type: 'absolute',
         position: { x: Math.round(el.x * PX_TO_TWIP), y: Math.round(el.y * PX_TO_TWIP) },
@@ -132,10 +270,11 @@ export async function renderDocumentLayout(args: {
         anchor: { horizontal: FrameAnchorType.PAGE, vertical: FrameAnchorType.PAGE },
       },
       children: [new TextRun({ text: resolveText(el.content, args), bold: el.bold, size: el.fontSize * 2 })],
-    });
-  });
+    }));
+  }
 
-  const doc = new Document({ sections: [{ children }] });
+  const pageSection = pageSectionProperties(args.pageSetup);
+  const doc = new Document({ sections: [{ properties: pageSection, children }] });
   return Packer.toBuffer(doc);
 }
 
@@ -145,12 +284,14 @@ export async function renderDocumentLayout(args: {
  * document created after gets a real layout via `defaultDocumentLayout`).
  */
 export async function buildStandarDocument(args: {
-  tenantName: string; documentName: string; kind: string;
+  tenantName: string; documentName: string; kind: string; pageSetup?: DocumentPageSetup;
 }): Promise<Buffer> {
   const title = TITLES[args.kind as DocumentKindOption] ?? TITLES.lainnya;
   const intro = INTROS[args.kind as DocumentKindOption] ?? INTROS.lainnya;
+  const pageSection = pageSectionProperties(args.pageSetup ?? DEFAULT_PAGE_SETUP);
   const doc = new Document({
     sections: [{
+      properties: pageSection,
       children: [
         new Paragraph({
           alignment: AlignmentType.CENTER,

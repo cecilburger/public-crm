@@ -34,15 +34,17 @@ export function registerDealRoutes(app: FastifyInstance, ctx: AppCtx): void {
     const body = z.object({
       notes: z.string().max(4000).nullable().optional(),
       expectedCloseOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      brandId: z.string().uuid().nullable().optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the deal fields');
-    if (body.data.notes === undefined && body.data.expectedCloseOn === undefined) {
+    if (body.data.notes === undefined && body.data.expectedCloseOn === undefined && body.data.brandId === undefined) {
       throw invalid('Nothing to update');
     }
 
     const ok = await ctx.asTenant(req, async (tx) => {
       const updated = await updateDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         dealId: id, notes: body.data.notes, expectedCloseOn: body.data.expectedCloseOn,
+        brandId: body.data.brandId,
       });
       if (updated) {
         // The note's own text stays out of the audit trail — it's free text
@@ -54,6 +56,7 @@ export function registerDealRoutes(app: FastifyInstance, ctx: AppCtx): void {
           meta: {
             ...(body.data.notes !== undefined ? { notes: true } : {}),
             ...(body.data.expectedCloseOn !== undefined ? { expectedCloseOn: body.data.expectedCloseOn } : {}),
+            ...(body.data.brandId !== undefined ? { brandId: body.data.brandId } : {}),
           },
         });
       }

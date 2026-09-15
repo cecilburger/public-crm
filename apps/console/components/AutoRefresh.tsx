@@ -19,7 +19,10 @@ export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [on, setOn] = useState(true);
-  const [last, setLast] = useState<number>(() => Date.now());
+  const [last, setLast] = useState<number>(0);
+
+  // Set the real timestamp after mount so SSR and client initial renders match.
+  useEffect(() => { setLast(Date.now()); }, []);
 
   useEffect(() => {
     if (!on) return;
@@ -35,7 +38,7 @@ export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
   return (
     <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <span className="mono dim">
-        {pending ? t.chats.refreshing
+        {pending || last === 0 ? t.chats.refreshing
           : `${t.chats.updated} ${new Date(last).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`}
       </span>
       <button className="btn ghost sm" onClick={() => setOn((v) => !v)} aria-pressed={on}>

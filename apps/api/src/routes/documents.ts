@@ -1,10 +1,24 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid, notFound, generateDocumentDocx } from '@kirana/core';
+import { invalid, notFound, generateDocumentDocx, type RichTextNode } from '@kirana/core';
 import {
   listDocuments, getDocument, createDocument, updateDocument, updateDocumentLayout, deleteDocument,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
+
+// Tiptap's own ProseMirror JSON — deeply validating its shape isn't worth it
+// (the tenant is only ever writing their own document), but it still has to
+// structurally match `RichTextNode` for `body.data.layout` to type-check
+// against `DocumentLayoutElement[]` below, hence `z.lazy` for the recursion.
+const richTextNode: z.ZodType<RichTextNode> = z.lazy(() =>
+  z.object({
+    type: z.string(),
+    attrs: z.record(z.string(), z.unknown()).optional(),
+    content: z.array(richTextNode).optional(),
+    text: z.string().optional(),
+    marks: z.array(z.object({ type: z.string() })).optional(),
+  }),
+);
 
 const documentBody = z.object({
   name: z.string().min(1).max(128),
@@ -28,9 +42,21 @@ const layoutElement = z.discriminatedUnion('type', [
     x: z.number(), y: z.number(), w: z.number().positive(), h: z.number().positive(),
     dataUrl: z.string().max(6_000_000).startsWith('data:image/'),
   }),
+  z.object({
+    id: z.string().min(1).max(60), type: z.literal('richtext'),
+    x: z.number(), y: z.number(), w: z.number().positive(), minHeight: z.number().positive(),
+    content: richTextNode,
+  }),
 ]);
 
-const layoutBody = z.object({ layout: z.array(layoutElement).max(200) });
+const layoutBody = z.object({
+  layout: z.array(layoutElement).max(200),
+  pageSize: z.enum(['a4', 'letter', 'legal', 'f4']),
+  marginTopMm: z.number().int().min(0).max(100),
+  marginRightMm: z.number().int().min(0).max(100),
+  marginBottomMm: z.number().int().min(0).max(100),
+  marginLeftMm: z.number().int().min(0).max(100),
+});
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -76,6 +102,10 @@ export function registerDocumentRoutes(app: FastifyInstance, ctx: AppCtx): void 
     const buffer = await generateDocumentDocx({
       model: result.doc.model, kind: result.doc.kind, layout: result.doc.layout,
       tenantName: result.tenantName, documentName: result.doc.name,
+      pageSetup: {
+        pageSize: result.doc.pageSize, marginTopMm: result.doc.marginTopMm, marginRightMm: result.doc.marginRightMm,
+        marginBottomMm: result.doc.marginBottomMm, marginLeftMm: result.doc.marginLeftMm,
+      },
     });
 
     return reply
@@ -122,7 +152,10 @@ export function registerDocumentRoutes(app: FastifyInstance, ctx: AppCtx): void 
 
     const ok = await ctx.asTenant(req, (tx) =>
       updateDocumentLayout({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
-        documentId: id, layout: body.data.layout, actorId: actor.userId,
+        documentId: id, layout: body.data.layout, pageSize: body.data.pageSize,
+        marginTopMm: body.data.marginTopMm, marginRightMm: body.data.marginRightMm,
+        marginBottomMm: body.data.marginBottomMm, marginLeftMm: body.data.marginLeftMm,
+        actorId: actor.userId,
       }));
     if (!ok) throw notFound('Document');
     return { ok: true };

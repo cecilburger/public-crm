@@ -1,6 +1,6 @@
 import type { Ctx } from './repo.ts';
 import { audit } from './audit.ts';
-import { defaultDocumentLayout, type DocumentLayoutElement } from '@kirana/core';
+import { defaultDocumentLayout, DEFAULT_PAGE_SETUP, type DocumentLayoutElement, type DocumentPageSize } from '@kirana/core';
 
 export interface DocumentRow {
   id: string; name: string;
@@ -8,12 +8,16 @@ export interface DocumentRow {
   // values (see DocumentKind/DocumentModel) on top of the ones built into the UI.
   kind: string; model: string; useTemplate: boolean;
   layout: DocumentLayoutElement[] | null;
+  pageSize: DocumentPageSize;
+  marginTopMm: number; marginRightMm: number; marginBottomMm: number; marginLeftMm: number;
   createdBy: string | null; createdAt: Date; updatedAt: Date;
 }
 
 interface DocumentDbRow {
   id: string; name: string; kind: string; model: string; use_template: boolean;
   layout: DocumentLayoutElement[] | string | null;
+  page_size: DocumentPageSize;
+  margin_top_mm: number; margin_right_mm: number; margin_bottom_mm: number; margin_left_mm: number;
   created_by: string | null; created_at: Date; updated_at: Date;
 }
 
@@ -22,11 +26,16 @@ function mapRow(r: DocumentDbRow): DocumentRow {
     id: r.id, name: r.name, kind: r.kind, model: r.model, useTemplate: r.use_template,
     // jsonb comes back parsed from postgres-js but as a string from PGlite — same defensive read as audit.ts.
     layout: typeof r.layout === 'string' ? JSON.parse(r.layout) : r.layout,
+    pageSize: r.page_size,
+    marginTopMm: r.margin_top_mm, marginRightMm: r.margin_right_mm,
+    marginBottomMm: r.margin_bottom_mm, marginLeftMm: r.margin_left_mm,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
 
-const COLUMNS = 'id, name, kind, model, use_template, layout, created_by, created_at, updated_at';
+const COLUMNS = `id, name, kind, model, use_template, layout,
+  page_size, margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
+  created_by, created_at, updated_at`;
 
 /** Every document on file, newest first — the Dokumen page's one query. */
 export async function listDocuments(ctx: Ctx): Promise<DocumentRow[]> {
@@ -52,9 +61,12 @@ export async function createDocument(
   // sensible — nobody has to open the layout editor just to get a blank page.
   const layout = defaultDocumentLayout({ kind: args.kind, documentName: args.name });
   const rows = await ctx.tx.query<{ id: string }>(
-    `insert into documents (tenant_id, name, kind, model, use_template, layout, created_by)
-     values ($1,$2,$3,$4,$5,$6,$7) returning id`,
-    [ctx.tenantId, args.name, args.kind, args.model, args.useTemplate, JSON.stringify(layout), args.createdBy],
+    `insert into documents (tenant_id, name, kind, model, use_template, layout,
+                             page_size, margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm, created_by)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
+    [ctx.tenantId, args.name, args.kind, args.model, args.useTemplate, JSON.stringify(layout),
+     DEFAULT_PAGE_SETUP.pageSize, DEFAULT_PAGE_SETUP.marginTopMm, DEFAULT_PAGE_SETUP.marginRightMm,
+     DEFAULT_PAGE_SETUP.marginBottomMm, DEFAULT_PAGE_SETUP.marginLeftMm, args.createdBy],
   );
   const id = rows[0]!.id;
   await audit(ctx.tx, ctx.tenantId, {
@@ -85,17 +97,25 @@ export async function updateDocument(
 
 /**
  * Saved from the canvas editor, separate from `updateDocument` since it's a
- * different form entirely (Nama/Jenis/Model there vs. positioned elements
- * here) that shouldn't touch the other's fields.
+ * different form entirely (Nama/Jenis/Model there vs. positioned elements and
+ * page setup here) that shouldn't touch the other's fields.
  */
 export async function updateDocumentLayout(
-  ctx: Ctx, args: { documentId: string; layout: DocumentLayoutElement[]; actorId: string },
+  ctx: Ctx,
+  args: {
+    documentId: string; layout: DocumentLayoutElement[]; pageSize: DocumentPageSize;
+    marginTopMm: number; marginRightMm: number; marginBottomMm: number; marginLeftMm: number;
+    actorId: string;
+  },
 ): Promise<boolean> {
   const rows = await ctx.tx.query<{ id: string }>(
-    `update documents set layout = $3, updated_at = now()
+    `update documents set layout = $3, page_size = $4,
+            margin_top_mm = $5, margin_right_mm = $6, margin_bottom_mm = $7, margin_left_mm = $8,
+            updated_at = now()
       where tenant_id = $1 and id = $2
       returning id`,
-    [ctx.tenantId, args.documentId, JSON.stringify(args.layout)],
+    [ctx.tenantId, args.documentId, JSON.stringify(args.layout), args.pageSize,
+     args.marginTopMm, args.marginRightMm, args.marginBottomMm, args.marginLeftMm],
   );
   if (!rows[0]) return false;
 

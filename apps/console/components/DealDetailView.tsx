@@ -6,7 +6,7 @@ import { updateDealDetails, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { rp, ago } from '@/lib/format';
 import { CsrfField } from '@/components/Csrf';
-import type { DealDetailResponse, Member } from '@/lib/api';
+import type { Brand, DealDetailResponse, Member } from '@/lib/api';
 
 const ORDER_STATUS_CHIP: Record<string, string> = {
   draft: 'chip', awaiting_payment: 'chip warn', paid: 'chip brand', fulfilled: 'chip good', cancelled: 'chip danger',
@@ -28,7 +28,9 @@ function activityDetails(meta: Record<string, unknown>, names: Map<string, strin
     .join(' · ');
 }
 
-export function DealDetailView({ data, members }: { data: DealDetailResponse; members: Member[] }) {
+export function DealDetailView({
+  data, members, brands,
+}: { data: DealDetailResponse; members: Member[]; brands: Brand[] }) {
   const { deal, orders, activity } = data;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(updateDealDetails, null);
 
@@ -43,11 +45,11 @@ export function DealDetailView({ data, members }: { data: DealDetailResponse; me
       <div className="odoo-control-panel">
         <div className="odoo-cp-top">
           <div className="odoo-cp-breadcrumb">
-            <Link href="/penjualan" style={{ color: 'var(--ink-2)', marginRight: 8, textDecoration: 'none' }}>
+            <Link href="/deal" style={{ color: 'var(--ink-2)', marginRight: 8, textDecoration: 'none' }}>
               {t.dealDetail.back}
             </Link>
             <span style={{ color: 'var(--ink-3)', marginRight: 8 }}>/</span>
-            <h1>{deal.title}</h1>
+            <h1>{deal.brandName ?? deal.title}</h1>
           </div>
         </div>
         <div className="odoo-cp-bottom">
@@ -74,6 +76,8 @@ export function DealDetailView({ data, members }: { data: DealDetailResponse; me
                   </Link>
                 </span>
               </div>
+              <div className="kv"><span>{t.dealDetail.brand}</span><span className="v">{deal.brandName ?? t.dealDetail.noBrand}</span></div>
+              <div className="kv"><span>{t.dealDetail.category}</span><span className="v">{deal.brandCategory ?? t.dealDetail.noCategory}</span></div>
               <div className="kv"><span>{t.dealDetail.amount}</span><span className="v">{rp(deal.amountIdr)}</span></div>
               <div className="kv"><span>{t.dealDetail.owner}</span><span className="v">{ownerName ?? t.dealDetail.noOwner}</span></div>
               <div className="kv"><span>{t.dealDetail.created}</span><span className="v">{ago(deal.createdAt)}</span></div>
@@ -85,6 +89,13 @@ export function DealDetailView({ data, members }: { data: DealDetailResponse; me
             <form action={formAction} className="body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <CsrfField />
               <input type="hidden" name="id" value={deal.id} />
+              <div className="record-field">
+                <label htmlFor="brandId">{t.dealDetail.brand}</label>
+                <select className="line-input" id="brandId" name="brandId" defaultValue={deal.brandId ?? ''}>
+                  <option value="">{t.dealDetail.chooseBrand}</option>
+                  {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
               <div className="record-field">
                 <label htmlFor="expectedCloseOn">{t.dealDetail.expectedClose}</label>
                 <input className="line-input" id="expectedCloseOn" name="expectedCloseOn" type="date"

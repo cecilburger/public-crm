@@ -8,8 +8,8 @@ import {
   addDays, addMonths, monthGrid, sameDay, shiftAnchor, startOfMonth, startOfWeek, weekDays,
 } from '@/lib/calendarHelpers';
 import type { CalendarMode } from '@/lib/calendarHelpers';
-import type { Task } from '@/lib/api';
-import { markTaskDone } from '@/app/(app)/actions';
+import type { Task, GoogleCalendarEvent, GoogleCalendarStatus } from '@/lib/api';
+import { markTaskDone, disconnectGoogleCalendar } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 
@@ -40,6 +40,36 @@ function groupByDay(tasks: Task[]): Map<string, Task[]> {
     map.get(key)!.push(tk);
   }
   return map;
+}
+
+function groupGoogleByDay(events: GoogleCalendarEvent[]): Map<string, GoogleCalendarEvent[]> {
+  const map = new Map<string, GoogleCalendarEvent[]>();
+  for (const ev of events) {
+    const key = new Date(ev.start).toDateString();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(ev);
+  }
+  return map;
+}
+
+/** The visible window worth asking Google for, per calendar mode — the month
+ *  grid always shows a few days of the neighbouring months too, so its range
+ *  is the grid's own first/last cell, not just the 1st–30th. */
+function periodRange(mode: CalendarMode, anchor: Date): { from: Date; to: Date } {
+  if (mode === 'day') {
+    const from = new Date(anchor);
+    from.setHours(0, 0, 0, 0);
+    return { from, to: addDays(from, 1) };
+  }
+  if (mode === 'week') {
+    const from = startOfWeek(anchor);
+    return { from, to: addDays(from, 7) };
+  }
+  if (mode === 'year') {
+    return { from: new Date(anchor.getFullYear(), 0, 1), to: new Date(anchor.getFullYear() + 1, 0, 1) };
+  }
+  const grid = monthGrid(startOfMonth(anchor));
+  return { from: grid[0]!, to: addDays(grid[grid.length - 1]!, 1) };
 }
 
 function groupByDayHour(tasks: Task[]): Map<string, Task[]> {
@@ -178,9 +208,19 @@ function WeekGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDa
   );
 }
 
+/**
+ * Clicking the cell itself (its empty area or date number) opens the day's
+ * full list; clicking one task's own pill instead opens just that task's
+ * detail — a nested `<button>` inside the day's own clickable area would be
+ * invalid HTML, so the cell is a `div` acting as a button and the pills are
+ * the real (stopPropagation'd) buttons inside it.
+ */
 function MonthGrid({
-  anchor, eventsByDay, today, onSelectDay,
-}: { anchor: Date; eventsByDay: Map<string, Task[]>; today: Date; onSelectDay: (d: Date) => void }) {
+  anchor, eventsByDay, googleEventsByDay, today, onSelectDay, onSelectTask,
+}: {
+  anchor: Date; eventsByDay: Map<string, Task[]>; googleEventsByDay: Map<string, GoogleCalendarEvent[]>; today: Date;
+  onSelectDay: (d: Date) => void; onSelectTask: (task: Task) => void;
+}) {
   const month = startOfMonth(anchor);
   const days = useMemo(() => monthGrid(month), [month]);
   return (
@@ -191,18 +231,30 @@ function MonthGrid({
         const items = eventsByDay.get(d.toDateString()) ?? [];
         const visible = items.slice(0, 3);
         const extra = items.length - visible.length;
+        const googleItems = googleEventsByDay.get(d.toDateString()) ?? [];
+        const googleVisible = googleItems.slice(0, 2);
+        const googleExtra = googleItems.length - googleVisible.length;
         return (
-          <button type="button" key={d.toISOString()} onClick={() => onSelectDay(d)}
-                  className={`calendar-day ${inMonth ? '' : 'outside'} ${sameDay(d, today) ? 'today' : ''}`}>
+          <div key={d.toISOString()} role="button" tabIndex={0} onClick={() => onSelectDay(d)}
+               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectDay(d); } }}
+               className={`calendar-day ${inMonth ? '' : 'outside'} ${sameDay(d, today) ? 'today' : ''}`}>
             <span className="calendar-daynum">{d.getDate()}</span>
             {visible.map((tk) => (
-              <span key={tk.id} className={`calendar-pill ${pillClass(tk)}`}
-                    title={`${tk.title}${tk.contactName ? ` — ${tk.contactName}` : ''}`}>
+              <button type="button" key={tk.id} className={`calendar-pill ${pillClass(tk)}`}
+                      title={`${tk.title}${tk.contactName ? ` — ${tk.contactName}` : ''}`}
+                      onClick={(e) => { e.stopPropagation(); onSelectTask(tk); }}>
                 {tk.title}
-              </span>
+              </button>
             ))}
             {extra > 0 ? <span className="calendar-more">{t.tasks.moreCount(extra)}</span> : null}
-          </button>
+            {googleVisible.map((ev) => (
+              <a key={ev.id} href={ev.htmlLink} target="_blank" rel="noreferrer" className="calendar-pill google"
+                 title={ev.title} onClick={(e) => e.stopPropagation()}>
+                {ev.title}
+              </a>
+            ))}
+            {googleExtra > 0 ? <span className="calendar-more">{t.tasks.moreCount(googleExtra)}</span> : null}
+          </div>
         );
       })}
     </div>
@@ -212,8 +264,8 @@ function MonthGrid({
 /** Full detail for one day's tasks — the month grid only has room for a
  *  couple of truncated pills, so clicking a date opens this instead. */
 function DayDetailModal({
-  date, tasks, onClose,
-}: { date: Date | null; tasks: Task[]; onClose: () => void }) {
+  date, tasks, onClose, onOpenTaskDetail,
+}: { date: Date | null; tasks: Task[]; onClose: () => void; onOpenTaskDetail: (task: Task) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -251,16 +303,21 @@ function DayDetailModal({
                     <span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span>
                   </div>
                 </div>
-                {tk.status === 'open' ? (
-                  <div style={{ display: 'flex', gap: 6, flex: 'none' }}>
-                    <form action={markTaskDone}>
-                      <CsrfField />
-                      <input type="hidden" name="taskId" value={tk.id} />
-                      <button className="btn ghost sm" type="submit">{t.tasks.markDone}</button>
-                    </form>
-                    <CancelTaskButton task={tk} />
-                  </div>
-                ) : null}
+                <div style={{ display: 'flex', gap: 6, flex: 'none' }}>
+                  <button type="button" className="btn ghost sm" onClick={() => onOpenTaskDetail(tk)}>
+                    {t.tasks.detail}
+                  </button>
+                  {tk.status === 'open' ? (
+                    <>
+                      <form action={markTaskDone}>
+                        <CsrfField />
+                        <input type="hidden" name="taskId" value={tk.id} />
+                        <button className="btn ghost sm" type="submit">{t.tasks.markDone}</button>
+                      </form>
+                      <CancelTaskButton task={tk} />
+                    </>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>
@@ -291,17 +348,38 @@ function YearGrid({
 /** Odoo-style calendar: Day/Week/Month/Year modes, a mini calendar + status
  *  filter in the sidebar, sharing the same tab-filtered task list the table
  *  and kanban views use. */
-export function TaskCalendar({ tasks, onAddTask }: { tasks: Task[]; onAddTask?: () => void }) {
+export function TaskCalendar({
+  tasks, onAddTask, onOpenTaskDetail, googleStatus,
+}: {
+  tasks: Task[]; onAddTask?: () => void; onOpenTaskDetail: (task: Task) => void;
+  googleStatus: GoogleCalendarStatus;
+}) {
   const [mode, setMode] = useState<CalendarMode>('month');
   const [anchor, setAnchor] = useState(() => new Date());
   const [visible, setVisible] = useState<Record<Task['status'], boolean>>({ open: true, done: true, cancelled: true });
   const [detailDay, setDetailDay] = useState<Date | null>(null);
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
   const today = useMemo(() => new Date(), []);
 
   const visibleTasks = useMemo(() => tasks.filter((tk) => visible[tk.status]), [tasks, visible]);
   const byDay = useMemo(() => groupByDay(visibleTasks), [visibleTasks]);
   const byDayHour = useMemo(() => groupByDayHour(visibleTasks), [visibleTasks]);
   const detailTasks = detailDay ? byDay.get(detailDay.toDateString()) ?? [] : [];
+
+  // Refetched from Google on every navigation rather than once — the range
+  // that matters follows whatever the agent is currently looking at.
+  useEffect(() => {
+    if (!googleStatus.connected) { setGoogleEvents([]); return; }
+    const { from, to } = periodRange(mode, anchor);
+    const controller = new AbortController();
+    fetch(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data: { events?: GoogleCalendarEvent[] }) => setGoogleEvents(data.events ?? []))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [mode, anchor, googleStatus.connected]);
+
+  const googleByDay = useMemo(() => groupGoogleByDay(googleEvents), [googleEvents]);
 
   const hasAnyInPeriod = useMemo(() => {
     if (mode === 'day') return (byDay.get(anchor.toDateString())?.length ?? 0) > 0;
@@ -331,13 +409,26 @@ export function TaskCalendar({ tasks, onAddTask }: { tasks: Task[]; onAddTask?: 
             </div>
             <h3 className="calendar-period-label">{periodLabel(mode, anchor)}</h3>
           </div>
-          <select className="calendar-mode-select" value={mode}
-                  onChange={(e) => setMode(e.target.value as CalendarMode)} aria-label={t.tasks.viewCalendar}>
-            <option value="day">{t.tasks.viewDay}</option>
-            <option value="week">{t.tasks.viewWeek}</option>
-            <option value="month">{t.tasks.viewMonth}</option>
-            <option value="year">{t.tasks.viewYear}</option>
-          </select>
+          <div className="calendar-toolbar-left">
+            {googleStatus.connected ? (
+              <form action={disconnectGoogleCalendar}>
+                <CsrfField />
+                <button type="submit" className="btn ghost sm" title={t.tasks.disconnectHint}>
+                  <span className="google-dot" aria-hidden /> {t.tasks.googleConnected}
+                  {googleStatus.email ? <span className="dim" style={{ marginLeft: 5 }}>({googleStatus.email})</span> : null}
+                </button>
+              </form>
+            ) : (
+              <a href="/api/google-calendar/connect" className="btn ghost sm">{t.tasks.googleConnect}</a>
+            )}
+            <select className="calendar-mode-select" value={mode}
+                    onChange={(e) => setMode(e.target.value as CalendarMode)} aria-label={t.tasks.viewCalendar}>
+              <option value="day">{t.tasks.viewDay}</option>
+              <option value="week">{t.tasks.viewWeek}</option>
+              <option value="month">{t.tasks.viewMonth}</option>
+              <option value="year">{t.tasks.viewYear}</option>
+            </select>
+          </div>
         </div>
 
         <div className="calendar-body">
@@ -345,7 +436,8 @@ export function TaskCalendar({ tasks, onAddTask }: { tasks: Task[]; onAddTask?: 
             {mode === 'day' ? <DayGrid anchor={anchor} eventsByDayHour={byDayHour} today={today} /> : null}
             {mode === 'week' ? <WeekGrid anchor={anchor} eventsByDayHour={byDayHour} today={today} /> : null}
             {mode === 'month' ? (
-              <MonthGrid anchor={anchor} eventsByDay={byDay} today={today} onSelectDay={setDetailDay} />
+              <MonthGrid anchor={anchor} eventsByDay={byDay} googleEventsByDay={googleByDay} today={today}
+                         onSelectDay={setDetailDay} onSelectTask={onOpenTaskDetail} />
             ) : null}
             {mode === 'year' ? (
               <YearGrid anchor={anchor} eventsByDay={byDay} today={today}
@@ -375,7 +467,8 @@ export function TaskCalendar({ tasks, onAddTask }: { tasks: Task[]; onAddTask?: 
         </div>
       </div>
 
-      <DayDetailModal date={detailDay} tasks={detailTasks} onClose={() => setDetailDay(null)} />
+      <DayDetailModal date={detailDay} tasks={detailTasks} onClose={() => setDetailDay(null)}
+                      onOpenTaskDetail={onOpenTaskDetail} />
     </div>
   );
 }

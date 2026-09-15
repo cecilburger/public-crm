@@ -197,6 +197,8 @@ h3 { font-size: 13px; font-weight: 700; }
   padding: 5px 6px; border-radius: 6px; background: none; border: none;
   color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500; text-align: left;
 }
+.rail-sub-row svg { width: 14px; height: 14px; flex: none; color: var(--ink-3); }
+.rail-sub-row[aria-current="page"] svg { color: var(--brand); }
 button.rail-sub-row, a.rail-sub-row { cursor: pointer; }
 button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); color: var(--ink); }
 .rail-sub-row[aria-current="page"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
@@ -660,20 +662,77 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 @media (max-width: 1250px) { .context { display: none; } }
 
 /* ---------------------------------------------------------------- board */
+/* A close copy of Odoo's own kanban card: a light grey column body, a health
+   bar under the column header, and — on the card — a coloured left spine, a
+   project-style grey line, pill-shaped tags, and an avatar+dot corner. */
 
-.board { display: flex; gap: 12px; padding: 18px; overflow-x: auto; height: 100%; align-items: flex-start; }
-.column { width: 268px; flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; max-height: 100%; }
-.column > header { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+.board { display: flex; gap: 12px; padding: 18px; overflow-x: auto; height: 100%; align-items: flex-start; background: var(--bg); }
+.column { width: 272px; flex: none; background: var(--bg); border-radius: var(--r); display: flex; flex-direction: column; max-height: 100%; }
+.column-progress { display: flex; height: 4px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 0 4px 12px; }
+.column-progress span { height: 100%; }
+.column-progress .seg-good { background: var(--good); }
+.column-progress .seg-warn { background: var(--warn); }
+.column-progress .seg-muted { background: var(--ink-3); }
+.column > header { padding: 4px 4px 8px; display: flex; align-items: center; gap: 6px; }
+.column > header h2 { font-size: 13.5px; font-weight: 700; }
 .column > header .n { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--ink-3); }
-.column .cards { padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
-.column.won > header { background: var(--good-soft); }
-.column.lost > header { background: var(--panel-2); }
+.column-add {
+  border: none; background: none; cursor: pointer; color: var(--ink-3);
+  width: 20px; height: 20px; border-radius: 4px; line-height: 1; font-size: 15px; font-weight: 700;
+  display: grid; place-items: center;
+}
+.column-add:hover { background: var(--panel-2); color: var(--ink); }
+.column .cards { padding: 2px 2px 4px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 
-.deal { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 11px; background: var(--raised); }
-.deal .title { font-weight: 650; font-size: 13px; margin-bottom: 2px; }
-.deal .amt { font-family: var(--f-display); font-variation-settings: "wdth" 115; font-weight: 700; font-size: 15px; letter-spacing: -.02em; }
-.deal .foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-.deal.rotting { border-color: var(--warn); box-shadow: inset 3px 0 0 var(--warn); }
+.deal {
+  border: 0; border-radius: 6px; padding: 9px 11px; background: var(--panel);
+  box-shadow: 0 1px 2px rgba(0,0,0,.06);
+}
+.deal .title { display: block; font-weight: 700; font-size: 13.5px; color: var(--brand); line-height: 1.3; }
+.deal .line { font-size: 12px; color: var(--ink-2); line-height: 1.4; }
+.deal-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.deal-tags .chip {
+  font-family: inherit; text-transform: none; letter-spacing: normal; font-size: 11px; font-weight: 600;
+  border-radius: 999px; padding: 2px 9px;
+}
+.deal-due { font-family: inherit; font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin-top: 6px; }
+.deal-due.warn { color: var(--warn); }
+.deal .foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.deal .foot .amt { font-family: var(--f-display); font-variation-settings: "wdth" 115; font-weight: 700; font-size: 13.5px; letter-spacing: -.02em; color: var(--ink); }
+.deal .avatar { width: 22px; height: 22px; font-size: 10px; }
+.deal-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-left: auto; background: var(--line-2); box-shadow: 0 0 0 2px var(--panel); }
+.deal-dot.open { background: var(--brand); }
+.deal-dot.warn { background: var(--warn); }
+.deal-dot.good { background: var(--good); }
+.deal-dot.muted { background: var(--ink-3); }
+
+/* One click, no form: log a follow-up (or jump to the live thread) straight
+   from the card, the same "type distinguished by its own icon" idea a task
+   list already leans on. */
+.deal-quick-actions { display: flex; gap: 6px; margin-top: 9px; }
+.deal-quick-icon {
+  width: 26px; height: 26px; border-radius: 7px; border: none; padding: 0;
+  display: grid; place-items: center; cursor: pointer; flex: none;
+}
+.deal-quick-icon svg { width: 15px; height: 15px; }
+.deal-quick-icon:disabled, .deal-quick-icon.disabled { cursor: not-allowed; opacity: .45; }
+.deal-quick-icon.meeting { background: var(--brand-soft); color: var(--brand); }
+.deal-quick-icon.call { background: var(--good-soft); color: var(--good); }
+.deal-quick-icon.online_meet { background: var(--accent-soft); color: var(--accent); }
+.deal-quick-icon.chat { background: var(--warn-soft); color: var(--warn); }
+
+/* The same glyphs, as a passive badge instead of a button — a task's own
+   Jenis shown at a glance on its kanban card. */
+.kind-icon {
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  display: inline-grid; place-items: center; margin-bottom: 6px;
+}
+.kind-icon svg { width: 13px; height: 13px; }
+.kind-icon.meeting { background: var(--brand-soft); color: var(--brand); }
+.kind-icon.call { background: var(--good-soft); color: var(--good); }
+.kind-icon.online_meet { background: var(--accent-soft); color: var(--accent); }
+.kind-icon.chat { background: var(--warn-soft); color: var(--warn); }
+.kind-icon.email, .kind-icon.followup { background: var(--panel-2); color: var(--ink-2); }
 
 /* -------------------------------------------------------------- calendar */
 
@@ -699,14 +758,18 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .calendar-day.today { box-shadow: inset 0 0 0 2px var(--brand); }
 .calendar-daynum { font-size: 11.5px; font-weight: 700; color: var(--ink-2); }
 .calendar-pill {
-  font-size: 10.5px; padding: 2px 6px; border-radius: 5px; text-align: left;
-  background: var(--brand-soft); color: var(--brand);
+  font: inherit; font-size: 10.5px; padding: 2px 6px; border-radius: 5px; text-align: left;
+  background: var(--brand-soft); color: var(--brand); border: none; display: block; width: 100%; cursor: pointer;
   white-space: normal; word-break: break-word; line-height: 1.3;
 }
+.calendar-pill:hover { filter: brightness(0.95); }
 .calendar-pill.overdue { background: var(--danger-soft); color: var(--danger); }
 .calendar-pill.done { background: var(--good-soft); color: var(--good); text-decoration: line-through; opacity: .8; }
 .calendar-pill.cancelled { background: var(--panel-2); color: var(--ink-3); text-decoration: line-through; }
+.calendar-pill.google { background: var(--accent-soft); color: var(--accent); }
 .calendar-more { font-size: 10px; color: var(--ink-3); padding-left: 2px; }
+
+.google-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 2px; }
 .calendar-empty-msg { padding: 16px 0 2px; }
 
 .calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -1084,14 +1147,71 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 }
 .doc-editor-body { display: flex; gap: 16px; align-items: flex-start; padding: 16px; overflow: auto; flex: 1; min-height: 0; }
 .doc-editor-stage-wrap { background: #fff; box-shadow: var(--shadow); flex: none; overflow: auto; }
+.wf-editor-stage-wrap {
+  background-color: var(--panel-2);
+  background-image: radial-gradient(circle, var(--line-2) 1px, transparent 1px);
+  background-size: 18px 18px;
+  border: 1px solid var(--line); border-radius: var(--r); flex: none; overflow: auto;
+}
+
+.wf-zoom {
+  position: absolute; left: 24px; bottom: 24px; z-index: 2;
+  display: flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 4px 8px; box-shadow: var(--shadow);
+}
+.wf-zoom button {
+  width: 22px; height: 22px; border-radius: 5px; border: none; background: var(--panel-2);
+  color: var(--ink-2); font-size: 14px; line-height: 1; cursor: pointer;
+}
+.wf-zoom button:hover { background: var(--line); color: var(--ink); }
+.wf-zoom span { font-size: 11px; color: var(--ink-3); min-width: 32px; text-align: center; }
+
+.wf-picker-search { margin-bottom: 14px; }
+.wf-picker-section {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ink-3); margin: 16px 0 6px;
+}
+.wf-picker-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px; border-radius: var(--r); border: none; background: none; cursor: pointer;
+}
+.wf-picker-item:hover { background: var(--panel-2); }
+.wf-picker-item b { font-size: 12.5px; }
+.wf-picker-icon {
+  width: 30px; height: 30px; border-radius: 7px; flex: none; display: grid; place-items: center;
+}
+.wf-picker-icon svg { width: 16px; height: 16px; }
 .doc-editor-panel {
   width: 280px; flex: none; background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--r); padding: 16px;
 }
+.doc-editor-page-setup { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 14px; }
 .doc-editor-refs { display: flex; gap: 6px; flex-wrap: wrap; }
 .doc-editor-ref-thumb {
   width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--line);
   border-radius: 4px; cursor: pointer;
+}
+
+.doc-editor-tiptap-toolbar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.doc-editor-tiptap-toolbar button {
+  width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink-2); cursor: pointer; font-size: 12.5px;
+}
+.doc-editor-tiptap-toolbar button:hover { background: var(--panel-2); }
+.doc-editor-tiptap-toolbar button.active { background: var(--brand-soft); color: var(--brand); border-color: var(--brand); }
+.doc-editor-tiptap-toolbar select { width: auto; flex: 1; min-width: 0; }
+.doc-editor-tiptap .ProseMirror {
+  min-height: 90px; border: 1px solid var(--line-2); border-radius: var(--r);
+  padding: 8px 10px; font-size: 13px; line-height: 1.5; outline: none;
+}
+.doc-editor-tiptap .ProseMirror p { margin: 0 0 8px; }
+.doc-editor-tiptap .ProseMirror ul { margin: 0 0 8px; padding-left: 20px; }
+.merge-field-chip {
+  display: inline-block; background: var(--brand-soft); color: var(--brand);
+  border-radius: 4px; padding: 0 5px; font-size: 12px; font-weight: 600;
 }
 
 .record-header { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 26px; }

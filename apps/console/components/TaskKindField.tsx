@@ -6,7 +6,7 @@ import { useCsrfToken } from '@/components/Csrf';
 import { t } from '@/lib/copy';
 import type { TaskKind } from '@/lib/api';
 
-const BUILTIN = ['follow_up', 'call', 'meeting'] as const;
+const BUILTIN = ['follow_up', 'call', 'meeting', 'chat', 'email'] as const;
 
 /**
  * The Jenis select, plus an inline "+ Tambah Jenis Baru" — picking it swaps

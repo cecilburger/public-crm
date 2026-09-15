@@ -48,8 +48,10 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
 
       const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
 
-      const contact = await tx.query<{ display_name: string | null; phone_enc: string | null; tags: string[] }>(
-        'select display_name, phone_enc, tags from contacts where tenant_id = $1 and id = $2',
+      const contact = await tx.query<{
+        display_name: string | null; phone_enc: string | null; tags: string[]; deleted_at: Date | null;
+      }>(
+        'select display_name, phone_enc, tags, deleted_at from contacts where tenant_id = $1 and id = $2',
         [actor.tenantId, conv[0].contact_id],
       );
 
@@ -96,7 +98,11 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         contact: {
           displayName: contact[0]?.display_name ?? null,
           phone: phone ? (canReveal ? phone : maskPhone(phone)) : null,
-          tags: contact[0]?.tags ?? [],
+          // A contact removed from Pelanggan (soft-deleted) keeps its old tags
+          // in the database, but the thread must not keep showing "Customer"
+          // for someone the Pelanggan page no longer lists — that page and
+          // this chip are supposed to agree on who counts as a customer.
+          tags: contact[0]?.deleted_at ? [] : (contact[0]?.tags ?? []),
         },
         orders: orders.map((o) => ({
           code: o.code, status: o.status, shipArea: o.ship_area,
@@ -277,7 +283,10 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
   /**
    * Flags the person behind this thread as a customer — a tag on the contact,
    * not the conversation, so it follows them across every channel they write
-   * in on and is what the Pelanggan page filters by.
+   * in on and is what the Pelanggan page filters by. Also opens a deal for
+   * them in the default pipeline's first stage ("Baru") — becoming a customer
+   * from a chat is itself the sales opportunity Penjualan exists to track,
+   * so there is one less manual step between the two pages.
    */
   app.post('/v1/conversations/:id/mark-customer', async (req) => {
     ctx.guard(req, 'contact:write');
@@ -288,11 +297,24 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         'select contact_id from conversations where tenant_id = $1 and id = $2', [actor.tenantId, id]);
       if (!conv[0]) throw notFound('Conversation');
 
-      const rows = await tx.query<{ id: string }>(
+      // A contact removed from Pelanggan earlier (soft-deleted) still carries
+      // the `customer` tag from before — that must not count as "already a
+      // customer" here, or re-marking them would silently leave them missing
+      // from Pelanggan (still deleted) while claiming to have already run.
+      const before = await tx.query<{ was_customer: boolean }>(
+        `select ('customer' = any(tags) and deleted_at is null) as was_customer
+           from contacts where tenant_id = $1 and id = $2`,
+        [actor.tenantId, conv[0].contact_id],
+      );
+      if (!before[0]) throw notFound('Contact');
+      const wasCustomer = before[0].was_customer;
+
+      const rows = await tx.query<{ id: string; display_name: string | null; phone_enc: string | null }>(
         `update contacts
-            set tags = case when 'customer' = any(tags) then tags else array_append(tags, 'customer') end
+            set tags = case when 'customer' = any(tags) then tags else array_append(tags, 'customer') end,
+                deleted_at = null
           where tenant_id = $1 and id = $2
-          returning id`,
+          returning id, display_name, phone_enc`,
         [actor.tenantId, conv[0].contact_id],
       );
       if (!rows[0]) throw notFound('Contact');
@@ -301,7 +323,25 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         actorType: 'user', actorId: actor.userId, action: 'contact.marked_customer',
         resourceType: 'contact', resourceId: conv[0].contact_id,
       });
-      return { ok: true };
+
+      // Only the first time — re-marking an existing customer (a resubmitted
+      // form, a stale tab) must not spawn another deal each time.
+      let dealId: string | null = null;
+      if (!wasCustomer) {
+        const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
+        const phone = rows[0].phone_enc ? openField(keys, actor.tenantId, rows[0].phone_enc) : null;
+        const deal = await createDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          contactId: conv[0].contact_id, title: `Peluang baru — ${rows[0].display_name ?? phone ?? 'Pelanggan'}`,
+          amountIdr: 0, ownerId: actor.userId, sourceConversationId: id,
+        });
+        await audit(tx, actor.tenantId, {
+          actorType: 'user', actorId: actor.userId, action: 'deal.created',
+          resourceType: 'deal', resourceId: deal.id, meta: { source: 'mark_customer' },
+        });
+        dealId = deal.id;
+      }
+
+      return { ok: true, dealId };
     });
   });
 
@@ -351,6 +391,8 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       title: z.string().min(1).max(200),
       amountIdr: z.number().int().min(0).max(1_000_000_000_000),
       conversationId: z.string().uuid().optional(),
+      brandId: z.string().uuid().nullable().optional(),
+      stageId: z.string().uuid().optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the deal fields');
 
@@ -358,6 +400,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       const created = await createDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         contactId: body.data.contactId, title: body.data.title, amountIdr: body.data.amountIdr,
         ownerId: actor.userId, sourceConversationId: body.data.conversationId ?? null,
+        brandId: body.data.brandId ?? null, stageId: body.data.stageId ?? null,
       });
       await audit(tx, actor.tenantId, {
         actorType: 'user', actorId: actor.userId, action: 'deal.created',
@@ -431,12 +474,14 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       tx.query(
         `select d.id, d.title, d.amount_micros / 1000000 as amount_idr, d.status,
                 d.stage_id, s.name as stage, s.position, d.rots_at, d.owner_id, d.closed_at,
-                d.contact_id, ct.display_name as contact_name
+                d.expected_close_on,
+                d.contact_id, ct.display_name as contact_name, d.brand_id, br.name as brand_name, br.category as brand_category
            from deals d
            join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id
            join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
+           left join brands br on br.id = d.brand_id and br.tenant_id = d.tenant_id
           where d.tenant_id = $1
-          order by s.position asc, d.amount_micros desc limit 200`,
+          order by d.created_at desc limit 200`,
         [actor.tenantId],
       ));
   });

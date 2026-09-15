@@ -35,10 +35,58 @@ const ICONS = {
   target: <><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="0.8" fill="currentColor" /></>,
   team: <><circle cx="9" cy="9" r="3" /><path d="M3 19c0-3 2.7-4.6 6-4.6s6 1.6 6 4.6M16 6.5a3 3 0 0 1 0 5.6M18 19c0-2-.7-3.2-2-4" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" /></>,
+  broadcast: <><path d="M4 11v2a2 2 0 0 0 2 2h1l1.5 5h2L9 15h2l7 4V5l-7 4H4a2 2 0 0 0-2 2Z" /><path d="M19 9a4 4 0 0 1 0 6" /><path d="M21.5 7a7.5 7.5 0 0 1 0 10" /></>,
+  automation: <><rect x="9" y="9" width="6" height="6" rx="1" /><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" /></>,
+  themeSystem: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>,
+  themeLight: <><circle cx="12" cy="12" r="4.5" /><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8 6 18M18 6l1.8-1.8" /></>,
+  themeDark: <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z" />,
+  channelWa: <><path d="M12 20h.01" /><path d="M8.5 16.5a5 5 0 0 1 7 0" /><path d="M5 13a9 9 0 0 1 14 0" /></>,
+  messageTemplate: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
+  agentPerformance: <path d="M4 19V13M10 19V9M16 19V5M4 19h16" />,
+  document: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5" /></>,
+  workflow: <><circle cx="6" cy="6" r="2.3" /><circle cx="18" cy="6" r="2.3" /><circle cx="12" cy="18" r="2.3" /><path d="M8 7.7 11 16M16 7.7 13 16" /></>,
 } as const;
 
+type ThemePref = 'system' | 'light' | 'dark';
+const THEME_KEY = 'kirana-theme';
+const THEME_ORDER: ThemePref[] = ['system', 'light', 'dark'];
+
 /**
- * Everything that isn't the inbox and isn't Penjualan's own drawer (split
+ * Three states, not a binary switch — "ikuti sistem" stays available so
+ * someone who's happy with their OS setting never has to pick a side. Starts
+ * at 'system' on every render (matching the SSR guess) and only corrects
+ * itself after mount, the same delayed-read shape as `useRailCollapsed`, so
+ * hydration never has to reconcile a guess against real localStorage state.
+ * The actual pixel flash on load is avoided separately, by a blocking inline
+ * script in `layout.tsx` that sets the DOM attribute before first paint.
+ */
+function useTheme(): [ThemePref, () => void] {
+  const [theme, setThemeState] = useState<ThemePref>('system');
+
+  useEffect(() => {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === 'light' || stored === 'dark') setThemeState(stored);
+  }, []);
+
+  const cycle = () => {
+    setThemeState((prev) => {
+      const next = THEME_ORDER[(THEME_ORDER.indexOf(prev) + 1) % THEME_ORDER.length];
+      if (next === 'system') {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.removeItem(THEME_KEY);
+      } else {
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem(THEME_KEY, next);
+      }
+      return next;
+    });
+  };
+
+  return [theme, cycle];
+}
+
+/**
+ * Everything that isn't the inbox and isn't Deal's own drawer (split
  * around it below so it renders in its usual spot in the list): Dashboard
  * sits above this on its own, messaging lives in the Inbox drawer, and
  * Billing/history stay under Settings — none of that is in the way of the
@@ -53,12 +101,25 @@ const NAV_AFTER_SALES = [
   { href: '/tim', label: t.nav.team, icon: 'team' as const },
 ];
 
-// Penjualan's own drawer — the sales board and the targets it's measured
-// against read as one topic, so Target lives here instead of as a bare
-// top-level item.
-const PENJUALAN = [
-  { href: '/penjualan', label: t.nav.sales },
-  { href: '/target', label: t.nav.target },
+// Its own drawer, same idea as Customize — starts with just Workflow, more
+// automation types will land here later.
+const AUTOMATION = [
+  { href: '/automation/workflow', label: t.automation.workflowTitle, icon: 'workflow' as const },
+];
+
+// Deal's own drawer — the deal board and the targets it's measured against
+// read as one topic, so Target lives here instead of as a bare top-level item.
+const DEAL = [
+  { href: '/deal', label: t.nav.sales, icon: 'sales' as const },
+  { href: '/target', label: t.nav.target, icon: 'target' as const },
+];
+
+// Its own top-level drawer, not under Pengaturan — the templates a broadcast
+// sends are only useful in service of sending one, so Template Pesan moved
+// here instead of staying a settings tab nobody without broadcast access needs.
+const BROADCAST = [
+  { href: '/broadcast', label: t.broadcast.title, icon: 'broadcast' as const },
+  { href: '/broadcast/template-pesan', label: t.messageTemplate.title, icon: 'messageTemplate' as const },
 ];
 
 // Every place a message can be read or answered, grouped under one drawer —
@@ -66,23 +127,23 @@ const PENJUALAN = [
 // Channel WhatsApp (pairing/monitoring those same numbers) all read as "the
 // inbox" even though they're three different pages.
 const INBOX = [
-  { href: '/obrolan', label: t.nav.chats, badge: true },
-  { href: '/chat-wa', label: t.nav.chatWa, badge: false },
-  { href: '/channel-wa', label: t.nav.channelWa, badge: false },
+  { href: '/obrolan', label: t.nav.chats, badge: true, icon: 'chats' as const },
+  { href: '/chat-wa', label: t.nav.chatWa, badge: false, icon: 'chatWa' as const },
+  { href: '/channel-wa', label: t.nav.channelWa, badge: false, icon: 'channelWa' as const },
 ];
 
 // A drawer of its own, same idea as Settings — reports an agent checks
 // occasionally, not the three things they do every day.
 const MONITORING = [
-  { href: '/status-nomor', label: t.nav.waStatus },
-  { href: '/performa-agen', label: t.nav.agentPerformance },
+  { href: '/status-nomor', label: t.nav.waStatus, icon: 'waStatus' as const },
+  { href: '/performa-agen', label: t.nav.agentPerformance, icon: 'agentPerformance' as const },
 ];
 
 // Where a tenant shapes its own paperwork — starts with Dokumen (the PDF
 // quotation/invoice template editor), more will land here later. The page
 // itself doesn't exist yet; this just reserves its place in the menu.
 const CUSTOMIZE = [
-  { href: '/customize/dokumen', label: t.nav.document },
+  { href: '/customize/dokumen', label: t.nav.document, icon: 'document' as const },
 ];
 
 /**
@@ -137,9 +198,19 @@ export function Rail({
   const onChatWa = pathname === '/chat-wa' || pathname.startsWith('/chat-wa/');
 
   const [collapsed, toggleCollapsed] = useRailCollapsed();
+  const [theme, cycleTheme] = useTheme();
+  const THEME_LABEL: Record<ThemePref, string> = {
+    system: t.nav.themeSystem, light: t.nav.themeLight, dark: t.nav.themeDark,
+  };
+  const THEME_ICON: Record<ThemePref, keyof typeof ICONS> = {
+    system: 'themeSystem', light: 'themeLight', dark: 'themeDark',
+  };
 
   const onInbox = INBOX.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
   const [inboxExpanded, toggleInbox] = useExpandable(onInbox);
+
+  const onAutomation = AUTOMATION.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
+  const [automationExpanded, toggleAutomation] = useExpandable(onAutomation);
 
   const onMonitoring = MONITORING.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
   const [monitoringExpanded, toggleMonitoring] = useExpandable(onMonitoring);
@@ -147,8 +218,11 @@ export function Rail({
   const onCustomize = CUSTOMIZE.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
   const [customizeExpanded, toggleCustomize] = useExpandable(onCustomize);
 
-  const onPenjualan = PENJUALAN.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [penjualanExpanded, togglePenjualan] = useExpandable(onPenjualan);
+  const onDeal = DEAL.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
+  const [dealExpanded, toggleDeal] = useExpandable(onDeal);
+
+  const onBroadcast = BROADCAST.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
+  const [broadcastExpanded, toggleBroadcast] = useExpandable(onBroadcast);
 
   // A group toggle only opens a flyout while collapsed there's nowhere to put
   // it, so the click both expands the rail and opens the group instead.
@@ -215,6 +289,8 @@ export function Rail({
               return (
                 <div key={n.href}>
                   <Link href={n.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                         strokeLinecap="round" strokeLinejoin="round">{ICONS[n.icon]}</svg>
                     <span className="rail-sub-label">{n.label}</span>
                     {badgeCount ? <span className="count tnum">{badgeCount}</span> : null}
                   </Link>
@@ -229,23 +305,53 @@ export function Rail({
       {NAV_BEFORE_SALES.map((n) => item(n.href, n.label, n.icon))}
 
       <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(togglePenjualan)}
-                aria-expanded={penjualanExpanded} aria-current={onPenjualan ? 'page' : undefined}
+        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleBroadcast)}
+                aria-expanded={broadcastExpanded} aria-current={onBroadcast ? 'page' : undefined}
+                title={collapsed ? t.nav.broadcast : undefined}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">{ICONS.broadcast}</svg>
+          <span className="navitem-label">{t.nav.broadcast}</span>
+          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round" style={{ transform: broadcastExpanded ? 'rotate(90deg)' : undefined }}>
+            {ICONS.chevron}
+          </svg>
+        </button>
+        {broadcastExpanded && !collapsed ? (
+          <div className="rail-sub">
+            {BROADCAST.map((b) => {
+              const active = pathname === b.href;
+              return (
+                <Link key={b.href} href={b.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">{ICONS[b.icon]}</svg>
+                  <span className="rail-sub-label">{b.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+
+      <div>
+        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleDeal)}
+                aria-expanded={dealExpanded} aria-current={onDeal ? 'page' : undefined}
                 title={collapsed ? t.nav.sales : undefined}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">{ICONS.sales}</svg>
           <span className="navitem-label">{t.nav.sales}</span>
           <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: penjualanExpanded ? 'rotate(90deg)' : undefined }}>
+               strokeLinecap="round" strokeLinejoin="round" style={{ transform: dealExpanded ? 'rotate(90deg)' : undefined }}>
             {ICONS.chevron}
           </svg>
         </button>
-        {penjualanExpanded && !collapsed ? (
+        {dealExpanded && !collapsed ? (
           <div className="rail-sub">
-            {PENJUALAN.map((p) => {
+            {DEAL.map((p) => {
               const active = pathname === p.href || pathname.startsWith(`${p.href}/`);
               return (
                 <Link key={p.href} href={p.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">{ICONS[p.icon]}</svg>
                   <span className="rail-sub-label">{p.label}</span>
                 </Link>
               );
@@ -255,6 +361,34 @@ export function Rail({
       </div>
 
       {NAV_AFTER_SALES.map((n) => item(n.href, n.label, n.icon))}
+
+      <div>
+        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleAutomation)}
+                aria-expanded={automationExpanded} aria-current={onAutomation ? 'page' : undefined}
+                title={collapsed ? t.nav.automation : undefined}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">{ICONS.automation}</svg>
+          <span className="navitem-label">{t.nav.automation}</span>
+          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round" style={{ transform: automationExpanded ? 'rotate(90deg)' : undefined }}>
+            {ICONS.chevron}
+          </svg>
+        </button>
+        {automationExpanded && !collapsed ? (
+          <div className="rail-sub">
+            {AUTOMATION.map((a) => {
+              const active = pathname === a.href || pathname.startsWith(`${a.href}/`);
+              return (
+                <Link key={a.href} href={a.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">{ICONS[a.icon]}</svg>
+                  <span className="rail-sub-label">{a.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
 
       <div>
         <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleMonitoring)}
@@ -274,6 +408,8 @@ export function Rail({
               const active = pathname === m.href || pathname.startsWith(`${m.href}/`);
               return (
                 <Link key={m.href} href={m.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">{ICONS[m.icon]}</svg>
                   <span className="rail-sub-label">{m.label}</span>
                 </Link>
               );
@@ -300,6 +436,8 @@ export function Rail({
               const active = pathname === c.href || pathname.startsWith(`${c.href}/`);
               return (
                 <Link key={c.href} href={c.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">{ICONS[c.icon]}</svg>
                   <span className="rail-sub-label">{c.label}</span>
                 </Link>
               );
@@ -309,6 +447,12 @@ export function Rail({
       </div>
 
       <div className="railfoot">
+        <button type="button" className="navitem navitem-toggle" onClick={cycleTheme}
+                title={collapsed ? THEME_LABEL[theme] : undefined}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">{ICONS[THEME_ICON[theme]]}</svg>
+          <span className="navitem-label">{THEME_LABEL[theme]}</span>
+        </button>
         {item('/pengaturan', t.nav.settings, 'settings')}
         <div className="whoami" title={collapsed ? me.user.name : undefined}>
           <span className="avatar" aria-hidden>{initials(me.user.name)}</span>

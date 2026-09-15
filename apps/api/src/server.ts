@@ -45,7 +45,7 @@ const queues = new Map<string, InstanceType<typeof Queue>>();
 
 const app = buildApp({
   db, control, kek, env: e, rateLimits, realtime,
-  dispatch: async ({ queue, payload }) => {
+  dispatch: async ({ queue, payload, delayMs }) => {
     let q = queues.get(queue);
     if (!q) {
       q = new Queue(queue, { connection });
@@ -56,6 +56,7 @@ const app = buildApp({
       backoff: { type: 'exponential', delay: 2_000 },
       removeOnComplete: 1_000,
       removeOnFail: 10_000,
+      delay: delayMs,
     });
   },
 });

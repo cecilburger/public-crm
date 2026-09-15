@@ -32,11 +32,13 @@ import { registerSalesTargetRoutes } from './routes/salesTargets.ts';
 import { registerDocumentRoutes } from './routes/documents.ts';
 import { registerDocumentKindRoutes } from './routes/documentKinds.ts';
 import { registerDocumentModelRoutes } from './routes/documentModels.ts';
+import { registerBroadcastRoutes } from './routes/broadcasts.ts';
+import { registerGoogleCalendarRoutes } from './routes/googleCalendar.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
 /** What a webhook is handed to once it is spooled and verified. */
-export type Dispatch = (job: { queue: string; payload: unknown }) => Promise<void>;
+export type Dispatch = (job: { queue: string; payload: unknown; delayMs?: number }) => Promise<void>;
 
 /** Everything a route module is allowed to reach. */
 export interface AppCtx extends AppDeps {
@@ -343,6 +345,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerDocumentRoutes(app, ctx);
   registerDocumentKindRoutes(app, ctx);
   registerDocumentModelRoutes(app, ctx);
+  registerBroadcastRoutes(app, ctx);
+  registerGoogleCalendarRoutes(app, ctx);
 
   return app;
 }

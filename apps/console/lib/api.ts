@@ -113,6 +113,8 @@ export interface Deal {
   id: string; title: string; amount_idr: string | number; status: string;
   stage_id: string; stage: string; position: number; rots_at: string | null;
   owner_id: string | null; closed_at: string | null; contact_id: string; contact_name: string | null;
+  brand_id: string | null; brand_name: string | null; brand_category: string | null;
+  expected_close_on: string | null;
 }
 
 export interface Stage {
@@ -126,6 +128,7 @@ export interface DealDetail {
   isWon: boolean; isLost: boolean;
   contactId: string; contactName: string | null; contactPhone: string | null;
   ownerId: string | null; sourceConversationId: string | null;
+  brandId: string | null; brandName: string | null; brandCategory: string | null;
   expectedCloseOn: string | null; notes: string | null;
   rotsAt: string | null; closedAt: string | null; createdAt: string; updatedAt: string;
 }
@@ -239,6 +242,9 @@ export interface Task {
   kind: string;
   meetingLink: string | null;
   priority: 'low' | 'medium' | 'high' | 'urgent';
+  repeatUnit: 'day' | 'week' | 'month' | 'year' | null;
+  repeatInterval: number;
+  repeatUntil: string | null;
   contactId: string;
   contactName: string | null;
   contactPhone: string | null;
@@ -290,6 +296,52 @@ export interface MessageTemplate {
   updatedAt: string;
 }
 
+export interface Broadcast {
+  id: string;
+  name: string;
+  templateName: string;
+  channelName: string;
+  tags: string[];
+  total: number;
+  sent: number;
+  failed: number;
+  pending: number;
+  createdAt: string;
+}
+
+export interface BroadcastRecipient {
+  contactId: string;
+  contactName: string | null;
+  status: string;
+  skippedReason: 'no_consent' | 'no_conversation' | null;
+}
+
+export interface BroadcastDetail extends Broadcast {
+  recipients: BroadcastRecipient[];
+}
+
+export interface BroadcastPreview {
+  eligible: number;
+  noConsent: number;
+  noConversation: number;
+}
+
+export interface BroadcastChannel {
+  id: string;
+  displayName: string;
+  phoneE164: string | null;
+  quality: 'green' | 'yellow' | 'red' | 'flagged';
+}
+
+export interface GoogleCalendarEvent {
+  id: string; title: string; start: string; end: string; allDay: boolean; htmlLink: string; meetingLink: string | null;
+}
+
+export interface GoogleCalendarStatus {
+  connected: boolean;
+  email: string | null;
+}
+
 export interface QuickReply {
   id: string;
   title: string;
@@ -316,13 +368,27 @@ export interface SalesTarget {
 // a server package, and this shape is small/stable enough to repeat here.
 export type DocumentMergeField = 'tenant_name' | 'document_name';
 
+// A minimal structural mirror of Tiptap/ProseMirror's JSON document shape —
+// kept loose (not importing `@tiptap/core`'s own `JSONContent`) so files that
+// don't touch the editor aren't pulled into the Tiptap dependency graph.
+export interface RichTextJson {
+  type: string;
+  attrs?: Record<string, unknown>;
+  content?: RichTextJson[];
+  text?: string;
+  marks?: { type: string }[];
+}
+
 export type DocumentLayoutElement =
   | {
       id: string; type: 'text'; x: number; y: number; w: number; h: number;
       fontSize: number; bold: boolean;
       content: { kind: 'literal'; text: string } | { kind: 'field'; field: DocumentMergeField };
     }
+  | { id: string; type: 'richtext'; x: number; y: number; w: number; minHeight: number; content: RichTextJson }
   | { id: string; type: 'image'; x: number; y: number; w: number; h: number; dataUrl: string };
+
+export type DocumentPageSize = 'a4' | 'letter' | 'legal' | 'f4';
 
 // Named `DocRecord`, not `Document` — that name is already the DOM's global type.
 export interface DocRecord {
@@ -334,6 +400,11 @@ export interface DocRecord {
   model: string;
   useTemplate: boolean;
   layout: DocumentLayoutElement[] | null;
+  pageSize: DocumentPageSize;
+  marginTopMm: number;
+  marginRightMm: number;
+  marginBottomMm: number;
+  marginLeftMm: number;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
