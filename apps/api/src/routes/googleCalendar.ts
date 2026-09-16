@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid, notFound } from '@kirana/core';
+import { invalid, notFound, meetingInviteEmail, resolveTenantSender } from '@kirana/core';
 import {
   audit, getGoogleCalendarConnection, saveGoogleCalendarConnection,
-  updateGoogleCalendarAccessToken, deleteGoogleCalendarConnection,
+  updateGoogleCalendarAccessToken, deleteGoogleCalendarConnection, getDecryptedSmtpUrl,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import {
@@ -128,5 +128,63 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, ctx: AppCtx):
       if (err instanceof GoogleAuthError) throw invalid('Could not reach Google Calendar — try reconnecting');
       throw err;
     }
+  });
+
+  /**
+   * The "Kirim Email" action on a pulled-in Google Calendar event — these
+   * aren't rows in this database (the integration is read-only), so the
+   * console sends the event's own fields straight through rather than this
+   * route looking one up by id the way the Task version does.
+   */
+  app.post('/v1/google-calendar/send-email', async (req) => {
+    const actor = ctx.guard(req, 'contact:write');
+    const body = z.object({
+      to: z.string().email(),
+      eventId: z.string().min(1),
+      title: z.string().min(1).max(300),
+      // An all-day event has no time component at all — Google hands back a
+      // plain "2026-09-16" for those, not a full ISO datetime, so this takes
+      // anything `Date` can parse rather than requiring `dateTime`'s strict
+      // format and rejecting exactly the events that most need this button.
+      start: z.string().refine((s) => !isNaN(new Date(s).getTime()), 'Invalid date'),
+      meetingLink: z.string().url().nullable(),
+    }).safeParse(req.body);
+    if (!body.success) throw invalid('Check the meeting fields');
+
+    const message = meetingInviteEmail({
+      partyName: 'Anda', title: body.data.title, dueAt: new Date(body.data.start),
+      meetingLink: body.data.meetingLink, notes: null, to: body.data.to,
+    });
+
+    const tenantEmail = await ctx.asTenant(req, (tx, a) => getDecryptedSmtpUrl({ tx, tenantId: a.tenantId, kek: ctx.kek }));
+    const sender = resolveTenantSender(ctx.env, tenantEmail);
+
+    let status: 'sent' | 'failed' = 'sent';
+    let messageId: string | null = null;
+    let sendError: string | null = null;
+    try {
+      messageId = (await sender.send(message)).messageId;
+    } catch (err) {
+      status = 'failed';
+      sendError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    }
+
+    await ctx.asTenant(req, async (tx) => {
+      await tx.query(
+        `insert into emails (tenant_id, template, recipient, subject, reference, status, message_id, error)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [actor.tenantId, message.template, message.to, message.subject, `gcal:${body.data.eventId}`,
+         status, messageId, sendError],
+      );
+      if (status === 'sent') {
+        await audit(tx, actor.tenantId, {
+          actorType: 'user', actorId: actor.userId, action: 'google_calendar_event.email_sent',
+          resourceType: 'google_calendar_event', resourceId: body.data.eventId, meta: { to: body.data.to },
+        });
+      }
+    });
+
+    if (status === 'failed') throw invalid(`Gagal mengirim email: ${sendError}`);
+    return { ok: true };
   });
 }

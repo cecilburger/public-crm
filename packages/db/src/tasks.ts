@@ -6,29 +6,33 @@ export interface TaskRow {
   id: string; title: string; notes: string | null; dueAt: Date; status: string;
   kind: string; meetingLink: string | null; priority: string;
   repeatUnit: string | null; repeatInterval: number; repeatUntil: Date | null;
-  contactId: string; contactName: string | null; contactPhone: string | null;
+  contactId: string | null; contactName: string | null; contactPhone: string | null;
+  brandId: string | null; brandName: string | null; brandPhone: string | null;
   dealId: string | null; dealTitle: string | null;
   assigneeId: string | null; createdBy: string | null; createdAt: Date; completedAt: Date | null;
 }
 
-/** Every open-shop follow-up, newest due date first. */
+/** Every open-shop follow-up, newest due date first — for a Contact or (since a task no longer needs one) a Brand directly. */
 export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promise<TaskRow[]> {
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const rows = await ctx.tx.query<{
     id: string; title: string; notes: string | null; due_at: Date; status: string;
     kind: string; meeting_link: string | null; priority: string;
     repeat_unit: string | null; repeat_interval: number; repeat_until: Date | null;
-    contact_id: string; display_name: string | null; phone_enc: string | null;
+    contact_id: string | null; display_name: string | null; phone_enc: string | null;
+    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null;
     deal_id: string | null; deal_title: string | null;
     assignee_id: string | null; created_by: string | null; created_at: Date; completed_at: Date | null;
   }>(
     `select tk.id, tk.title, tk.notes, tk.due_at, tk.status, tk.kind, tk.meeting_link, tk.priority,
             tk.repeat_unit, tk.repeat_interval, tk.repeat_until,
             tk.contact_id, ct.display_name, ct.phone_enc,
+            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc,
             tk.deal_id, d.title as deal_title,
             tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at
        from tasks tk
-       join contacts ct on ct.id = tk.contact_id and ct.tenant_id = tk.tenant_id
+       left join contacts ct on ct.id = tk.contact_id and ct.tenant_id = tk.tenant_id
+       left join brands br on br.id = tk.brand_id and br.tenant_id = tk.tenant_id
        left join deals d on d.id = tk.deal_id and d.tenant_id = tk.tenant_id
       where tk.tenant_id = $1
       order by (tk.status = 'open') desc, tk.due_at asc
@@ -41,33 +45,76 @@ export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promis
     repeatUnit: r.repeat_unit, repeatInterval: r.repeat_interval, repeatUntil: r.repeat_until,
     contactId: r.contact_id, contactName: r.display_name,
     contactPhone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
+    brandId: r.brand_id, brandName: r.brand_name,
+    brandPhone: r.brand_phone_enc ? openField(keys, ctx.tenantId, r.brand_phone_enc) : null,
     dealId: r.deal_id, dealTitle: r.deal_title,
     assigneeId: r.assignee_id, createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
   }));
 }
 
+/** One task, for the send-meeting-email action — same joins as `listTasks`, scoped to a single row. */
+export async function getTask(ctx: Ctx, taskId: string): Promise<TaskRow | null> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const rows = await ctx.tx.query<{
+    id: string; title: string; notes: string | null; due_at: Date; status: string;
+    kind: string; meeting_link: string | null; priority: string;
+    repeat_unit: string | null; repeat_interval: number; repeat_until: Date | null;
+    contact_id: string | null; display_name: string | null; phone_enc: string | null;
+    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null;
+    deal_id: string | null; deal_title: string | null;
+    assignee_id: string | null; created_by: string | null; created_at: Date; completed_at: Date | null;
+  }>(
+    `select tk.id, tk.title, tk.notes, tk.due_at, tk.status, tk.kind, tk.meeting_link, tk.priority,
+            tk.repeat_unit, tk.repeat_interval, tk.repeat_until,
+            tk.contact_id, ct.display_name, ct.phone_enc,
+            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc,
+            tk.deal_id, d.title as deal_title,
+            tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at
+       from tasks tk
+       left join contacts ct on ct.id = tk.contact_id and ct.tenant_id = tk.tenant_id
+       left join brands br on br.id = tk.brand_id and br.tenant_id = tk.tenant_id
+       left join deals d on d.id = tk.deal_id and d.tenant_id = tk.tenant_id
+      where tk.tenant_id = $1 and tk.id = $2`,
+    [ctx.tenantId, taskId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id, title: r.title, notes: r.notes, dueAt: r.due_at, status: r.status,
+    kind: r.kind, meetingLink: r.meeting_link, priority: r.priority,
+    repeatUnit: r.repeat_unit, repeatInterval: r.repeat_interval, repeatUntil: r.repeat_until,
+    contactId: r.contact_id, contactName: r.display_name,
+    contactPhone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
+    brandId: r.brand_id, brandName: r.brand_name,
+    brandPhone: r.brand_phone_enc ? openField(keys, ctx.tenantId, r.brand_phone_enc) : null,
+    dealId: r.deal_id, dealTitle: r.deal_title,
+    assigneeId: r.assignee_id, createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
+  };
+}
+
 export async function createTask(
   ctx: Ctx,
   args: {
-    contactId: string; title: string; dueAt: Date; notes?: string | null;
+    contactId?: string | null; brandId?: string | null; title: string; dueAt: Date; notes?: string | null;
     dealId?: string | null; conversationId?: string | null; assigneeId?: string | null; createdBy: string;
     kind?: string; meetingLink?: string | null; priority?: string;
     repeatUnit?: string | null; repeatInterval?: number; repeatUntil?: Date | null;
   },
 ): Promise<{ id: string }> {
   const rows = await ctx.tx.query<{ id: string }>(
-    `insert into tasks (tenant_id, contact_id, deal_id, conversation_id, title, notes, due_at, assignee_id, created_by,
-                         kind, meeting_link, priority, repeat_unit, repeat_interval, repeat_until)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
-    [ctx.tenantId, args.contactId, args.dealId ?? null, args.conversationId ?? null, args.title,
-     args.notes ?? null, args.dueAt, args.assigneeId ?? null, args.createdBy,
+    `insert into tasks (tenant_id, contact_id, brand_id, deal_id, conversation_id, title, notes, due_at,
+                         assignee_id, created_by, kind, meeting_link, priority, repeat_unit, repeat_interval, repeat_until)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+    [ctx.tenantId, args.contactId ?? null, args.brandId ?? null, args.dealId ?? null, args.conversationId ?? null,
+     args.title, args.notes ?? null, args.dueAt, args.assigneeId ?? null, args.createdBy,
      args.kind ?? 'follow_up', args.meetingLink ?? null, args.priority ?? 'medium',
      args.repeatUnit ?? null, args.repeatInterval ?? 1, args.repeatUntil ?? null],
   );
   const id = rows[0]!.id;
   await audit(ctx.tx, ctx.tenantId, {
     actorType: 'user', actorId: args.createdBy, action: 'task.created',
-    resourceType: 'task', resourceId: id, meta: { contactId: args.contactId, dueAt: args.dueAt.toISOString() },
+    resourceType: 'task', resourceId: id,
+    meta: { contactId: args.contactId ?? null, brandId: args.brandId ?? null, dueAt: args.dueAt.toISOString() },
   });
   return { id };
 }
@@ -157,14 +204,15 @@ export async function setTaskStatus(
   ctx: Ctx, args: { taskId: string; status: 'done' | 'cancelled'; actorId: string },
 ): Promise<boolean> {
   const rows = await ctx.tx.query<{
-    id: string; contact_id: string; deal_id: string | null; conversation_id: string | null;
+    id: string; contact_id: string | null; brand_id: string | null;
+    deal_id: string | null; conversation_id: string | null;
     title: string; notes: string | null; due_at: Date; assignee_id: string | null;
     kind: string; meeting_link: string | null; priority: string;
     repeat_unit: string | null; repeat_interval: number; repeat_until: Date | null;
   }>(
     `update tasks set status = $3, completed_at = case when $3 = 'done' then now() else completed_at end
       where tenant_id = $1 and id = $2 and status = 'open'
-      returning id, contact_id, deal_id, conversation_id, title, notes, due_at, assignee_id,
+      returning id, contact_id, brand_id, deal_id, conversation_id, title, notes, due_at, assignee_id,
                 kind, meeting_link, priority, repeat_unit, repeat_interval, repeat_until`,
     [ctx.tenantId, args.taskId, args.status],
   );
@@ -181,7 +229,8 @@ export async function setTaskStatus(
     const nextDue = advanceDueDate(task.due_at, task.repeat_unit, task.repeat_interval);
     if (!task.repeat_until || nextDue <= task.repeat_until) {
       await createTask(ctx, {
-        contactId: task.contact_id, dealId: task.deal_id, conversationId: task.conversation_id,
+        contactId: task.contact_id, brandId: task.brand_id, dealId: task.deal_id,
+        conversationId: task.conversation_id,
         title: task.title, notes: task.notes, dueAt: nextDue, assigneeId: task.assignee_id,
         createdBy: args.actorId, kind: task.kind, meetingLink: task.meeting_link, priority: task.priority,
         repeatUnit: task.repeat_unit, repeatInterval: task.repeat_interval, repeatUntil: task.repeat_until,

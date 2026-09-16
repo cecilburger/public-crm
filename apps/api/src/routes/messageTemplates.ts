@@ -8,7 +8,8 @@ import type { AppCtx } from '../app.ts';
 
 const templateBody = z.object({
   name: z.string().min(1).max(128),
-  category: z.enum(['marketing', 'utility', 'authentication']),
+  channel: z.enum(['whatsapp', 'email', 'other']).optional(),
+  category: z.enum(['marketing', 'utility', 'authentication']).optional(),
   language: z.string().min(2).max(10).optional(),
   body: z.string().min(1).max(1024),
   status: z.enum(['draft', 'pending', 'approved', 'rejected']).optional(),

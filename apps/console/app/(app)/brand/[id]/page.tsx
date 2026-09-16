@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { api, ApiError, type Brand, type Member } from '@/lib/api';
+import { api, ApiError, type Brand, type Deal, type Member, type TaskKind } from '@/lib/api';
 import { BrandForm } from '@/components/BrandForm';
 
 export const dynamic = 'force-dynamic';
@@ -15,11 +15,15 @@ export default async function EditBrandPage({ params }: { params: Promise<{ id: 
     throw err;
   }
 
-  const members = await api<Member[]>('/v1/members');
+  const [members, deals, taskKinds] = await Promise.all([
+    api<Member[]>('/v1/members'),
+    api<Deal[]>('/v1/deals').catch(() => [] as Deal[]),
+    api<TaskKind[]>('/v1/task-kinds').catch(() => [] as TaskKind[]),
+  ]);
 
   return (
     <div className="scroll odoo-page stack">
-      <BrandForm brand={brand} members={members} />
+      <BrandForm brand={brand} members={members} deals={deals} taskKinds={taskKinds} />
     </div>
   );
 }

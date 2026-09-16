@@ -10,10 +10,12 @@ export const KIND_ICON_PATHS: Record<string, React.ReactNode> = {
   chat: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z" />,
   email: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>,
   follow_up: <><path d="M4 21V4a1 1 0 0 1 1-1h12l-2.5 4.5L17 12H5" /></>,
+  detail: <><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" /><circle cx="12" cy="12" r="3" /></>,
 };
 
 const COLOR_CLASS: Record<string, string> = {
   meeting: 'meeting', call: 'call', online_meet: 'online_meet', chat: 'chat', email: 'email', follow_up: 'followup',
+  detail: 'detail',
 };
 
 /** Renders nothing for a kind with no icon of its own ("Lainnya", a custom kind) — no icon reads better than a wrong one. */

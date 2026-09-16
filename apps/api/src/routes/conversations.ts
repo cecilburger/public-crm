@@ -148,26 +148,31 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         throw forbidden('This conversation is assigned to someone else');
       }
 
-      const channel = await tx.query<{ quality: string }>(
-        'select quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
+      const channel = await tx.query<{ kind: string; quality: string }>(
+        'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
-      // The same gate the worker applies. Failing here gives the agent an
-      // explanation now instead of a silent rejection from Meta later.
-      const guard = guardOutbound({
-        lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
-        now: new Date(),
-        hasApprovedTemplate: Boolean(body.data.templateName),
-        channelQuality: (channel[0]?.quality ?? 'green') as 'green' | 'yellow' | 'red' | 'flagged',
-        contactOptedOut: false,
-        isTemplateSend: Boolean(body.data.templateName),
-      });
-      if (!guard.ok) {
-        throw invalid(
-          guard.reason === 'template_required'
-            ? 'The 24-hour reply window has closed — send an approved template instead'
-            : `Message blocked: ${guard.reason}`,
-          { reason: guard.reason },
-        );
+      // The same gate the worker applies — and the same exception: a
+      // WA-bridge (whatsapp_web) session has no Meta 24-hour/template rule,
+      // so it skips the guard entirely rather than failing here before the
+      // message ever reaches the queue. Failing here for a real Meta channel
+      // gives the agent an explanation now instead of a silent rejection later.
+      if (channel[0]?.kind !== 'whatsapp_web') {
+        const guard = guardOutbound({
+          lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
+          now: new Date(),
+          hasApprovedTemplate: Boolean(body.data.templateName),
+          channelQuality: (channel[0]?.quality ?? 'green') as 'green' | 'yellow' | 'red' | 'flagged',
+          contactOptedOut: false,
+          isTemplateSend: Boolean(body.data.templateName),
+        });
+        if (!guard.ok) {
+          throw invalid(
+            guard.reason === 'template_required'
+              ? 'The 24-hour reply window has closed — send an approved template instead'
+              : `Message blocked: ${guard.reason}`,
+            { reason: guard.reason },
+          );
+        }
       }
 
       const queued = await queueOutboundMessage({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
@@ -235,19 +240,22 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         throw forbidden('This conversation is assigned to someone else');
       }
 
-      const channel = await tx.query<{ quality: string }>(
-        'select quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
+      const channel = await tx.query<{ kind: string; quality: string }>(
+        'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
-      const guard = guardOutbound({
-        lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
-        now: new Date(),
-        hasApprovedTemplate: Boolean(body.data.templateName),
-        channelQuality: (channel[0]?.quality ?? 'green') as 'green' | 'yellow' | 'red' | 'flagged',
-        contactOptedOut: false,
-        isTemplateSend: Boolean(body.data.templateName),
-      });
-      if (!guard.ok) throw invalid('The 24-hour reply window has closed — send an approved template instead',
-        { reason: guard.reason });
+      // Same whatsapp_web exception as the plain-reply route above.
+      if (channel[0]?.kind !== 'whatsapp_web') {
+        const guard = guardOutbound({
+          lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
+          now: new Date(),
+          hasApprovedTemplate: Boolean(body.data.templateName),
+          channelQuality: (channel[0]?.quality ?? 'green') as 'green' | 'yellow' | 'red' | 'flagged',
+          contactOptedOut: false,
+          isTemplateSend: Boolean(body.data.templateName),
+        });
+        if (!guard.ok) throw invalid('The 24-hour reply window has closed — send an approved template instead',
+          { reason: guard.reason });
+      }
 
       const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
       const draftBody = openField(keys, actor.tenantId, draft.body_enc);
@@ -387,18 +395,19 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
   app.post('/v1/deals', async (req, reply) => {
     ctx.guard(req, 'deal:write');
     const body = z.object({
-      contactId: z.string().uuid(),
+      contactId: z.string().uuid().optional(),
       title: z.string().min(1).max(200),
       amountIdr: z.number().int().min(0).max(1_000_000_000_000),
       conversationId: z.string().uuid().optional(),
       brandId: z.string().uuid().nullable().optional(),
       stageId: z.string().uuid().optional(),
-    }).safeParse(req.body);
+    }).refine((b) => b.contactId || b.brandId, { message: 'A contactId or brandId is required' })
+      .safeParse(req.body);
     if (!body.success) throw invalid('Check the deal fields');
 
     const deal = await ctx.asTenant(req, async (tx, actor) => {
       const created = await createDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
-        contactId: body.data.contactId, title: body.data.title, amountIdr: body.data.amountIdr,
+        contactId: body.data.contactId ?? null, title: body.data.title, amountIdr: body.data.amountIdr,
         ownerId: actor.userId, sourceConversationId: body.data.conversationId ?? null,
         brandId: body.data.brandId ?? null, stageId: body.data.stageId ?? null,
       });
@@ -478,7 +487,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
                 d.contact_id, ct.display_name as contact_name, d.brand_id, br.name as brand_name, br.category as brand_category
            from deals d
            join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id
-           join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
+           left join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
            left join brands br on br.id = d.brand_id and br.tenant_id = d.tenant_id
           where d.tenant_id = $1
           order by d.created_at desc limit 200`,

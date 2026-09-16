@@ -451,7 +451,7 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
   display: inline-flex; align-items: center; gap: 6px; justify-content: center;
   padding: 7px 13px; border-radius: var(--r);
   border: 1px solid var(--line-2); background: var(--panel);
-  font-weight: 600; font-size: 13px; cursor: pointer;
+  font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap;
   transition: border-color .12s, background .12s, transform .08s;
 }
 .btn:hover:not(:disabled) { border-color: var(--ink-3); }
@@ -467,6 +467,8 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
    never a background box, since it sits inline in a table cell among chips. */
 .icon-link { display: inline-flex; align-items: center; justify-content: center; padding: 2px; color: var(--ink-2); }
 .icon-link:hover { color: var(--brand); }
+button.icon-link { background: none; border: none; font: inherit; cursor: pointer; }
+button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field label { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
@@ -720,6 +722,7 @@ button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); co
 .deal-quick-icon.call { background: var(--good-soft); color: var(--good); }
 .deal-quick-icon.online_meet { background: var(--accent-soft); color: var(--accent); }
 .deal-quick-icon.chat { background: var(--warn-soft); color: var(--warn); }
+.deal-quick-icon.detail { background: var(--panel-2); color: var(--ink-2); }
 
 /* The same glyphs, as a passive badge instead of a button — a task's own
    Jenis shown at a glance on its kanban card. */
@@ -1290,6 +1293,28 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 }
 .line-input:focus { outline: none; border-bottom-color: var(--brand); }
 .line-input:disabled { color: var(--ink-3); border-bottom-style: dashed; }
+.record-static {
+  display: block; padding: 7px 2px; border-bottom: 1px dashed var(--line-2);
+  font-size: 13.5px; color: var(--ink);
+}
+
+.stage-flow-v { position: relative; display: flex; flex-direction: column; gap: 16px; }
+.stage-flow-v::before {
+  content: ''; position: absolute; left: 11px; top: 12px; bottom: 12px; width: 1px; background: var(--line);
+}
+.stage-flow-step { display: flex; align-items: flex-start; gap: 10px; position: relative; }
+.stage-flow-dot {
+  width: 24px; height: 24px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; border: 2px solid var(--line-2); color: var(--ink-3); background: var(--panel);
+  position: relative; z-index: 1;
+}
+.stage-flow-label { font-size: 12.5px; color: var(--ink-3); padding-top: 4px; }
+.stage-flow-step.done .stage-flow-dot { background: var(--brand); border-color: var(--brand); color: #fff; }
+.stage-flow-step.done .stage-flow-label { color: var(--ink); }
+.stage-flow-step.current .stage-flow-dot { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+.stage-flow-step.current .stage-flow-label { color: var(--ink); font-weight: 700; }
+.stage-flow-step.lost .stage-flow-dot { background: var(--danger); border-color: var(--danger); color: #fff; }
+.stage-flow-step.lost .stage-flow-label { color: var(--danger); font-weight: 700; }
 
 .line-search-input {
   width: 100%; border: none; border-bottom: 1px solid var(--line-2); border-radius: 0;

@@ -58,8 +58,12 @@ export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: numbe
   return ctx.tx.query<{
     id: string; display_name: string | null; phone_enc: string | null; tags: string[];
     first_seen_at: Date; last_seen_at: Date;
+    attributes: {
+      address?: string | null; notes?: string | null;
+      storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+    } | null;
   }>(
-    `select id, display_name, phone_enc, tags, first_seen_at, last_seen_at
+    `select id, display_name, phone_enc, tags, first_seen_at, last_seen_at, attributes
        from contacts
       where tenant_id = $1 and deleted_at is null
         and ($3::text is null or $3 = any(tags))
@@ -69,9 +73,18 @@ export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: numbe
   );
 }
 
-/** No schema of their own yet — address and notes live in the general-purpose `attributes` bag. */
-function packAttributes(args: { address: string | null; notes: string | null }): string {
-  return JSON.stringify({ address: args.address, notes: args.notes });
+/**
+ * No schema of their own yet — address, notes and the store/meeting fields
+ * live in the general-purpose `attributes` bag.
+ */
+function packAttributes(args: {
+  address: string | null; notes: string | null;
+  storeName: string | null; storeStatus: string | null; scheduleMeeting: string | null;
+}): string {
+  return JSON.stringify({
+    address: args.address, notes: args.notes,
+    storeName: args.storeName, storeStatus: args.storeStatus, scheduleMeeting: args.scheduleMeeting,
+  });
 }
 
 /** A customer added by hand from the Pelanggan page, not by messaging in. */
@@ -79,7 +92,9 @@ export async function createContact(
   ctx: Ctx,
   args: {
     displayName: string | null; phone: string | null; email: string | null; tags: string[];
-    address: string | null; notes: string | null; now?: Date;
+    address: string | null; notes: string | null;
+    storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+    now?: Date;
   },
 ): Promise<{ id: string }> {
   const now = args.now ?? new Date();
@@ -93,7 +108,11 @@ export async function createContact(
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
      returning id`,
     [ctx.tenantId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx, args.tags,
-     packAttributes(args), now],
+     packAttributes({
+       address: args.address, notes: args.notes,
+       storeName: args.storeName ?? null, storeStatus: args.storeStatus ?? null,
+       scheduleMeeting: args.scheduleMeeting ?? null,
+     }), now],
   );
   return { id: rows[0]!.id };
 }
@@ -102,7 +121,11 @@ export async function createContact(
 export async function getContact(ctx: Ctx, args: { contactId: string }) {
   const rows = await ctx.tx.query<{
     id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null;
-    tags: string[]; attributes: { address?: string | null; notes?: string | null } | null;
+    tags: string[];
+    attributes: {
+      address?: string | null; notes?: string | null;
+      storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+    } | null;
   }>(
     `select id, display_name, phone_enc, email_enc, tags, attributes
        from contacts where tenant_id = $1 and id = $2 and deleted_at is null`,
@@ -124,11 +147,16 @@ export async function updateContact(
   args: {
     contactId: string; displayName: string | null; phone?: string | null; email: string | null;
     tags: string[]; address: string | null; notes: string | null;
+    storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
   },
 ): Promise<boolean> {
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const email = sealEmail(keys, ctx.tenantId, args.email);
-  const attributes = packAttributes(args);
+  const attributes = packAttributes({
+    address: args.address, notes: args.notes,
+    storeName: args.storeName ?? null, storeStatus: args.storeStatus ?? null,
+    scheduleMeeting: args.scheduleMeeting ?? null,
+  });
 
   if (args.phone === undefined) {
     const rows = await ctx.tx.query<{ id: string }>(
@@ -290,8 +318,24 @@ export async function ingestInboundMessage(
     };
   }
 
+  // Two clocks, deliberately.
+  //
+  // The 24-hour *reply* window belongs to Meta, so it is measured from the
+  // provider's timestamp — taking our own arrival time would let a queue delay
+  // convince us a window is open after Meta has already closed it.
+  //
+  // The 24-hour *billing* window below is measured from arrival, which keeps
+  // metering monotonic and immune to a redelivery carrying an old timestamp.
+  const inboundAt = args.providerTs ?? now;
+
   const contact = await upsertContactByPhone(ctx, { phone: args.from, displayName: args.displayName, now });
-  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now });
+  // `last_message_at` is touched with the same clock as `last_inbound_at`
+  // here, not wall-clock `now` — otherwise a message that arrives even a few
+  // hundred milliseconds after its own provider timestamp (always, in
+  // practice) leaves the two columns permanently unequal, and anything that
+  // reads "last message was inbound and still unanswered" off that equality
+  // (the needs-reply flag included) never fires for a message that just came in.
+  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: inboundAt });
 
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const inserted = await ctx.tx.query<{ id: string }>(
@@ -302,18 +346,9 @@ export async function ingestInboundMessage(
      returning id`,
     [ctx.tenantId, conversation.id, args.channelId, contact.id,
      sealField(keys, ctx.tenantId, args.body), JSON.stringify(args.media ?? []),
-     args.providerMessageId, args.providerTs ?? now],
+     args.providerMessageId, inboundAt],
   );
 
-  // Two clocks, deliberately.
-  //
-  // The 24-hour *reply* window belongs to Meta, so it is measured from the
-  // provider's timestamp — taking our own arrival time would let a queue delay
-  // convince us a window is open after Meta has already closed it.
-  //
-  // The 24-hour *billing* window below is measured from arrival, which keeps
-  // metering monotonic and immune to a redelivery carrying an old timestamp.
-  const inboundAt = args.providerTs ?? now;
   await ctx.tx.query(
     `update conversations
         set last_inbound_at = $3, last_message_at = greatest(last_message_at, $3),
@@ -501,19 +536,82 @@ export async function createWaBridgeChannel(
   return { channelId };
 }
 
+/**
+ * The Status Chat funnel per number — computed fresh from real conversations,
+ * not the static `wa_bridge_sessions.chat_*` counters (those only ever held
+ * whatever a demo seed wrote once and nothing has updated them since).
+ *
+ * Two independent axes, not one bucket per conversation — a chat that's
+ * already been replied to stays counted as replied even after its brand
+ * picks up a Meeting task; getting a meeting on the books doesn't erase that
+ * someone already answered:
+ *   Belum / Bot / Balas — mutually exclusive, the chat's own reply state
+ *     (awaiting reply / last answered by Autopilot / last answered by a human)
+ *   Minat / Tolak       — mutually exclusive with each other (one brand
+ *     status), independent of the chat state: the brand this contact
+ *     belongs to is marked interested / rejected
+ *   Meeting             — independent of all of the above: that brand has
+ *     an open Meeting-kind task
+ * `chat_total` is the real distinct-conversation count for the number —
+ * summing the six tags above would double-count a chat that carries more
+ * than one.
+ */
 export async function listWaBridgeChannels(ctx: Ctx) {
   return ctx.tx.query<{
     id: string; display_name: string; status: string; phone_e164: string | null;
     session_status: string; qr_data: string | null; qr_expires_at: Date | null;
     last_seen_at: Date | null; last_error: string | null;
-    max_per_day: number; chat_meeting: number; chat_minat: number; chat_balas: number;
-    chat_belum: number; chat_tolak: number; chat_bot: number;
+    max_per_day: number; chat_total: number; chat_meeting: number; chat_minat: number;
+    chat_balas: number; chat_belum: number; chat_tolak: number; chat_bot: number;
   }>(
-    `select ch.id, ch.display_name, ch.status, ch.phone_e164,
+    `with last_msg as (
+       select distinct on (conversation_id) conversation_id, sender_type
+         from messages
+        where tenant_id = $1
+        order by conversation_id, created_at desc
+     ),
+     brand_meeting as (
+       select distinct brand_id from tasks
+        where tenant_id = $1 and kind = 'meeting' and status = 'open' and brand_id is not null
+     ),
+     tagged as (
+       select c.channel_id,
+         case
+           when c.status <> 'resolved' and c.last_inbound_at is not null
+                and c.last_message_at = c.last_inbound_at then 'belum'
+           when lm.sender_type = 'autopilot' then 'bot'
+           else 'balas'
+         end as chat_state,
+         (b.status = 'interested') as is_minat,
+         (b.status = 'rejected') as is_tolak,
+         (bm.brand_id is not null) as is_meeting
+         from conversations c
+         left join last_msg lm on lm.conversation_id = c.id
+         left join brands b on b.tenant_id = $1 and b.contact_id = c.contact_id
+         left join brand_meeting bm on bm.brand_id = b.id
+        where c.tenant_id = $1
+     ),
+     counts as (
+       select channel_id,
+         count(*)::int as chat_total,
+         count(*) filter (where is_meeting)::int as chat_meeting,
+         count(*) filter (where is_minat)::int as chat_minat,
+         count(*) filter (where chat_state = 'balas')::int as chat_balas,
+         count(*) filter (where chat_state = 'belum')::int as chat_belum,
+         count(*) filter (where is_tolak)::int as chat_tolak,
+         count(*) filter (where chat_state = 'bot')::int as chat_bot
+         from tagged
+        group by channel_id
+     )
+     select ch.id, ch.display_name, ch.status, ch.phone_e164,
             s.status as session_status, s.qr_data, s.qr_expires_at, s.last_seen_at, s.last_error,
-            s.max_per_day, s.chat_meeting, s.chat_minat, s.chat_balas, s.chat_belum, s.chat_tolak, s.chat_bot
+            s.max_per_day, coalesce(counts.chat_total, 0) as chat_total,
+            coalesce(counts.chat_meeting, 0) as chat_meeting, coalesce(counts.chat_minat, 0) as chat_minat,
+            coalesce(counts.chat_balas, 0) as chat_balas, coalesce(counts.chat_belum, 0) as chat_belum,
+            coalesce(counts.chat_tolak, 0) as chat_tolak, coalesce(counts.chat_bot, 0) as chat_bot
        from channels ch
        join wa_bridge_sessions s on s.channel_id = ch.id and s.tenant_id = ch.tenant_id
+       left join counts on counts.channel_id = ch.id
       where ch.tenant_id = $1 and ch.kind = 'whatsapp_web'
       order by ch.created_at desc`,
     [ctx.tenantId],
@@ -607,7 +705,7 @@ export async function reconnectWaBridgeChannel(ctx: Ctx, args: { channelId: stri
 export async function createDeal(
   ctx: Ctx,
   args: {
-    contactId: string; title: string; amountIdr: number; ownerId?: string | null;
+    contactId?: string | null; title: string; amountIdr: number; ownerId?: string | null;
     sourceConversationId?: string | null; brandId?: string | null; stageId?: string | null;
   },
 ) {
@@ -631,7 +729,7 @@ export async function createDeal(
     `insert into deals (tenant_id, contact_id, pipeline_id, stage_id, title, amount_micros,
                         owner_id, source_conversation_id, brand_id, rots_at)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9, now() + interval '7 days') returning id`,
-    [ctx.tenantId, args.contactId, stage[0].pipeline_id, stage[0].id, args.title,
+    [ctx.tenantId, args.contactId ?? null, stage[0].pipeline_id, stage[0].id, args.title,
      Math.round(args.amountIdr * 1_000_000), args.ownerId ?? null, args.sourceConversationId ?? null,
      args.brandId ?? null],
   );
@@ -642,7 +740,7 @@ export interface DealDetail {
   id: string; title: string; amountIdr: number; status: string; lostReason: string | null;
   stageId: string; stageName: string; pipelineId: string; pipelineName: string;
   isWon: boolean; isLost: boolean;
-  contactId: string; contactName: string | null; contactPhone: string | null;
+  contactId: string | null; contactName: string | null; contactPhone: string | null;
   ownerId: string | null; sourceConversationId: string | null;
   brandId: string | null; brandName: string | null; brandCategory: string | null;
   expectedCloseOn: string | null; notes: string | null;
@@ -656,7 +754,7 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
     id: string; title: string; amount_idr: string; status: string; lost_reason: string | null;
     stage_id: string; stage_name: string; pipeline_id: string; pipeline_name: string;
     is_won: boolean; is_lost: boolean;
-    contact_id: string; contact_name: string | null; phone_enc: string | null;
+    contact_id: string | null; contact_name: string | null; phone_enc: string | null;
     owner_id: string | null; source_conversation_id: string | null;
     brand_id: string | null; brand_name: string | null; brand_category: string | null;
     expected_close_on: Date | null; notes: string | null;
@@ -671,7 +769,7 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
        from deals d
        join pipeline_stages s on s.id = d.stage_id and s.tenant_id = d.tenant_id
        join pipelines p on p.id = d.pipeline_id and p.tenant_id = d.tenant_id
-       join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
+       left join contacts ct on ct.id = d.contact_id and ct.tenant_id = d.tenant_id
        left join brands br on br.id = d.brand_id and br.tenant_id = d.tenant_id
       where d.tenant_id = $1 and d.id = $2`,
     [ctx.tenantId, dealId],
@@ -694,23 +792,38 @@ export async function getDeal(ctx: Ctx, dealId: string): Promise<DealDetail | nu
   };
 }
 
-/** Notes, the target close date, and which brand it's about — the fields a deal card has no room for. */
+/** Notes, the target close date, which brand it's about, and the deal's amount and title. */
 export async function updateDeal(
   ctx: Ctx,
-  args: { dealId: string; notes?: string | null; expectedCloseOn?: string | null; brandId?: string | null },
+  args: {
+    dealId: string; notes?: string | null; expectedCloseOn?: string | null; brandId?: string | null;
+    amountIdr?: number; title?: string;
+  },
 ): Promise<boolean> {
   const rows = await ctx.tx.query<{ id: string }>(
     `update deals set
         notes = case when $3 then $4 else notes end,
         expected_close_on = case when $5 then $6::date else expected_close_on end,
         brand_id = case when $7 then $8 else brand_id end,
+        amount_micros = case when $9 then $10 else amount_micros end,
+        title = case when $11 then $12 else title end,
         updated_at = now()
       where tenant_id = $1 and id = $2
       returning id`,
     [ctx.tenantId, args.dealId,
      args.notes !== undefined, args.notes ?? null,
      args.expectedCloseOn !== undefined, args.expectedCloseOn ?? null,
-     args.brandId !== undefined, args.brandId ?? null],
+     args.brandId !== undefined, args.brandId ?? null,
+     args.amountIdr !== undefined, args.amountIdr !== undefined ? Math.round(args.amountIdr * 1_000_000) : null,
+     args.title !== undefined, args.title ?? null],
+  );
+  return !!rows[0];
+}
+
+export async function deleteDeal(ctx: Ctx, args: { dealId: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `delete from deals where tenant_id = $1 and id = $2 returning id`,
+    [ctx.tenantId, args.dealId],
   );
   return !!rows[0];
 }

@@ -37,6 +37,69 @@ export class LogEmailSender implements EmailSender {
   }
 }
 
+/**
+ * SMTP delivery.
+ *
+ * Deliberately not a vendor SDK: SES, Mailgun, Resend, Postmark and a plain
+ * Gmail relay all speak SMTP, so switching provider is a connection string.
+ * Shared by both `apps/worker` (billing emails) and `apps/api` (sent
+ * synchronously, for the "send now" actions a person is waiting on) rather
+ * than living in just one of them.
+ */
+export class SmtpEmailSender implements EmailSender {
+  readonly name = 'smtp';
+  private transport: { sendMail: (opts: Record<string, unknown>) => Promise<{ messageId: string }> } | null = null;
+
+  constructor(private url: string, private from: string) {}
+
+  private async connect() {
+    if (!this.transport) {
+      const nodemailer = await import('nodemailer');
+      const create = (nodemailer as { createTransport?: unknown; default?: { createTransport?: unknown } });
+      const createTransport = (create.default?.createTransport ?? create.createTransport) as
+        (url: string) => typeof this.transport;
+      this.transport = createTransport(this.url);
+    }
+    return this.transport!;
+  }
+
+  async send(message: EmailMessage): Promise<{ messageId: string }> {
+    const transport = await this.connect();
+    const result = await transport.sendMail({
+      from: this.from,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+    });
+    return { messageId: result.messageId };
+  }
+}
+
+/** Picks the real sender when `SMTP_URL` is configured, logs instead when it isn't. */
+export function resolveSender(env: { SMTP_URL: string; EMAIL_FROM: string }): EmailSender {
+  if (!env.SMTP_URL) {
+    console.warn('SMTP_URL is not set — email is being logged, not delivered');
+    return new LogEmailSender((line) => console.log(line));
+  }
+  return new SmtpEmailSender(env.SMTP_URL, env.EMAIL_FROM);
+}
+
+/**
+ * Same as `resolveSender`, but a tenant's own SMTP settings (from Pengaturan)
+ * win when they've set one — the server-wide `SMTP_URL` stays only as the
+ * default for a tenant that never configured its own.
+ */
+export function resolveTenantSender(
+  env: { SMTP_URL: string; EMAIL_FROM: string },
+  tenant: { smtpUrl: string | null; emailFrom: string | null },
+): EmailSender {
+  return resolveSender({
+    SMTP_URL: tenant.smtpUrl || env.SMTP_URL,
+    EMAIL_FROM: tenant.emailFrom || env.EMAIL_FROM,
+  });
+}
+
 /* ------------------------------------------------------------- templates */
 
 const escapeHtml = (s: string) =>
@@ -169,4 +232,45 @@ MCNASIA`;
 
   return { to: input.to, subject: `Pembayaran diterima — ${input.number}`, text, html,
            template: 'payment_received' };
+}
+
+export interface MeetingInviteEmailInput {
+  /** Who the meeting is with — the task's brand or contact name. */
+  partyName: string;
+  title: string;
+  dueAt: Date;
+  meetingLink?: string | null;
+  notes?: string | null;
+  to: string;
+}
+
+const idDateTime = (d: Date) =>
+  `${d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}, ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB`;
+
+/** A meeting task, sent as a plain invite — when, who it's about, and the link if there is one. */
+export function meetingInviteEmail(input: MeetingInviteEmailInput): EmailMessage {
+  const when = idDateTime(input.dueAt);
+  const link = input.meetingLink ? `\n\nLink meeting: ${input.meetingLink}` : '';
+  const notes = input.notes ? `\n\nCatatan:\n${input.notes}` : '';
+
+  const text = `Undangan meeting: ${input.title}
+
+Dengan: ${input.partyName}
+Waktu: ${when}${link}${notes}
+
+Sampai jumpa,
+MCNASIA`;
+
+  const html = shell(input.title, `
+    <h1 style="font-size:19px;margin:0 0 6px">${escapeHtml(input.title)}</h1>
+    <p style="color:#565A80;margin:0">Undangan meeting dengan ${escapeHtml(input.partyName)}</p>
+    <table style="width:100%;border-collapse:collapse;margin-top:18px;font-size:14px">
+      ${table([
+        ['Waktu', when],
+        ...(input.meetingLink ? [['Link meeting', input.meetingLink] as [string, string]] : []),
+      ])}
+    </table>
+    ${input.notes ? `<div style="margin-top:16px;background:#F4F4F9;border-radius:8px;padding:12px;white-space:pre-wrap">${escapeHtml(input.notes)}</div>` : ''}`);
+
+  return { to: input.to, subject: `Undangan meeting: ${input.title} — ${when}`, text, html, template: 'meeting_invite' };
 }

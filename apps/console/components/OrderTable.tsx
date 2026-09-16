@@ -128,7 +128,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
               <thead>
                 <tr>
                   <th>{t.orders.code}</th>
-                  <th>{t.orders.customer}</th>
+                  <th>{t.orders.client}</th>
                   <th className="num">{t.orders.items}</th>
                   <th className="num">{t.orders.total}</th>
                   <th>{t.orders.area}</th>
@@ -142,7 +142,7 @@ export function OrderTable({ orders }: { orders: Order[] }) {
                   <tr key={o.id}>
                     <td className="mono">{o.code}</td>
                     <td>
-                      <Link href={`/pelanggan/${o.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                      <Link href={`/client/${o.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                         <span className="avatar" aria-hidden>{initials(o.displayName)}</span>
                         <span>
                           <b>{o.displayName ?? o.phone ?? '—'}</b>

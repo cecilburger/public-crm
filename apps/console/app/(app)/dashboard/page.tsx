@@ -55,7 +55,7 @@ export default function DashboardPage() {
 
       <div className="scroll pad stack">
         <div className="grid c4">
-          <StatTile label={t.dashboard.statCustomers} value="128" delta={t.dashboard.statCustomersDelta} direction="up" />
+          <StatTile label={t.dashboard.statClients} value="128" delta={t.dashboard.statClientsDelta} direction="up" />
           <StatTile label={t.dashboard.statUnanswered} value="7" delta={t.dashboard.statUnansweredDelta} direction="down" />
           <StatTile label={t.dashboard.statSales} value={rp(42_500_000)} delta={t.dashboard.statSalesDelta} direction="up" />
           <StatTile label={t.dashboard.statReplyTime} value="6 menit" delta={t.dashboard.statReplyTimeDelta} direction="down" />

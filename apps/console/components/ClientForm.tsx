@@ -2,28 +2,28 @@
 
 import { useActionState, useRef, useState, type ChangeEvent } from 'react';
 import Link from 'next/link';
-import { createCustomer, updateCustomer, deleteCustomer, type ActionResult } from '@/app/(app)/actions';
+import { createClient, updateClient, deleteClient, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import { initials } from '@/lib/format';
 import { ContactTimeline } from '@/components/ContactTimeline';
-import { CustomerPurchases } from '@/components/CustomerPurchases';
-import { CustomerActivities } from '@/components/CustomerActivities';
+import { ClientPurchases } from '@/components/ClientPurchases';
+import { ClientActivities } from '@/components/ClientActivities';
 import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member, Task } from '@/lib/api';
 
 /**
- * One sheet, two callers: a blank one for `/pelanggan/baru`, a filled-in one
- * for `/pelanggan/[id]`. Whether `contact` is set decides which — present,
+ * One sheet, two callers: a blank one for `/client/baru`, a filled-in one
+ * for `/client/[id]`. Whether `contact` is set decides which — present,
  * it's an edit (and Delete and the activity timeline become available);
  * absent, whatever gets typed here becomes a new contact.
  */
-export function CustomerForm({
+export function ClientForm({
   contact, conversationId = null, timeline, members = [], orders = [], tasks = [],
 }: {
   contact: ContactDetail | null; conversationId?: string | null;
   timeline?: ContactTimelineEvent[]; members?: Member[]; orders?: ContactOrder[]; tasks?: Task[];
 }) {
-  const action = contact ? updateCustomer : createCustomer;
+  const action = contact ? updateClient : createClient;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
@@ -46,31 +46,31 @@ export function CustomerForm({
 
   return (
     <>
-      <form id="customer-form" action={formAction} className="odoo-form-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <form id="client-form" action={formAction} className="odoo-form-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <CsrfField />
         {contact ? <input type="hidden" name="id" value={contact.id} /> : null}
 
         <div className="odoo-control-panel">
           <div className="odoo-cp-top">
             <div className="odoo-cp-breadcrumb">
-              <Link href="/pelanggan" style={{ color: 'var(--ink-2)', marginRight: 8, textDecoration: 'none' }}>
-                {t.customers.title}
+              <Link href="/client" style={{ color: 'var(--ink-2)', marginRight: 8, textDecoration: 'none' }}>
+                {t.client.title}
               </Link>
               <span style={{ color: 'var(--ink-3)', marginRight: 8 }}>/</span>
-              <h1>{contact ? (contact.displayName || contact.phone || '—') : t.customers.newCustomer}</h1>
+              <h1>{contact ? (contact.displayName || contact.phone || '—') : t.client.newClient}</h1>
             </div>
           </div>
           <div className="odoo-cp-bottom">
             <div className="odoo-cp-actions">
               <button type="submit" className="btn primary" disabled={pending}>
-                {pending ? t.customers.saving : t.customers.save}
+                {pending ? t.client.saving : t.client.save}
               </button>
-              <Link href="/pelanggan" className="btn ghost">{t.customers.discard}</Link>
+              <Link href="/client" className="btn ghost">{t.client.discard}</Link>
               {contact ? (
                 <button type="button" className="btn ghost"
                         style={{ color: 'var(--danger)' }}
                         onClick={() => deleteDialogRef.current?.showModal()}>
-                  {t.customers.delete}
+                  {t.client.delete}
                 </button>
               ) : null}
             </div>
@@ -87,59 +87,79 @@ export function CustomerForm({
                 ) : (
                   <span aria-hidden>{initials(contact?.displayName ?? null)}</span>
                 )}
-                <span className="record-avatar-badge" aria-hidden>{t.customers.photoChange}</span>
+                <span className="record-avatar-badge" aria-hidden>{t.client.photoChange}</span>
                 <input type="file" accept="image/*" onChange={onPhotoChange}
                       style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
-                      aria-label={t.customers.photoUpload} />
+                      aria-label={t.client.photoUpload} />
               </label>
               <div className="record-title">
                 <input name="displayName" defaultValue={contact?.displayName ?? ''}
-                      placeholder={t.customers.namePlaceholder} aria-label={t.customers.name} />
+                      placeholder={t.client.namePlaceholder} aria-label={t.client.name} />
               </div>
             </div>
 
             <div className="record-grid">
               <div className="record-field">
-                <label htmlFor="phone">{t.customers.phone}</label>
+                <label htmlFor="phone">{t.client.phone}</label>
                 <input className="line-input" id="phone" name="phone" defaultValue={contact?.phone ?? ''}
                       placeholder="+62812xxxxxxx" disabled={phoneMasked} />
-                {phoneMasked ? <p className="record-hint">{t.customers.phoneMaskedHint}</p> : null}
+                {phoneMasked ? <p className="record-hint">{t.client.phoneMaskedHint}</p> : null}
               </div>
               <div className="record-field">
-                <label htmlFor="email">{t.customers.email}</label>
+                <label htmlFor="email">{t.client.email}</label>
                 <input className="line-input" id="email" name="email" type="email"
                       defaultValue={contact?.email ?? ''} placeholder="nama@email.com" />
               </div>
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
-                <label htmlFor="address">{t.customers.address}</label>
+                <label htmlFor="address">{t.client.address}</label>
                 <input className="line-input" id="address" name="address"
-                      defaultValue={contact?.address ?? ''} placeholder={t.customers.addressPlaceholder} />
+                      defaultValue={contact?.address ?? ''} placeholder={t.client.addressPlaceholder} />
               </div>
               <div className="record-field">
-                <label htmlFor="tags">{t.customers.tags}</label>
+                <label htmlFor="tags">{t.client.tags}</label>
                 <input className="line-input" id="tags" name="tags" defaultValue={contact?.tags.join(', ') ?? ''} />
-                <p className="record-hint">{t.customers.tagsHint}</p>
+                <p className="record-hint">{t.client.tagsHint}</p>
               </div>
               {contact ? (
                 <div className="record-field">
-                  <label>{t.customers.chat}</label>
+                  <label>{t.client.chat}</label>
                   {conversationId ? (
                     <Link href={`/obrolan/${conversationId}`} className="btn ghost" style={{ width: 'fit-content' }}>
-                      {t.customers.chat}
+                      {t.client.chat}
                     </Link>
                   ) : (
-                    <p className="record-hint" style={{ marginTop: 6 }}>{t.customers.noChat}</p>
+                    <p className="record-hint" style={{ marginTop: 6 }}>{t.client.noChat}</p>
                   )}
                 </div>
               ) : null}
+              <div className="record-field">
+                <label htmlFor="storeName">{t.client.storeName}</label>
+                <input className="line-input" id="storeName" name="storeName"
+                      defaultValue={contact?.storeName ?? ''} placeholder={t.client.storeNamePlaceholder} />
+              </div>
+              <div className="record-field">
+                <label htmlFor="storeStatus">{t.client.storeStatus}</label>
+                <select className="line-input" id="storeStatus" name="storeStatus"
+                        defaultValue={contact?.storeStatus ?? ''}>
+                  <option value="">{t.client.storeStatusPlaceholder}</option>
+                  {Object.entries(t.client.storeStatusLabel).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="record-field">
+                <label htmlFor="scheduleMeeting">{t.client.scheduleMeeting}</label>
+                <input className="line-input" id="scheduleMeeting" name="scheduleMeeting" type="datetime-local"
+                      defaultValue={contact?.scheduleMeeting ?? ''} />
+              </div>
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
-                <label htmlFor="notes">{t.customers.notes}</label>
+                <label htmlFor="notes">{t.client.notes}</label>
                 <textarea className="line-input" id="notes" name="notes" rows={3}
-                          defaultValue={contact?.notes ?? ''} placeholder={t.customers.notesPlaceholder} />
+                          defaultValue={contact?.notes ?? ''} placeholder={t.client.notesPlaceholder} />
               </div>
             </div>
 
-            {contact ? <CustomerPurchases orders={orders} /> : null}
+            {contact ? <ClientPurchases orders={orders} /> : null}
 
             {contact && timeline ? (
               <div className="record-timeline">
@@ -153,7 +173,7 @@ export function CustomerForm({
 
           {contact ? (
             <aside className="record-side">
-              <CustomerActivities tasks={tasks} members={members} />
+              <ClientActivities tasks={tasks} members={members} />
             </aside>
           ) : null}
           </div>
@@ -163,26 +183,26 @@ export function CustomerForm({
       {contact ? (
         <dialog ref={deleteDialogRef} className="modal">
           <header className="modal-head">
-            <h2>{t.customers.deleteTitle}</h2>
+            <h2>{t.client.deleteTitle}</h2>
             <button type="button" className="btn ghost sm" onClick={() => deleteDialogRef.current?.close()}>
-              {t.customers.discard}
+              {t.client.discard}
             </button>
           </header>
           <div className="modal-body">
             <div className="notice" style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)' }}>
               <span className="notice-icon" style={{ background: 'var(--danger)' }}>!</span>
-              <span>{t.customers.deleteWarning(contact.displayName ?? contact.phone ?? '—')}</span>
+              <span>{t.client.deleteWarning(contact.displayName ?? contact.phone ?? '—')}</span>
             </div>
             <div className="modal-actions">
               <button type="button" className="btn ghost" onClick={() => deleteDialogRef.current?.close()}>
-                {t.customers.discard}
+                {t.client.discard}
               </button>
-              <form action={deleteCustomer}>
+              <form action={deleteClient}>
                 <CsrfField />
                 <input type="hidden" name="id" value={contact.id} />
                 <button className="btn primary" type="submit"
                         style={{ background: 'var(--danger)', borderColor: 'var(--danger)' }}>
-                  {t.customers.deleteConfirm}
+                  {t.client.deleteConfirm}
                 </button>
               </form>
             </div>

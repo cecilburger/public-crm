@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { t } from '@/lib/copy';
-import { formatTaskDue, isTaskOverdue, isTaskDueToday } from '@/lib/taskHelpers';
+import { formatTaskDue, isTaskOverdue, isTaskDueToday, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
 import { markTaskDone } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 import { KindIcon } from '@/components/KindIcon';
+import { SendCalendarEventEmailButton } from '@/components/SendCalendarEventEmailButton';
 import type { Task, Member, GoogleCalendarEvent } from '@/lib/api';
 
 const COLUMNS: { key: Task['status']; label: string }[] = [
@@ -46,9 +47,13 @@ export function TaskKanban({
                 <article key={tk.id} className="deal">
                   <KindIcon kind={tk.kind} title={t.tasks.kindLabel[tk.kind] ?? tk.kind} />
                   <div className="title">{tk.title}</div>
-                  <Link href={`/pelanggan/${tk.contactId}`} className="mono dim" style={{ fontSize: 11 }}>
-                    {tk.contactName ?? tk.contactPhone ?? '—'}
-                  </Link>
+                  {taskPartyHref(tk) ? (
+                    <Link href={taskPartyHref(tk)!} className="mono dim" style={{ fontSize: 11 }}>
+                      {taskPartyName(tk) ?? '—'}
+                    </Link>
+                  ) : (
+                    <span className="mono dim" style={{ fontSize: 11 }}>{taskPartyName(tk) ?? '—'}</span>
+                  )}
                   <div style={{ fontSize: 11.5, marginTop: 6 }}>{formatTaskDue(tk.dueAt)}</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
                     {isTaskOverdue(tk) ? <span className="chip danger">{t.tasks.overdue}</span> : null}
@@ -93,9 +98,14 @@ export function TaskKanban({
                   {ev.allDay ? '' : ` · ${new Date(ev.start).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`}
                 </div>
                 {ev.meetingLink ? (
-                  <a href={ev.meetingLink} target="_blank" rel="noreferrer" style={{ fontSize: 11.5, marginTop: 6, display: 'inline-block' }}>
-                    {t.tasks.joinMeeting}
-                  </a>
+                  <>
+                    <a href={ev.meetingLink} target="_blank" rel="noreferrer" style={{ fontSize: 11.5, marginTop: 6, display: 'inline-block' }}>
+                      {t.tasks.joinMeeting}
+                    </a>
+                    <div style={{ marginTop: 8 }}>
+                      <SendCalendarEventEmailButton event={ev} />
+                    </div>
+                  </>
                 ) : null}
               </article>
             ))}

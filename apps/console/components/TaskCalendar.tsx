@@ -3,13 +3,13 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '@/lib/copy';
-import { formatTaskDue, isTaskOverdue } from '@/lib/taskHelpers';
+import { formatTaskDue, isTaskOverdue, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
 import {
   addDays, addMonths, monthGrid, sameDay, shiftAnchor, startOfMonth, startOfWeek, weekDays,
 } from '@/lib/calendarHelpers';
 import type { CalendarMode } from '@/lib/calendarHelpers';
 import type { Task, GoogleCalendarEvent, GoogleCalendarStatus } from '@/lib/api';
-import { markTaskDone, disconnectGoogleCalendar } from '@/app/(app)/actions';
+import { markTaskDone } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 
@@ -100,9 +100,10 @@ function periodLabel(mode: CalendarMode, anchor: Date): string {
 }
 
 function EventPill({ task, compact }: { task: Task; compact?: boolean }) {
-  const label = compact ? task.title : `${task.title}${task.contactName ? ` · ${task.contactName}` : ''}`;
+  const party = taskPartyName(task);
+  const label = compact ? task.title : `${task.title}${party ? ` · ${party}` : ''}`;
   return (
-    <span className={`time-event ${pillClass(task)}`} title={`${task.title}${task.contactName ? ` — ${task.contactName}` : ''}`}>
+    <span className={`time-event ${pillClass(task)}`} title={`${task.title}${party ? ` — ${party}` : ''}`}>
       {label}
     </span>
   );
@@ -241,7 +242,7 @@ function MonthGrid({
             <span className="calendar-daynum">{d.getDate()}</span>
             {visible.map((tk) => (
               <button type="button" key={tk.id} className={`calendar-pill ${pillClass(tk)}`}
-                      title={`${tk.title}${tk.contactName ? ` — ${tk.contactName}` : ''}`}
+                      title={`${tk.title}${taskPartyName(tk) ? ` — ${taskPartyName(tk)}` : ''}`}
                       onClick={(e) => { e.stopPropagation(); onSelectTask(tk); }}>
                 {tk.title}
               </button>
@@ -294,9 +295,13 @@ function DayDetailModal({
                   <b>{tk.title}</b>
                   {tk.dealTitle ? <div className="mono dim" style={{ fontSize: 11 }}>{tk.dealTitle}</div> : null}
                   <div style={{ fontSize: 12, marginTop: 3 }}>{formatTaskDue(tk.dueAt)}</div>
-                  <Link href={`/pelanggan/${tk.contactId}`} className="mono dim" style={{ fontSize: 11.5 }}>
-                    {tk.contactName ?? tk.contactPhone ?? '—'}
-                  </Link>
+                  {taskPartyHref(tk) ? (
+                    <Link href={taskPartyHref(tk)!} className="mono dim" style={{ fontSize: 11.5 }}>
+                      {taskPartyName(tk) ?? '—'}
+                    </Link>
+                  ) : (
+                    <span className="mono dim" style={{ fontSize: 11.5 }}>{taskPartyName(tk) ?? '—'}</span>
+                  )}
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
                     <span className={STATUS_CHIP[tk.status]}>{t.tasks.statusLabel[tk.status] ?? tk.status}</span>
                     {isTaskOverdue(tk) ? <span className="chip danger">{t.tasks.overdue}</span> : null}
@@ -410,17 +415,6 @@ export function TaskCalendar({
             <h3 className="calendar-period-label">{periodLabel(mode, anchor)}</h3>
           </div>
           <div className="calendar-toolbar-left">
-            {googleStatus.connected ? (
-              <form action={disconnectGoogleCalendar}>
-                <CsrfField />
-                <button type="submit" className="btn ghost sm" title={t.tasks.disconnectHint}>
-                  <span className="google-dot" aria-hidden /> {t.tasks.googleConnected}
-                  {googleStatus.email ? <span className="dim" style={{ marginLeft: 5 }}>({googleStatus.email})</span> : null}
-                </button>
-              </form>
-            ) : (
-              <a href="/api/google-calendar/connect" className="btn ghost sm">{t.tasks.googleConnect}</a>
-            )}
             <select className="calendar-mode-select" value={mode}
                     onChange={(e) => setMode(e.target.value as CalendarMode)} aria-label={t.tasks.viewCalendar}>
               <option value="day">{t.tasks.viewDay}</option>

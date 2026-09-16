@@ -10,7 +10,10 @@ export default async function BroadcastPage() {
     api<MessageTemplate[]>('/v1/message-templates').catch(() => [] as MessageTemplate[]),
   ]);
 
-  const approvedTemplates = templates.filter((tpl) => tpl.status === 'approved');
+  // Broadcast only ever sends over WhatsApp — an Email/Lainnya template has
+  // no place in this picker even if someone left its (now-hidden) approval
+  // status at 'approved' from before it switched channels.
+  const approvedTemplates = templates.filter((tpl) => tpl.channel === 'whatsapp' && tpl.status === 'approved');
 
   return (
     <div className="scroll pad odoo-page stack">

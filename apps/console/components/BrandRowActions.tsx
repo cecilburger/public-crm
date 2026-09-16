@@ -1,8 +1,9 @@
 'use client';
 
 import { useRef } from 'react';
+import { useActionState } from 'react';
 import Link from 'next/link';
-import { setBrandStatus, deleteBrand } from '@/app/(app)/actions';
+import { setBrandStatus, deleteBrand, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import type { Brand } from '@/lib/api';
@@ -13,6 +14,7 @@ const STATUSES: Brand['status'][] = ['not_contacted', 'contacted', 'replied', 'i
  *  a row needs without opening the full record. */
 export function BrandRowActions({ brand }: { brand: Brand }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [state, deleteAction, deleting] = useActionState<ActionResult | null, FormData>(deleteBrand, null);
 
   return (
     <>
@@ -46,14 +48,15 @@ export function BrandRowActions({ brand }: { brand: Brand }) {
             <span className="notice-icon" style={{ background: 'var(--danger)' }}>!</span>
             <span>{t.brand.deleteWarning(brand.name)}</span>
           </div>
+          {state?.error ? <p className="error" style={{ fontSize: 12.5 }}>{state.error}</p> : null}
           <div className="modal-actions">
             <button type="button" className="btn ghost" onClick={() => dialogRef.current?.close()}>
               {t.brand.discard}
             </button>
-            <form action={deleteBrand}>
+            <form action={deleteAction}>
               <CsrfField />
               <input type="hidden" name="id" value={brand.id} />
-              <button className="btn primary" type="submit"
+              <button className="btn primary" type="submit" disabled={deleting}
                       style={{ background: 'var(--danger)', borderColor: 'var(--danger)' }}>
                 {t.brand.deleteConfirm}
               </button>

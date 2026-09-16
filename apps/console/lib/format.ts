@@ -47,17 +47,6 @@ export function toDatetimeLocal(iso: string): string {
 }
 
 /**
- * A `wa.me` deep link — for prospects like Brand outreach, who aren't
- * necessarily a contact with a conversation in this CRM yet, so this opens
- * WhatsApp itself rather than an inbox thread. `phone` is expected E.164
- * (`+62…`); wa.me wants the digits alone, no `+`.
- */
-export function waMeLink(phone: string, text?: string): string {
-  const digits = phone.replace(/\D/g, '');
-  return text ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}` : `https://wa.me/${digits}`;
-}
-
-/**
  * "Hari ini" / "Besok" / "3 hari lagi" / "Terlambat 2 hari" — the same
  * relative-countdown language a kanban due date reads in, so a target close
  * date carries as much at-a-glance urgency on a deal card as it would for a task.

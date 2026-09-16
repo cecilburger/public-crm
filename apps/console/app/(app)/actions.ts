@@ -57,15 +57,6 @@ export async function resolveConversation(form: FormData): Promise<void> {
   revalidatePath('/chat-wa', 'layout');
 }
 
-export async function markAsCustomer(form: FormData): Promise<void> {
-  await assertCsrf(form);
-  const conversationId = String(form.get('conversationId') ?? '');
-  await api(`/v1/conversations/${conversationId}/mark-customer`, { method: 'POST' });
-  revalidatePath('/chat-wa', 'layout');
-  revalidatePath('/pelanggan');
-  revalidatePath('/deal');
-}
-
 /* ----------------------------------------------------------------- pesanan */
 
 export async function markOrderPaid(form: FormData): Promise<void> {
@@ -91,36 +82,55 @@ export async function cancelOrder(form: FormData): Promise<void> {
 
 /* ------------------------------------------------------------------- tugas */
 
+function readTaskForm(form: FormData) {
+  return {
+    contactId: String(form.get('contactId') ?? '').trim(),
+    brandId: String(form.get('brandId') ?? '').trim(),
+    title: String(form.get('title') ?? '').trim(),
+    dueAt: String(form.get('dueAt') ?? '').trim(),
+    notes: String(form.get('notes') ?? '').trim(),
+    dealId: String(form.get('dealId') ?? '').trim(),
+    assigneeId: String(form.get('assigneeId') ?? '').trim(),
+    kind: String(form.get('kind') ?? '').trim(),
+    meetingLink: String(form.get('meetingLink') ?? '').trim(),
+    priority: String(form.get('priority') ?? '').trim(),
+    repeatUnit: String(form.get('repeatUnit') ?? '').trim(),
+    repeatInterval: String(form.get('repeatInterval') ?? '').trim(),
+    repeatUntil: String(form.get('repeatUntil') ?? '').trim(),
+  };
+}
+
+/**
+ * A task can point at a Contact or (since the table no longer requires one)
+ * a Brand directly — `/v1/tasks` accepts either. Exactly one of
+ * contactId/brandId is expected; the form only ever shows one picker at a time.
+ */
+async function submitTaskForm(fields: ReturnType<typeof readTaskForm>): Promise<void> {
+  await api('/v1/tasks', {
+    method: 'POST',
+    body: {
+      contactId: fields.contactId || undefined, brandId: fields.brandId || undefined,
+      title: fields.title, dueAt: fields.dueAt,
+      notes: fields.notes || undefined, dealId: fields.dealId || undefined, assigneeId: fields.assigneeId || undefined,
+      kind: fields.kind || undefined, meetingLink: fields.meetingLink || undefined, priority: fields.priority || undefined,
+      repeatUnit: fields.repeatUnit || undefined,
+      repeatInterval: fields.repeatUnit ? (Number(fields.repeatInterval) || 1) : undefined,
+      repeatUntil: fields.repeatUnit && fields.repeatUntil ? fields.repeatUntil : undefined,
+    },
+  });
+}
+
 export async function createTask(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const contactId = String(form.get('contactId') ?? '');
-  const title = String(form.get('title') ?? '').trim();
-  const dueAt = String(form.get('dueAt') ?? '').trim();
-  const notes = String(form.get('notes') ?? '').trim();
-  const dealId = String(form.get('dealId') ?? '').trim();
-  const assigneeId = String(form.get('assigneeId') ?? '').trim();
-  const kind = String(form.get('kind') ?? '').trim();
-  const meetingLink = String(form.get('meetingLink') ?? '').trim();
-  const priority = String(form.get('priority') ?? '').trim();
-  const repeatUnit = String(form.get('repeatUnit') ?? '').trim();
-  const repeatInterval = String(form.get('repeatInterval') ?? '').trim();
-  const repeatUntil = String(form.get('repeatUntil') ?? '').trim();
-
-  if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
+  const fields = readTaskForm(form);
+  if ((!fields.contactId && !fields.brandId) || !fields.title || !fields.dueAt) {
+    return { ok: false, error: t.tasks.failed };
+  }
 
   try {
-    await api('/v1/tasks', {
-      method: 'POST',
-      body: {
-        contactId, title, dueAt,
-        notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
-        kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
-        repeatUnit: repeatUnit || undefined,
-        repeatInterval: repeatUnit ? (Number(repeatInterval) || 1) : undefined,
-        repeatUntil: repeatUnit && repeatUntil ? repeatUntil : undefined,
-      },
-    });
+    await submitTaskForm(fields);
     revalidatePath('/tugas');
+    if (fields.brandId) revalidatePath(`/brand/${fields.brandId}`);
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
   }
@@ -134,34 +144,15 @@ export async function createTask(_prev: ActionResult | null, form: FormData): Pr
  */
 export async function createTaskInline(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const contactId = String(form.get('contactId') ?? '');
-  const title = String(form.get('title') ?? '').trim();
-  const dueAt = String(form.get('dueAt') ?? '').trim();
-  const notes = String(form.get('notes') ?? '').trim();
-  const dealId = String(form.get('dealId') ?? '').trim();
-  const assigneeId = String(form.get('assigneeId') ?? '').trim();
-  const kind = String(form.get('kind') ?? '').trim();
-  const meetingLink = String(form.get('meetingLink') ?? '').trim();
-  const priority = String(form.get('priority') ?? '').trim();
-  const repeatUnit = String(form.get('repeatUnit') ?? '').trim();
-  const repeatInterval = String(form.get('repeatInterval') ?? '').trim();
-  const repeatUntil = String(form.get('repeatUntil') ?? '').trim();
-
-  if (!contactId || !title || !dueAt) return { ok: false, error: t.tasks.failed };
+  const fields = readTaskForm(form);
+  if ((!fields.contactId && !fields.brandId) || !fields.title || !fields.dueAt) {
+    return { ok: false, error: t.tasks.failed };
+  }
 
   try {
-    await api('/v1/tasks', {
-      method: 'POST',
-      body: {
-        contactId, title, dueAt,
-        notes: notes || undefined, dealId: dealId || undefined, assigneeId: assigneeId || undefined,
-        kind: kind || undefined, meetingLink: meetingLink || undefined, priority: priority || undefined,
-        repeatUnit: repeatUnit || undefined,
-        repeatInterval: repeatUnit ? (Number(repeatInterval) || 1) : undefined,
-        repeatUntil: repeatUnit && repeatUntil ? repeatUntil : undefined,
-      },
-    });
+    await submitTaskForm(fields);
     revalidatePath('/tugas');
+    if (fields.brandId) revalidatePath(`/brand/${fields.brandId}`);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
@@ -218,6 +209,21 @@ export async function cancelTask(form: FormData): Promise<void> {
   revalidatePath('/tugas');
 }
 
+/** The "Kirim Email" dialog on a Meeting task — sent synchronously, so the error (if any) comes straight back. */
+export async function sendMeetingEmail(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const taskId = String(form.get('taskId') ?? '');
+  const to = String(form.get('to') ?? '').trim();
+  if (!to) return { ok: false, error: t.tasks.sendEmailFailed };
+
+  try {
+    await api(`/v1/tasks/${taskId}/send-email`, { method: 'POST', body: { to } });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.sendEmailFailed };
+  }
+}
+
 export interface AddTaskKindResult {
   ok: boolean;
   error?: string;
@@ -245,21 +251,25 @@ export async function addTaskKind(form: FormData): Promise<AddTaskKindResult> {
   }
 }
 
-/* ------------------------------------------------------------- pelanggan */
+/* ----------------------------------------------------------------- client */
 
-function readCustomerForm(form: FormData) {
+function readClientForm(form: FormData) {
   const displayName = String(form.get('displayName') ?? '').trim();
   const phone = String(form.get('phone') ?? '').trim();
   const email = String(form.get('email') ?? '').trim();
   const tags = String(form.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const address = String(form.get('address') ?? '').trim();
   const notes = String(form.get('notes') ?? '').trim();
-  return { displayName, phone, email, tags, address, notes };
+  const storeName = String(form.get('storeName') ?? '').trim();
+  const storeStatus = String(form.get('storeStatus') ?? '').trim();
+  const scheduleMeeting = String(form.get('scheduleMeeting') ?? '').trim();
+  return { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting };
 }
 
-export async function createCustomer(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+export async function createClient(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const { displayName, phone, email, tags, address, notes } = readCustomerForm(form);
+  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
+    readClientForm(form);
 
   try {
     await api('/v1/contacts', {
@@ -270,20 +280,24 @@ export async function createCustomer(_prev: ActionResult | null, form: FormData)
         ...(email ? { email } : {}),
         ...(address ? { address } : {}),
         ...(notes ? { notes } : {}),
+        ...(storeName ? { storeName } : {}),
+        ...(storeStatus ? { storeStatus } : {}),
+        ...(scheduleMeeting ? { scheduleMeeting } : {}),
         tags,
       },
     });
   } catch (err) {
-    return { ok: false, error: err instanceof ApiError ? err.message : t.customers.failed };
+    return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
-  revalidatePath('/pelanggan');
-  redirect('/pelanggan');
+  revalidatePath('/client');
+  redirect('/client');
 }
 
-export async function updateCustomer(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+export async function updateClient(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const id = String(form.get('id') ?? '');
-  const { displayName, phone, email, tags, address, notes } = readCustomerForm(form);
+  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
+    readClientForm(form);
 
   try {
     await api(`/v1/contacts/${id}`, {
@@ -291,22 +305,24 @@ export async function updateCustomer(_prev: ActionResult | null, form: FormData)
       body: {
         displayName: displayName || null, phone: phone || null, email: email || null,
         address: address || null, notes: notes || null, tags,
+        storeName: storeName || null, storeStatus: storeStatus || null,
+        scheduleMeeting: scheduleMeeting || null,
       },
     });
-    revalidatePath('/pelanggan');
-    revalidatePath(`/pelanggan/${id}`);
+    revalidatePath('/client');
+    revalidatePath(`/client/${id}`);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof ApiError ? err.message : t.customers.failed };
+    return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
 }
 
-export async function deleteCustomer(form: FormData): Promise<void> {
+export async function deleteClient(form: FormData): Promise<void> {
   await assertCsrf(form);
   const id = String(form.get('id') ?? '');
   await api(`/v1/contacts/${id}`, { method: 'DELETE' });
-  revalidatePath('/pelanggan');
-  redirect('/pelanggan');
+  revalidatePath('/client');
+  redirect('/client');
 }
 
 /* ------------------------------------------------------------------- brand */
@@ -389,6 +405,7 @@ export async function updateBrand(_prev: ActionResult | null, form: FormData): P
   }
 }
 
+
 export async function setBrandStatus(form: FormData): Promise<void> {
   await assertCsrf(form);
   const id = String(form.get('id') ?? '');
@@ -398,12 +415,156 @@ export async function setBrandStatus(form: FormData): Promise<void> {
   revalidatePath(`/brand/${id}`);
 }
 
-export async function deleteBrand(form: FormData): Promise<void> {
-  await assertCsrf(form);
+export async function deleteBrand(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const id = String(form.get('id') ?? '');
-  await api(`/v1/brands/${id}`, { method: 'DELETE' });
+  try {
+    await api(`/v1/brands/${id}`, { method: 'DELETE' });
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
   revalidatePath('/brand');
   redirect('/brand');
+}
+
+export interface ImportBrandsResult {
+  ok: boolean;
+  error?: string;
+  created?: number;
+  skipped?: { row: number; message: string }[];
+}
+
+/**
+ * The Brand Management import page — rows are already parsed and previewed
+ * client-side (from whatever spreadsheet the agent uploaded), so this just
+ * forwards the clean array to the bulk-create endpoint and hands back a
+ * summary rather than redirecting, since the page's own job now is showing
+ * the agent what happened row by row.
+ */
+export async function importBrands(_prev: ImportBrandsResult | null, form: FormData): Promise<ImportBrandsResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(String(form.get('rows') ?? '[]'));
+  } catch {
+    return { ok: false, error: t.brandManagement.parseFailed };
+  }
+  if (!Array.isArray(rows) || rows.length === 0) return { ok: false, error: t.brandManagement.noRows };
+
+  try {
+    const result = await api<{ created: number; errors: { row: number; message: string }[] }>('/v1/brands/import', {
+      method: 'POST',
+      body: { rows },
+    });
+    revalidatePath('/brand');
+    revalidatePath('/brand-management');
+    return { ok: true, created: result.created, skipped: result.errors };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brandManagement.importFailed };
+  }
+}
+
+/**
+ * Same brand record, same API, as `createBrand`/`updateBrand`/`deleteBrand`
+ * — only the redirect target differs, so Brand Management's own table/detail
+ * pages land back on `/brand-management` instead of Tracker's `/brand`.
+ * Kept separate rather than parameterising the Tracker actions so Tracker's
+ * own behavior never has to change to support a second caller.
+ */
+export async function createBrandFromManagement(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const { name, picName, phone, email, instagram, website, category, city, source, assigneeId, notes } =
+    readBrandForm(form);
+  if (!name) return { ok: false, error: t.brand.failed };
+
+  let created: { id: string };
+  try {
+    created = await api<{ id: string }>('/v1/brands', {
+      method: 'POST',
+      body: {
+        name,
+        ...(picName ? { picName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(instagram ? { instagram } : {}),
+        ...(website ? { website } : {}),
+        ...(category ? { category } : {}),
+        ...(city ? { city } : {}),
+        ...(source ? { source } : {}),
+        ...(assigneeId ? { assigneeId } : {}),
+        ...(notes ? { notes } : {}),
+      },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
+  revalidatePath('/brand-management');
+  redirect(`/brand-management/${created.id}`);
+}
+
+export async function updateBrandFromManagement(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  const { name, picName, phone, email, instagram, website, category, city, source, assigneeId, notes } =
+    readBrandForm(form);
+  if (!name) return { ok: false, error: t.brand.failed };
+
+  try {
+    await api(`/v1/brands/${id}`, {
+      method: 'PATCH',
+      body: {
+        name,
+        ...(picName ? { picName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(instagram ? { instagram } : {}),
+        ...(website ? { website } : {}),
+        ...(category ? { category } : {}),
+        ...(city ? { city } : {}),
+        ...(source ? { source } : {}),
+        ...(assigneeId ? { assigneeId } : {}),
+        ...(notes ? { notes } : {}),
+      },
+    });
+    revalidatePath('/brand-management');
+    revalidatePath(`/brand-management/${id}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
+}
+
+export async function deleteBrandFromManagement(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const id = String(form.get('id') ?? '');
+  try {
+    await api(`/v1/brands/${id}`, { method: 'DELETE' });
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.failed };
+  }
+  revalidatePath('/brand-management');
+  redirect('/brand-management');
+}
+
+/**
+ * The chat icon on a Brand card/row — resolves the brand's Contact and a
+ * WA-bridge conversation on the server, then lands on the internal Chat WA
+ * thread instead of opening wa.me in a new tab.
+ */
+export async function openBrandChat(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const brandId = String(form.get('id') ?? '');
+  if (!brandId) return { ok: false, error: t.brand.chatFailed };
+
+  let conversationId: string;
+  try {
+    const res = await api<{ conversationId: string }>(`/v1/brands/${brandId}/chat`, { method: 'POST' });
+    conversationId = res.conversationId;
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.brand.chatFailed };
+  }
+  revalidatePath('/brand');
+  redirect(`/chat-wa/${conversationId}`);
 }
 
 /* --------------------------------------------------------------- dokumen */
@@ -547,57 +708,21 @@ export async function moveDeal(_prev: ActionResult | null, form: FormData): Prom
   }
 }
 
-/**
- * The Meeting/Call/Online Meet quick-action row on a deal card — one click,
- * no form: a follow-up task opens tomorrow at 10:00 for that deal's contact,
- * already tagged with which kind of touchpoint it is.
- */
-export async function quickCreateTaskFromDeal(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
-  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const contactId = String(form.get('contactId') ?? '');
-  const dealId = String(form.get('dealId') ?? '');
-  const contactName = String(form.get('contactName') ?? '').trim();
-  const kind = String(form.get('kind') ?? '').trim();
-  if (!contactId || !kind) return { ok: false, error: t.sales.actionFailed };
-
-  const dueAt = new Date();
-  dueAt.setDate(dueAt.getDate() + 1);
-  dueAt.setHours(10, 0, 0, 0);
-  const kindLabel = t.sales.quickTaskLabel[kind] ?? kind;
-
-  try {
-    await api('/v1/tasks', {
-      method: 'POST',
-      body: {
-        contactId, dealId: dealId || undefined, kind,
-        title: contactName ? `${kindLabel} — ${contactName}` : kindLabel,
-        dueAt: dueAt.toISOString(),
-      },
-    });
-    revalidatePath('/deal');
-    revalidatePath('/tugas');
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof ApiError ? err.message : t.sales.actionFailed };
-  }
-}
-
 /** The "+" on a kanban column — creates the deal already in that stage. */
 export async function createDealAction(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const contactId = String(form.get('contactId') ?? '');
   const brandId = String(form.get('brandId') ?? '');
   const title = String(form.get('title') ?? '').trim();
   const amountIdr = Number(form.get('amountIdr') ?? 0);
   const stageId = String(form.get('stageId') ?? '');
-  if (!contactId || !brandId || !title || !stageId || !Number.isFinite(amountIdr) || amountIdr < 0) {
+  if (!brandId || !title || !stageId || !Number.isFinite(amountIdr) || amountIdr < 0) {
     return { ok: false, error: t.sales.addFailed };
   }
 
   try {
     await api('/v1/deals', {
       method: 'POST',
-      body: { contactId, brandId, title, amountIdr: Math.round(amountIdr), stageId },
+      body: { brandId, title, amountIdr: Math.round(amountIdr), stageId },
     });
     revalidatePath('/deal');
     return { ok: true };
@@ -606,17 +731,57 @@ export async function createDealAction(_prev: ActionResult | null, form: FormDat
   }
 }
 
+/**
+ * The "Tambah deal" button on a Chat WA thread — no form, one click: a deal
+ * for whichever brand this contact is the PIC of (falling back to the
+ * contact itself if none), value 0 for now, straight into the "Baru" stage
+ * (stageId omitted lands it in the default pipeline's first stage). The
+ * agent fills in the real amount afterward from the Deal page's own Edit.
+ */
+export async function createDealFromConversation(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const contactId = String(form.get('contactId') ?? '');
+  const brandId = String(form.get('brandId') ?? '');
+  const title = String(form.get('title') ?? '').trim() || 'Deal Baru';
+  const conversationId = String(form.get('conversationId') ?? '');
+  if (!contactId && !brandId) return;
+
+  await api('/v1/deals', {
+    method: 'POST',
+    body: {
+      contactId: contactId || undefined, brandId: brandId || undefined, title, amountIdr: 0,
+      conversationId: conversationId || undefined,
+    },
+  });
+  revalidatePath('/deal');
+  revalidatePath('/chat-wa', 'layout');
+  redirect('/deal');
+}
+
 export async function updateDealDetails(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const id = String(form.get('id') ?? '');
   const notes = String(form.get('notes') ?? '').trim();
   const expectedCloseOn = String(form.get('expectedCloseOn') ?? '').trim();
   const brandId = String(form.get('brandId') ?? '').trim();
+  // Only the Edit-drawer form (list page) sends these — the detail page's own
+  // form doesn't touch amount/title, so both stay untouched when absent.
+  const amountRaw = form.get('amountIdr');
+  const titleRaw = form.get('title');
+  const amountIdr = amountRaw !== null ? Number(amountRaw) : undefined;
+  const title = titleRaw !== null ? String(titleRaw).trim() : undefined;
+  if (amountIdr !== undefined && (!Number.isFinite(amountIdr) || amountIdr < 0)) {
+    return { ok: false, error: t.dealDetail.failed };
+  }
 
   try {
     await api(`/v1/deals/${id}/details`, {
       method: 'PATCH',
-      body: { notes: notes || null, expectedCloseOn: expectedCloseOn || null, brandId: brandId || null },
+      body: {
+        notes: notes || null, expectedCloseOn: expectedCloseOn || null, brandId: brandId || null,
+        ...(amountIdr !== undefined ? { amountIdr: Math.round(amountIdr) } : {}),
+        ...(title ? { title } : {}),
+      },
     });
     revalidatePath(`/deal/${id}`);
     revalidatePath('/deal');
@@ -624,6 +789,14 @@ export async function updateDealDetails(_prev: ActionResult | null, form: FormDa
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.dealDetail.failed };
   }
+}
+
+export async function deleteDeal(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('id') ?? '');
+  await api(`/v1/deals/${id}`, { method: 'DELETE' });
+  revalidatePath('/deal');
+  redirect('/deal');
 }
 
 export async function inviteMember(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -835,6 +1008,7 @@ export async function saveMessageTemplate(
   const id = String(form.get('id') ?? '');
   const payload = {
     name: String(form.get('name') ?? '').trim(),
+    channel: String(form.get('channel') ?? 'whatsapp'),
     category: String(form.get('category') ?? 'utility'),
     language: String(form.get('language') ?? '').trim() || undefined,
     body: String(form.get('body') ?? '').trim(),
@@ -866,6 +1040,85 @@ export async function removeMessageTemplate(
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.messageTemplate.failed };
+  }
+}
+
+/* --------------------------------------------------------- pengaturan email */
+
+/**
+ * Leaving the SMTP field blank keeps whatever is already saved — it's never
+ * sent back to the browser to redisplay, so a blank field can't mean "clear
+ * it" without a separate explicit control this form doesn't have yet.
+ */
+export async function saveEmailSettings(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const smtpUrl = String(form.get('smtpUrl') ?? '').trim();
+  const emailFrom = String(form.get('emailFrom') ?? '').trim();
+
+  try {
+    await api('/v1/settings/email', {
+      method: 'PATCH',
+      body: { ...(smtpUrl ? { smtpUrl } : {}), emailFrom },
+    });
+    revalidatePath('/pengaturan/email');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.emailSettings.failed };
+  }
+}
+
+/* ------------------------------------------------------------- ig bridge */
+
+export interface IgBridgeResult {
+  ok: boolean;
+  error?: string;
+  status?: 'ready' | 'challenge_required';
+  challengeType?: 'two_factor' | 'checkpoint' | 'unknown';
+}
+
+export async function connectInstagramBridge(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const username = String(form.get('username') ?? '').trim();
+  const password = String(form.get('password') ?? '');
+  if (!username || !password) return { ok: false, error: t.instagramBridge.missingFields };
+
+  try {
+    const res = await api<{ status: 'ready' | 'challenge_required' | 'failed'; error?: string; challengeType?: IgBridgeResult['challengeType'] }>(
+      '/v1/instagram-bridge/login', { method: 'POST', body: { username, password } },
+    );
+    revalidatePath('/pengaturan/instagram');
+    if (res.status === 'failed') return { ok: false, error: res.error ?? t.instagramBridge.failed };
+    return { ok: true, status: res.status, challengeType: res.challengeType };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
+  }
+}
+
+export async function submitInstagramChallenge(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const code = String(form.get('code') ?? '').trim();
+  if (!code) return { ok: false, error: t.instagramBridge.missingCode };
+
+  try {
+    const res = await api<{ status: 'ready' | 'challenge_required' | 'failed'; error?: string; challengeType?: IgBridgeResult['challengeType'] }>(
+      '/v1/instagram-bridge/challenge', { method: 'POST', body: { code } },
+    );
+    revalidatePath('/pengaturan/instagram');
+    if (res.status === 'failed') return { ok: false, error: res.error ?? t.instagramBridge.failed };
+    return { ok: true, status: res.status, challengeType: res.challengeType };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
+  }
+}
+
+export async function disconnectInstagramBridge(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api('/v1/instagram-bridge/disconnect', { method: 'POST' });
+    revalidatePath('/pengaturan/instagram');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
   }
 }
 
@@ -1104,4 +1357,22 @@ export async function disconnectGoogleCalendar(form: FormData): Promise<void> {
   await assertCsrf(form);
   await api('/v1/google-calendar/disconnect', { method: 'POST' });
   revalidatePath('/tugas');
+}
+
+/** The "Kirim Email" dialog on a pulled-in Google Calendar event — same shape as `sendMeetingEmail`, just no task behind it. */
+export async function sendCalendarEventEmail(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const to = String(form.get('to') ?? '').trim();
+  const eventId = String(form.get('eventId') ?? '');
+  const title = String(form.get('title') ?? '');
+  const start = String(form.get('start') ?? '');
+  const meetingLink = String(form.get('meetingLink') ?? '').trim() || null;
+  if (!to) return { ok: false, error: t.tasks.sendEmailFailed };
+
+  try {
+    await api('/v1/google-calendar/send-email', { method: 'POST', body: { to, eventId, title, start, meetingLink } });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.sendEmailFailed };
+  }
 }

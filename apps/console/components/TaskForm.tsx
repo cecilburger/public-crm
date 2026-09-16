@@ -6,11 +6,11 @@ import { createTask, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import { TaskKindField } from '@/components/TaskKindField';
-import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
+import type { Brand, Member, Deal, TaskKind } from '@/lib/api';
 
 export function TaskForm({
-  contacts, members, deals, taskKinds,
-}: { contacts: Contact[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[] }) {
+  members, deals, taskKinds, brands,
+}: { members: Member[]; deals: Deal[]; taskKinds: TaskKind[]; brands: Brand[] }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTask, null);
   const [kind, setKind] = useState('follow_up');
 
@@ -33,23 +33,23 @@ export function TaskForm({
             <button type="submit" className="btn primary" disabled={pending}>
               {pending ? t.tasks.saving : t.tasks.save}
             </button>
-            <Link href="/tugas" className="btn ghost">{t.customers.discard}</Link>
+            <Link href="/tugas" className="btn ghost">{t.client.discard}</Link>
           </div>
         </div>
       </div>
 
       <div className="main-content-area" style={{ padding: 16 }}>
         <div className="record-sheet" style={{ margin: '0 auto', width: '100%', maxWidth: 720, marginTop: 16 }}>
-          {contacts.length === 0 ? (
-            <p className="empty" style={{ padding: '24px 0' }}>{t.tasks.noContacts}</p>
+          {brands.length === 0 ? (
+            <p className="empty" style={{ padding: '24px 0' }}>{t.tasks.noBrands}</p>
           ) : (
             <div className="record-grid">
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
-                <label htmlFor="contactId">{t.tasks.formContact}</label>
-                <select className="line-input" id="contactId" name="contactId" required defaultValue="">
-                  <option value="" disabled>{t.tasks.chooseContact}</option>
-                  {contacts.map((c) => (
-                    <option key={c.id} value={c.id}>{c.displayName ?? c.phone ?? c.id}</option>
+                <label htmlFor="brandId">{t.tasks.formBrand}</label>
+                <select className="line-input" id="brandId" name="brandId" required defaultValue="">
+                  <option value="" disabled>{t.tasks.chooseBrand}</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
               </div>
