@@ -7,28 +7,28 @@ const STATUS_CHIP: Record<ContactOrder['status'], string> = {
   fulfilled: 'chip good', cancelled: 'chip danger',
 };
 
-/** How many times a customer has bought, and how much — the products themselves are in the list below. */
-export function CustomerPurchases({ orders }: { orders: ContactOrder[] }) {
+/** How many times a client has bought, and how much — the products themselves are in the list below. */
+export function ClientPurchases({ orders }: { orders: ContactOrder[] }) {
   const counted = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'draft');
   const totalIdr = counted.reduce((sum, o) => sum + o.totalIdr, 0);
 
   return (
     <div className="record-timeline">
-      <h3>{t.customers.purchases.title}</h3>
+      <h3>{t.client.purchases.title}</h3>
 
       <div style={{ display: 'flex', gap: 24, margin: '4px 0 14px' }}>
         <div>
-          <div className="dim" style={{ fontSize: 12 }}>{t.customers.purchases.count}</div>
+          <div className="dim" style={{ fontSize: 12 }}>{t.client.purchases.count}</div>
           <div className="bignum" style={{ fontSize: 20 }}>{counted.length}</div>
         </div>
         <div>
-          <div className="dim" style={{ fontSize: 12 }}>{t.customers.purchases.column}</div>
+          <div className="dim" style={{ fontSize: 12 }}>{t.client.purchases.column}</div>
           <div className="bignum" style={{ fontSize: 20 }}>{rp(totalIdr)}</div>
         </div>
       </div>
 
       {orders.length === 0 ? (
-        <p className="record-hint">{t.customers.purchases.empty}</p>
+        <p className="record-hint">{t.client.purchases.empty}</p>
       ) : (
         <div className="timeline-list">
           {orders.map((o) => (
@@ -43,7 +43,7 @@ export function CustomerPurchases({ orders }: { orders: ContactOrder[] }) {
                 <span className="dim" style={{ fontSize: 12.5 }}>
                   {o.lines.length > 0
                     ? o.lines.map((l) => `${l.title} ×${l.qty}`).join(', ')
-                    : t.customers.purchases.itemsFallback}
+                    : t.client.purchases.itemsFallback}
                   {' · '}{rp(o.totalIdr)}
                 </span>
               </div>

@@ -34,6 +34,8 @@ import { registerDocumentKindRoutes } from './routes/documentKinds.ts';
 import { registerDocumentModelRoutes } from './routes/documentModels.ts';
 import { registerBroadcastRoutes } from './routes/broadcasts.ts';
 import { registerGoogleCalendarRoutes } from './routes/googleCalendar.ts';
+import { registerEmailSettingsRoutes } from './routes/emailSettings.ts';
+import { registerInstagramBridgeRoutes } from './routes/instagramBridge.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -347,6 +349,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerDocumentModelRoutes(app, ctx);
   registerBroadcastRoutes(app, ctx);
   registerGoogleCalendarRoutes(app, ctx);
+  registerEmailSettingsRoutes(app, ctx);
+  registerInstagramBridgeRoutes(app, ctx);
 
   return app;
 }

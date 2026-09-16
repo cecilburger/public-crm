@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
     if (!haystack(c.displayName, c.phone).includes(needle)) continue;
     results.push({
       id: c.id, category: 'contact', title: c.displayName ?? c.phone ?? '—',
-      subtitle: c.displayName && c.phone ? c.phone : null, href: `/pelanggan/${c.id}`,
+      subtitle: c.displayName && c.phone ? c.phone : null, href: `/client/${c.id}`,
     });
     if (results.filter((r) => r.category === 'contact').length >= LIMIT_PER_CATEGORY) break;
   }

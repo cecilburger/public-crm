@@ -16,10 +16,6 @@ const CHAT_CHIP_CLASS: Record<keyof WaBridgeChannel['chat'], string> = {
   meeting: 'chip good', minat: 'chip warn', balas: 'chip accent', belum: 'chip', tolak: 'chip danger', bot: 'chip',
 };
 
-function totalChats(chat: WaBridgeChannel['chat']): number {
-  return chat.meeting + chat.minat + chat.balas + chat.belum + chat.tolak + chat.bot;
-}
-
 /** One row's own form, same pattern as the message template and sales target
  * editors — an inline number field that saves itself, no modal. */
 function MaxPerDayCell({ channel }: { channel: WaBridgeChannel }) {
@@ -131,7 +127,7 @@ export function WaChannelTable({ channels }: { channels: WaBridgeChannel[] }) {
                   <td className="mono">{c.phoneE164 ?? <span className="dim">{t.waChannel.noPhone}</span>}</td>
                   <td><span className={`chip ${dotClass}`}>{t.waBridge.status[c.sessionStatus] ?? c.sessionStatus}</span></td>
                   <td><MaxPerDayCell channel={c} /></td>
-                  <td className="num"><b>{totalChats(c.chat)}</b></td>
+                  <td className="num"><b>{c.chatTotal}</b></td>
                   <td><ChatCell chat={c.chat} /></td>
                   <td style={{ textAlign: 'center' }}><OpenChatLink channelId={c.id} /></td>
                   <td style={{ textAlign: 'center' }}>

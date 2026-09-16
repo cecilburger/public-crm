@@ -1,19 +1,25 @@
 'use client';
 
-import { useActionState, useRef } from 'react';
+import { useActionState, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createBrand, updateBrand, deleteBrand, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import type { Brand, Member } from '@/lib/api';
+import { BrandTaskDrawer } from '@/components/BrandTaskDrawer';
+import type { Brand, Member, Deal, TaskKind } from '@/lib/api';
 
 const SOURCES = ['manual', 'scrape', 'referral', 'other'] as const;
 
 /** One sheet, two callers: blank for `/brand/baru`, filled in for `/brand/[id]`. */
-export function BrandForm({ brand, members }: { brand: Brand | null; members: Member[] }) {
+export function BrandForm({
+  brand, members, deals = [], taskKinds = [],
+}: { brand: Brand | null; members: Member[]; deals?: Deal[]; taskKinds?: TaskKind[] }) {
   const action = brand ? updateBrand : createBrand;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
+  const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const [deleteState, deleteFormAction, deleting] = useActionState<ActionResult | null, FormData>(deleteBrand, null);
 
   // Same reasoning as the Pelanggan form: a masked number is never something
   // to save back as the real one, so the field is disabled rather than trusted.
@@ -47,6 +53,11 @@ export function BrandForm({ brand, members }: { brand: Brand | null; members: Me
                   {t.brand.delete}
                 </button>
               ) : null}
+              {brand ? (
+                <button type="button" className="btn ghost" onClick={() => setTaskDrawerOpen(true)}>
+                  {t.tasks.add}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -70,7 +81,7 @@ export function BrandForm({ brand, members }: { brand: Brand | null; members: Me
                 <label htmlFor="phone">{t.brand.phone}</label>
                 <input className="line-input" id="phone" name="phone" defaultValue={brand?.phone ?? ''}
                        placeholder="+62812xxxxxxx" disabled={phoneMasked} />
-                {phoneMasked ? <p className="record-hint">{t.customers.phoneMaskedHint}</p> : null}
+                {phoneMasked ? <p className="record-hint">{t.client.phoneMaskedHint}</p> : null}
               </div>
 
               <div className="record-field">
@@ -143,14 +154,15 @@ export function BrandForm({ brand, members }: { brand: Brand | null; members: Me
               <span className="notice-icon" style={{ background: 'var(--danger)' }}>!</span>
               <span>{t.brand.deleteWarning(brand.name)}</span>
             </div>
+            {deleteState?.error ? <p className="error" style={{ fontSize: 12.5 }}>{deleteState.error}</p> : null}
             <div className="modal-actions">
               <button type="button" className="btn ghost" onClick={() => deleteDialogRef.current?.close()}>
                 {t.brand.discard}
               </button>
-              <form action={deleteBrand}>
+              <form action={deleteFormAction}>
                 <CsrfField />
                 <input type="hidden" name="id" value={brand.id} />
-                <button className="btn primary" type="submit"
+                <button className="btn primary" type="submit" disabled={deleting}
                         style={{ background: 'var(--danger)', borderColor: 'var(--danger)' }}>
                   {t.brand.deleteConfirm}
                 </button>
@@ -158,6 +170,11 @@ export function BrandForm({ brand, members }: { brand: Brand | null; members: Me
             </div>
           </div>
         </dialog>
+      ) : null}
+
+      {brand ? (
+        <BrandTaskDrawer open={taskDrawerOpen} onClose={() => setTaskDrawerOpen(false)}
+                         brand={brand} members={members} deals={deals} taskKinds={taskKinds} />
       ) : null}
     </>
   );

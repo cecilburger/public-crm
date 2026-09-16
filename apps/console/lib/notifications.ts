@@ -33,13 +33,16 @@ export function buildNotifications(conversations: ConversationSummary[], tasks: 
   const taskItems: NotificationItem[] = tasks
     .filter((tk) => isTaskOverdue(tk) || isTaskDueToday(tk))
     .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())
-    .map((tk) => ({
-      id: `task-${tk.id}`, kind: 'task', title: tk.title,
-      meta: tk.contactName ?? tk.contactPhone, avatarLabel: tk.contactName ?? tk.title,
-      tag: isTaskOverdue(tk) ? t.notifications.taskOverdue : t.notifications.taskDueToday,
-      tone: isTaskOverdue(tk) ? 'danger' : 'warn',
-      when: tk.dueAt, href: '/tugas',
-    }));
+    .map((tk) => {
+      const party = tk.contactName ?? tk.brandName ?? tk.contactPhone ?? tk.brandPhone;
+      return {
+        id: `task-${tk.id}`, kind: 'task' as const, title: tk.title,
+        meta: party, avatarLabel: party ?? tk.title,
+        tag: isTaskOverdue(tk) ? t.notifications.taskOverdue : t.notifications.taskDueToday,
+        tone: (isTaskOverdue(tk) ? 'danger' : 'warn') as 'danger' | 'warn',
+        when: tk.dueAt, href: '/tugas',
+      };
+    });
 
   return [...chatItems, ...taskItems];
 }

@@ -1,12 +1,14 @@
 'use client';
 
-import Link from 'next/link';
 import { useState } from 'react';
-import type { Brand, Contact, Deal, Member, Stage } from '@/lib/api';
+import type { Brand, Deal, Member, Stage, Task } from '@/lib/api';
 import { rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { DealCard } from '@/components/DealCard';
 import { QuickAddDealDrawer } from '@/components/QuickAddDealDrawer';
+import { EditDealDrawer } from '@/components/EditDealDrawer';
+import { DealRowActions } from '@/components/DealRowActions';
+import { TaskViewDrawer } from '@/components/TaskViewDrawer';
 
 function statusChip(deal: Deal): { cls: string; label: string } {
   if (deal.status === 'won') return { cls: 'chip good', label: t.sales.wonChip };
@@ -31,15 +33,25 @@ function columnProgress(stage: Stage, cards: Deal[]): { good: number; warn: numb
 
 /** The Trello board and a flat table over the same deals — one toggle, same data. */
 export function DealBoard({
-  deals, stages, members, contacts, brands, conversationByContact,
+  deals, stages, members, brands, conversationByContact, tasks,
 }: {
-  deals: Deal[]; stages: Stage[]; members: Member[]; contacts: Contact[]; brands: Brand[];
-  conversationByContact: Record<string, string>;
+  deals: Deal[]; stages: Stage[]; members: Member[]; brands: Brand[];
+  conversationByContact: Record<string, string>; tasks: Task[];
 }) {
   const [viewMode, setViewMode] = useState<'kanban' | 'list'>('list');
   const [addStageId, setAddStageId] = useState<string | null>(null);
+  const [editDeal, setEditDeal] = useState<Deal | null>(null);
+  const [viewTask, setViewTask] = useState<Task | null>(null);
 
   const addStageName = stages.find((s) => s.id === addStageId)?.name ?? '';
+
+  // Which touchpoint tasks are already scheduled for each deal — an open,
+  // not-yet-done-or-cancelled task is what "ada tugas Meeting" means.
+  const tasksByDeal: Record<string, Task[]> = {};
+  for (const task of tasks) {
+    if (task.status !== 'open' || !task.dealId) continue;
+    (tasksByDeal[task.dealId] ??= []).push(task);
+  }
 
   return (
     <>
@@ -85,7 +97,8 @@ export function DealBoard({
                     ? <p className="dim" style={{ fontSize: 12, padding: '6px 2px' }}>{t.sales.empty}</p>
                     : cards.map((deal) => (
                         <DealCard key={deal.id} deal={deal} stages={stages} members={members}
-                                  conversationId={conversationByContact[deal.contact_id]} />
+                                  conversationId={deal.contact_id ? conversationByContact[deal.contact_id] : undefined}
+                                  dealTasks={tasksByDeal[deal.id] ?? []} onViewTask={setViewTask} />
                       ))}
                 </div>
               </section>
@@ -105,10 +118,10 @@ export function DealBoard({
                 <tr>
                   <th>{t.sales.table.brand}</th>
                   <th>{t.sales.table.category}</th>
-                  <th>{t.sales.table.contact}</th>
                   <th>{t.sales.table.stage}</th>
                   <th className="num">{t.sales.table.amount}</th>
                   <th>{t.sales.table.status}</th>
+                  <th>{t.sales.table.action}</th>
                 </tr>
               </thead>
               <tbody>
@@ -116,14 +129,14 @@ export function DealBoard({
                   const chip = statusChip(deal);
                   return (
                     <tr key={deal.id}>
-                      <td>
-                        <Link href={`/deal/${deal.id}`}><b>{deal.brand_name ?? deal.title}</b></Link>
-                      </td>
+                      <td><b>{deal.brand_name ?? deal.title}</b></td>
                       <td className="mono dim">{deal.brand_category ?? '—'}</td>
-                      <td className="mono">{deal.contact_name ?? '—'}</td>
                       <td>{deal.stage}</td>
                       <td className="num">{rp(deal.amount_idr)}</td>
                       <td><span className={chip.cls}>{chip.label}</span></td>
+                      <td>
+                        <DealRowActions deal={deal} onEdit={setEditDeal} />
+                      </td>
                     </tr>
                   );
                 })}
@@ -133,8 +146,10 @@ export function DealBoard({
         </div>
       )}
 
-      <QuickAddDealDrawer stageId={addStageId} stageName={addStageName} contacts={contacts} brands={brands}
+      <QuickAddDealDrawer stageId={addStageId} stageName={addStageName} brands={brands}
                           onClose={() => setAddStageId(null)} />
+      <EditDealDrawer deal={editDeal} brands={brands} onClose={() => setEditDeal(null)} />
+      <TaskViewDrawer task={viewTask} members={members} onClose={() => setViewTask(null)} />
     </>
   );
 }

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { invalid, notFound } from '@kirana/core';
-import { audit, getDeal, updateDeal, dealActivity, ordersForDeal } from '@kirana/db';
+import { audit, getDeal, updateDeal, deleteDeal, dealActivity, ordersForDeal } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
@@ -35,16 +35,19 @@ export function registerDealRoutes(app: FastifyInstance, ctx: AppCtx): void {
       notes: z.string().max(4000).nullable().optional(),
       expectedCloseOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
       brandId: z.string().uuid().nullable().optional(),
+      amountIdr: z.number().min(0).optional(),
+      title: z.string().min(1).max(200).optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Check the deal fields');
-    if (body.data.notes === undefined && body.data.expectedCloseOn === undefined && body.data.brandId === undefined) {
+    if (body.data.notes === undefined && body.data.expectedCloseOn === undefined && body.data.brandId === undefined
+        && body.data.amountIdr === undefined && body.data.title === undefined) {
       throw invalid('Nothing to update');
     }
 
     const ok = await ctx.asTenant(req, async (tx) => {
       const updated = await updateDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         dealId: id, notes: body.data.notes, expectedCloseOn: body.data.expectedCloseOn,
-        brandId: body.data.brandId,
+        brandId: body.data.brandId, amountIdr: body.data.amountIdr, title: body.data.title,
       });
       if (updated) {
         // The note's own text stays out of the audit trail — it's free text
@@ -57,6 +60,8 @@ export function registerDealRoutes(app: FastifyInstance, ctx: AppCtx): void {
             ...(body.data.notes !== undefined ? { notes: true } : {}),
             ...(body.data.expectedCloseOn !== undefined ? { expectedCloseOn: body.data.expectedCloseOn } : {}),
             ...(body.data.brandId !== undefined ? { brandId: body.data.brandId } : {}),
+            ...(body.data.amountIdr !== undefined ? { amountIdr: body.data.amountIdr } : {}),
+            ...(body.data.title !== undefined ? { title: body.data.title } : {}),
           },
         });
       }
@@ -64,5 +69,20 @@ export function registerDealRoutes(app: FastifyInstance, ctx: AppCtx): void {
     });
     if (!ok) throw notFound('Deal');
     return { ok: true };
+  });
+
+  app.delete('/v1/deals/:id', async (req) => {
+    const actor = ctx.guard(req, 'deal:write');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return ctx.asTenant(req, async (tx) => {
+      const ok = await deleteDeal({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { dealId: id });
+      if (!ok) throw notFound('Deal');
+      await audit(tx, actor.tenantId, {
+        actorType: 'user', actorId: actor.userId, action: 'deal.deleted',
+        resourceType: 'deal', resourceId: id,
+      });
+      return { ok: true };
+    });
   });
 }

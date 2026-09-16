@@ -1,17 +1,10 @@
 import {
-  invoiceIssuedEmail, invoiceReminderEmail, paymentReceivedEmail,
-  LogEmailSender, type EmailMessage, type EmailSender, type Env,
+  invoiceIssuedEmail, invoiceReminderEmail, paymentReceivedEmail, resolveSender,
+  type EmailMessage, type EmailSender,
 } from '@kirana/core';
 import { withTenant, getInvoice, audit, type Database } from '@kirana/db';
-import { SmtpEmailSender } from './smtp.ts';
 
-export function resolveSender(env: Env): EmailSender {
-  if (!env.SMTP_URL) {
-    console.warn('SMTP_URL is not set — email is being logged, not delivered');
-    return new LogEmailSender((line) => console.log(line));
-  }
-  return new SmtpEmailSender(env.SMTP_URL, env.EMAIL_FROM);
-}
+export { resolveSender };
 
 export interface EmailDeps {
   db: Database;

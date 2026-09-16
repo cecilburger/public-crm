@@ -50,6 +50,15 @@ const schema = z.object({
    * an internal service, never exposed publicly. */
   WA_BRIDGE_SECRET: z.string().default('dev-wa-bridge-secret-change-me'),
 
+  /**
+   * Instagram bridge (Playwright driving the real instagram.com login form) —
+   * unofficial, same reasoning as WA_BRIDGE above but with the real risk that
+   * this one carries: Meta actively challenges/locks accounts that look like
+   * automated logins. See `apps/ig-bridge`'s own comments before touching this.
+   */
+  IG_BRIDGE_URL: z.string().default('http://127.0.0.1:8091'),
+  IG_BRIDGE_SECRET: z.string().default('dev-ig-bridge-secret-change-me'),
+
   /** Autopilot. With no ANTHROPIC_API_KEY the worker runs offline (see main.ts). */
   AUTOPILOT_MODEL: z.string().default('claude-opus-5'),
   AUTOPILOT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),

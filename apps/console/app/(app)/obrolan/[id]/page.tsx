@@ -106,9 +106,9 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
                   customerName={contact.displayName ?? contact.phone ?? '—'} quickReplies={quickReplies} />
       </div>
 
-      <aside className="context" aria-label={t.chats.aboutCustomer}>
+      <aside className="context" aria-label={t.chats.aboutClient}>
         <section>
-          <h3>{t.chats.aboutCustomer}</h3>
+          <h3>{t.chats.aboutClient}</h3>
           <div className="kv"><span>{t.chats.name}</span><span className="v">{contact.displayName ?? '—'}</span></div>
           <div className="kv"><span>{t.chats.phone}</span><span className="v">{contact.phone ?? '—'}</span></div>
           <div className="kv"><span>{t.chats.lastChat}</span><span className="v">{ago(conversation.last_inbound_at)}</span></div>

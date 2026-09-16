@@ -39,12 +39,12 @@ function ActivityRow({ task, assigneeName }: { task: Task; assigneeName: string 
 }
 
 /**
- * A HubSpot-style side panel: this contact's tasks, open ones first
+ * A HubSpot-style side panel: this client's tasks, open ones first
  * regardless of date, everything else grouped by the month it closed in —
  * same grouping whether it was finished or cancelled, so "what happened in
  * March" reads as one list instead of two.
  */
-export function CustomerActivities({ tasks, members }: { tasks: Task[]; members: Member[] }) {
+export function ClientActivities({ tasks, members }: { tasks: Task[]; members: Member[] }) {
   const names = new Map(members.map((m) => [m.id, m.name]));
   const assigneeName = (task: Task) => (task.assigneeId ? names.get(task.assigneeId) ?? t.tasks.unassigned : t.tasks.unassigned);
 

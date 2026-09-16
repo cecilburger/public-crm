@@ -1,5 +1,5 @@
 import type { Ctx } from './repo.ts';
-import { sealPhone, sealEmail } from './repo.ts';
+import { sealPhone, sealEmail, createContact, upsertContactByPhone, ensureConversation, listWaBridgeChannels } from './repo.ts';
 import { openField, tenantKeys, type TenantKeys } from './keys.ts';
 import { audit } from './audit.ts';
 
@@ -10,6 +10,7 @@ export interface BrandRow {
   id: string; name: string; picName: string | null; phone: string | null; email: string | null;
   instagram: string | null; website: string | null; category: string | null; city: string | null;
   source: BrandSource; status: BrandStatus; assigneeId: string | null; notes: string | null;
+  contactId: string | null;
   lastContactedAt: Date | null; createdBy: string | null; createdAt: Date; updatedAt: Date;
 }
 
@@ -23,6 +24,7 @@ interface BrandDbRow {
   id: string; name: string; pic_name: string | null; phone_enc: string | null; email_enc: string | null;
   instagram: string | null; website: string | null; category: string | null; city: string | null;
   source: BrandSource; status: BrandStatus; assignee_id: string | null; notes: string | null;
+  contact_id: string | null;
   last_contacted_at: Date | null; created_by: string | null; created_at: Date; updated_at: Date;
 }
 
@@ -33,13 +35,14 @@ function mapBrandRow(r: BrandDbRow, keys: TenantKeys, tenantId: string): BrandRo
     email: r.email_enc ? openField(keys, tenantId, r.email_enc) : null,
     instagram: r.instagram, website: r.website, category: r.category, city: r.city,
     source: r.source, status: r.status, assigneeId: r.assignee_id, notes: r.notes,
+    contactId: r.contact_id,
     lastContactedAt: r.last_contacted_at, createdBy: r.created_by,
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
 
 const BRAND_COLUMNS = `id, name, pic_name, phone_enc, email_enc, instagram, website, category, city,
-            source, status, assignee_id, notes, last_contacted_at, created_by, created_at, updated_at`;
+            source, status, assignee_id, notes, contact_id, last_contacted_at, created_by, created_at, updated_at`;
 
 /** Every brand in the outreach list, newest first — the Brand page's one query. */
 export async function listBrands(ctx: Ctx, args: { limit?: number } = {}): Promise<BrandRow[]> {
@@ -106,6 +109,66 @@ export async function updateBrand(
 }
 
 /**
+ * Makes this brand's own PIC into a real Contact, using whatever phone/email
+ * is already on the brand — the one field the two records share, so no data
+ * gets typed twice. Not tagged `customer`: existing merely as a Contact is
+ * what lets a Task or Deal point at this person, but "in Pelanggan" is a
+ * separate, later fact (the deal actually closing).
+ *
+ * A phone number is looked up first, not inserted blind — the same person
+ * may already be a Contact from an earlier WA chat, and `contacts` has a
+ * unique index on phone, so a naive insert here would just crash on that.
+ */
+export async function createContactFromBrand(
+  ctx: Ctx, args: { brandId: string; actorId: string },
+): Promise<{ contactId: string } | null> {
+  const brand = await getBrand(ctx, args.brandId);
+  if (!brand) return null;
+
+  const contactId = brand.phone
+    ? (await upsertContactByPhone(ctx, { phone: brand.phone, displayName: brand.picName ?? brand.name })).id
+    : (await createContact(ctx, {
+        displayName: brand.picName ?? brand.name, phone: null, email: brand.email,
+        tags: [], address: null, notes: `PIC brand ${brand.name}`,
+      })).id;
+
+  await ctx.tx.query(
+    `update brands set contact_id = $3, updated_at = now() where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, args.brandId, contactId],
+  );
+  await audit(ctx.tx, ctx.tenantId, {
+    actorType: 'user', actorId: args.actorId, action: 'brand.contact_created',
+    resourceType: 'brand', resourceId: args.brandId, meta: { contactId },
+  });
+  return { contactId };
+}
+
+/**
+ * The chat icon on a Brand card/row — opens the internal WA-bridge thread
+ * instead of handing off to wa.me. Resolves (or creates) the brand's Contact
+ * first, same plumbing as the Tugas quick-actions, then opens or reuses a
+ * conversation on whichever WA-bridge number is actually connected right
+ * now — chatting first doesn't require the brand to have messaged in.
+ */
+export async function openBrandConversation(
+  ctx: Ctx, args: { brandId: string; actorId: string },
+): Promise<{ ok: true; conversationId: string } | { ok: false; reason: 'not_found' | 'no_channel' }> {
+  const brand = await getBrand(ctx, args.brandId);
+  if (!brand) return { ok: false, reason: 'not_found' };
+
+  const contactId = brand.contactId
+    ?? (await createContactFromBrand(ctx, { brandId: args.brandId, actorId: args.actorId }))?.contactId;
+  if (!contactId) return { ok: false, reason: 'not_found' };
+
+  const channels = await listWaBridgeChannels(ctx);
+  const channel = channels.find((c) => c.session_status === 'ready') ?? channels[0];
+  if (!channel) return { ok: false, reason: 'no_channel' };
+
+  const { id: conversationId } = await ensureConversation(ctx, { contactId, channelId: channel.id });
+  return { ok: true, conversationId };
+}
+
+/**
  * The outreach funnel move — belum dihubungi → sudah dihubungi → sudah
  * reply → minat/nolak. `last_contacted_at` only moves forward with a real
  * touch, so "belum dihubungi" never picks up a timestamp.
@@ -130,10 +193,34 @@ export async function setBrandStatus(
   return true;
 }
 
-export async function deleteBrand(ctx: Ctx, args: { brandId: string }): Promise<boolean> {
+/**
+ * A task or deal anchored only to this brand (no contact) has nothing left
+ * to attach to once the brand is gone — `on delete set null` on `brand_id`
+ * would otherwise leave it violating its own "contact or brand" check.
+ *
+ * A task like that is just a reminder, safe to clear out along with the
+ * brand it was about. A deal like that is pipeline data — real amounts and
+ * stage history — so this refuses to delete the brand at all rather than
+ * quietly destroying it; the agent deletes or reassigns the deal first, the
+ * same deliberate, confirmed step deleting a deal already asks for.
+ */
+export async function deleteBrand(
+  ctx: Ctx, args: { brandId: string },
+): Promise<{ ok: true } | { ok: false; reason: 'not_found' | 'has_deals' }> {
+  const orphanDeals = await ctx.tx.query<{ id: string }>(
+    `select id from deals where tenant_id = $1 and brand_id = $2 and contact_id is null`,
+    [ctx.tenantId, args.brandId],
+  );
+  if (orphanDeals.length > 0) return { ok: false, reason: 'has_deals' };
+
+  await ctx.tx.query(
+    `delete from tasks where tenant_id = $1 and brand_id = $2 and contact_id is null`,
+    [ctx.tenantId, args.brandId],
+  );
+
   const rows = await ctx.tx.query<{ id: string }>(
     `delete from brands where tenant_id = $1 and id = $2 returning id`,
     [ctx.tenantId, args.brandId],
   );
-  return !!rows[0];
+  return rows[0] ? { ok: true } : { ok: false, reason: 'not_found' };
 }

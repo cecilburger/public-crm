@@ -7,6 +7,8 @@ import {
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
+const storeStatus = z.enum(['prospek', 'aktif', 'nonaktif']);
+
 const contactBody = z.object({
   displayName: z.string().min(1).max(200).optional(),
   phone: z.string().min(1).max(32).optional(),
@@ -14,6 +16,9 @@ const contactBody = z.object({
   tags: z.array(z.string().max(40)).max(20).optional(),
   address: z.string().min(1).max(500).optional(),
   notes: z.string().min(1).max(2000).optional(),
+  storeName: z.string().min(1).max(200).optional(),
+  storeStatus: storeStatus.optional(),
+  scheduleMeeting: z.string().min(1).max(40).optional(),
 });
 
 const contactPatchBody = z.object({
@@ -23,6 +28,9 @@ const contactPatchBody = z.object({
   tags: z.array(z.string().max(40)).max(20),
   address: z.string().min(1).max(500).nullable(),
   notes: z.string().min(1).max(2000).nullable(),
+  storeName: z.string().min(1).max(200).nullable(),
+  storeStatus: storeStatus.nullable(),
+  scheduleMeeting: z.string().min(1).max(40).nullable(),
 });
 
 /**
@@ -30,14 +38,21 @@ const contactPatchBody = z.object({
  * to add one by hand, edit one, or (soft-)delete one. Full phone numbers are a
  * separate entitlement from reading the list, same rule as the conversation
  * detail view.
+ *
+ * `?all=1` drops the `customer` filter — used by pickers like the Brand
+ * form's "Kontak Terhubung", where the point is to find *anyone* the system
+ * already knows (a WA lead that was never tagged `customer` included), not
+ * just Pelanggan. No existing caller passes this, so the default is unchanged.
  */
 export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
   app.get('/v1/contacts', async (req) => {
     ctx.guard(req, 'contact:read');
+    const query = z.object({ all: z.string().optional() }).safeParse(req.query);
+    const tag = query.success && query.data.all ? undefined : 'customer';
 
     return ctx.asTenant(req, async (tx, actor) => {
       const canReveal = actorCan(actor, 'contact:export');
-      const rows = await listContacts({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { tag: 'customer' });
+      const rows = await listContacts({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { tag });
       const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
 
       return rows.map((r) => {
@@ -49,6 +64,10 @@ export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
           tags: r.tags,
           firstSeenAt: r.first_seen_at,
           lastSeenAt: r.last_seen_at,
+          notes: r.attributes?.notes ?? null,
+          storeName: r.attributes?.storeName ?? null,
+          storeStatus: r.attributes?.storeStatus ?? null,
+          scheduleMeeting: r.attributes?.scheduleMeeting ?? null,
         };
       });
     });
@@ -72,6 +91,8 @@ export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
           displayName: body.data.displayName ?? null, phone: body.data.phone ?? null,
           email: body.data.email ?? null, tags,
           address: body.data.address ?? null, notes: body.data.notes ?? null,
+          storeName: body.data.storeName ?? null, storeStatus: body.data.storeStatus ?? null,
+          scheduleMeeting: body.data.scheduleMeeting ?? null,
         });
         await audit(tx, actor.tenantId, {
           actorType: 'user', actorId: actor.userId, action: 'contact.created',
@@ -108,6 +129,9 @@ export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
         tags: row.tags,
         address: row.attributes?.address ?? null,
         notes: row.attributes?.notes ?? null,
+        storeName: row.attributes?.storeName ?? null,
+        storeStatus: row.attributes?.storeStatus ?? null,
+        scheduleMeeting: row.attributes?.scheduleMeeting ?? null,
       };
     });
   });
@@ -129,6 +153,8 @@ export function registerContactRoutes(app: FastifyInstance, ctx: AppCtx): void {
           phone: canReveal ? body.data.phone : undefined,
           email: body.data.email, tags: body.data.tags,
           address: body.data.address, notes: body.data.notes,
+          storeName: body.data.storeName, storeStatus: body.data.storeStatus,
+          scheduleMeeting: body.data.scheduleMeeting,
         });
         if (!ok) throw notFound('Contact');
         await audit(tx, actor.tenantId, {

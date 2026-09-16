@@ -247,64 +247,22 @@ await withTenant(db, tenantId, async (tx) => {
     await tx.query('update conversations set assignee_id = $2 where tenant_id = $1 and id = $3',
       [tenantId, agents[1].id, melati.id]);
   }
-
-  // Deals across the board, including one that has gone quiet.
-  const deals: [string, string, number, string][] = [
-    ['Dinda Wardani',  'Paket reseller starter',        3_150_000, 'Baru'],
-    ['Bu Sari',        'Batik Parang grosir — 3 pcs',   1_440_000, 'Berminat'],
-    ['Toko Melati',    'Restock 24 pcs',               12_400_000, 'Penawaran'],
-    ['Pak Hendra',     'PO korporat Q1',               24_900_000, 'Nego'],
-    ['Bu Ratna',       'Pesanan ulang — 6 pcs',         2_880_000, 'Berhasil'],
-  ];
-  const stages = await tx.query<{ id: string; name: string }>(
-    'select id, name from pipeline_stages where tenant_id = $1 order by position asc', [tenantId]);
-
-  for (const [contactName, title, amount, stageName] of deals) {
-    const contact = convs.find((c) => c.display_name === contactName);
-    const stage = stages.find((s) => s.name === stageName);
-    if (!contact) continue;
-    const deal = await createDeal({ tx, tenantId, kek }, {
-      contactId: contact.contact_id, title, amountIdr: amount,
-      ownerId: agents[0].id, sourceConversationId: contact.id,
-    });
-    if (stage) {
-      await tx.query(
-        `update deals set stage_id = $3, status = case when $4 then 'won' else 'open' end where tenant_id = $1 and id = $2`,
-        [tenantId, deal.id, stage.id, stageName === 'Berhasil']);
-    }
-  }
-  await tx.query(
-    `update deals set rots_at = now() - interval '2 days' where tenant_id = $1 and title like 'Paket reseller%'`,
-    [tenantId]);
-
-  // Notes and a target close date on a couple of deals, so Deal Detail opens
-  // with real content instead of two empty fields.
-  const dealRows = await tx.query<{ id: string; title: string }>(
-    `select id, title from deals where tenant_id = $1`, [tenantId]);
-  const dealByTitle = (title: string) => dealRows.find((d) => d.title === title)?.id;
-
-  const poKorporat = dealByTitle('PO korporat Q1');
-  if (poKorporat) {
-    await updateDeal({ tx, tenantId, kek }, {
-      dealId: poKorporat,
-      notes: 'Sudah kirim katalog dan harga grosir. Menunggu PO resmi dari bagian pembelian.',
-      expectedCloseOn: new Date(now + 5 * 24 * hour).toISOString().slice(0, 10),
-    });
-  }
-  const restock = dealByTitle('Restock 24 pcs');
-  if (restock) {
-    await updateDeal({ tx, tenantId, kek }, {
-      dealId: restock,
-      notes: 'Nego harga grosir untuk 24 pcs, nunggu konfirmasi ukuran per warna.',
-      expectedCloseOn: new Date(now + 2 * 24 * hour).toISOString().slice(0, 10),
-    });
-  }
 });
 
 // A contact only becomes a "Pelanggan" once someone marks them — the five
 // seeded contacts above messaged in, but never went through that step, so
 // Pelanggan opens empty on a fresh dev-stack. Tag them here, plus two added
 // by hand, matching the mix the page's own subtitle promises.
+//
+// Client page also carries a small set of "toko" fields (nama toko, status
+// toko, jadwal meeting, catatan) that have no real source yet — dummy values
+// here so the page is not empty columns on a fresh dev-stack, until there is
+// somewhere real for these to come from.
+function localDT(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 await withTenant(db, tenantId, async (tx) => {
   const ctx = { tx, tenantId, kek };
 
@@ -320,15 +278,42 @@ await withTenant(db, tenantId, async (tx) => {
       [tenantId, name, tags]);
   }
 
+  const storeDetails: [string, { storeName: string; storeStatus: string; scheduleMeeting: string | null; notes: string }][] = [
+    ['Bu Sari', { storeName: 'Toko Sari Batik', storeStatus: 'aktif',
+      scheduleMeeting: localDT(new Date(now + 2 * 24 * hour)),
+      notes: 'Langganan grosir batik, reorder tiap awal bulan. Minta harga khusus kalau ambil 3+.' }],
+    ['Pak Hendra', { storeName: 'PT Hendra Sejahtera', storeStatus: 'aktif', scheduleMeeting: null,
+      notes: 'Kontak korporat — pembelian selalu by PO, invoice dikirim ke email.' }],
+    ['Dinda Wardani', { storeName: 'Dinda Fashion Reseller', storeStatus: 'prospek',
+      scheduleMeeting: localDT(new Date(now + 5 * 24 * hour)),
+      notes: 'Reseller baru, masih tanya-tanya warna dan stok sebelum order pertama.' }],
+    ['Toko Melati', { storeName: 'Toko Melati Grosir', storeStatus: 'aktif',
+      scheduleMeeting: localDT(new Date(now + 3 * 24 * hour)),
+      notes: 'Order grosir rutin, biasanya 24 pcs ke atas. Selalu minta penawaran dulu.' }],
+    ['Bu Ratna', { storeName: 'Toko Ratna', storeStatus: 'prospek', scheduleMeeting: null,
+      notes: 'Komplain pesanan telat 2 hari — perlu ditindaklanjuti sebelum tawarkan order berikutnya.' }],
+  ];
+  for (const [name, d] of storeDetails) {
+    await tx.query(
+      `update contacts
+          set attributes = attributes || jsonb_build_object(
+                'storeName', $3::text, 'storeStatus', $4::text, 'scheduleMeeting', $5::text, 'notes', $6::text)
+        where tenant_id = $1 and display_name = $2`,
+      [tenantId, name, d.storeName, d.storeStatus, d.scheduleMeeting, d.notes],
+    );
+  }
+
   await createContact(ctx, {
     displayName: 'Pak Yusuf Hidayat', phone: '081234511122', email: 'yusuf.hidayat@gmail.com',
     tags: ['customer', 'grosir'], address: 'Jl. Kopo Sayati No. 45, Bandung',
     notes: 'Langganan reseller batik, biasanya order tiap awal bulan.',
+    storeName: 'Toko Yusuf Batik', storeStatus: 'aktif', scheduleMeeting: localDT(new Date(now + 1 * 24 * hour)),
   });
   await createContact(ctx, {
     displayName: 'Ibu Wulan Sari', phone: '081234522233', email: null,
     tags: ['customer', 'vip'], address: 'Jl. Kaliurang KM 7, Yogyakarta',
     notes: 'Sering repeat order dress linen, respon cepat kalau dihubungi pagi.',
+    storeName: 'Wulan Linen Store', storeStatus: 'aktif', scheduleMeeting: null,
   });
 });
 
@@ -351,78 +336,6 @@ await withTenant(db, tenantId, async (tx) => {
     `select id from contacts where tenant_id = $1 and display_name = 'Bu Sari'`, [tenantId]);
   if (buSari[0]) {
     await ensureConversation(ctx, { contactId: buSari[0].id, channelId: waBridgeChannels[0]!.id });
-  }
-});
-
-// A handful of follow-ups spanning overdue, due today and upcoming, so Tugas
-// opens with a real spread across its table, kanban and calendar views.
-await withTenant(db, tenantId, async (tx) => {
-  const ctx = { tx, tenantId, kek };
-  const contacts = await tx.query<{ contact_id: string; display_name: string }>(
-    `select ct.id as contact_id, ct.display_name from contacts ct where ct.tenant_id = $1`, [tenantId]);
-  const byName = (name: string) => contacts.find((c) => c.display_name === name)?.contact_id;
-
-  const tasks: [string, string, number, string, string?, string?, string?][] = [
-    ['Bu Sari',       'Follow-up harga grosir batik parang', -1 * 24 * hour, agents[0].id,
-      undefined, undefined, 'high'],
-    ['Pak Hendra',    'Kirim invoice PO korporat Q1',          2 * hour,        agents[0].id,
-      undefined, undefined, 'urgent'],
-    ['Toko Melati',   'Konfirmasi ukuran per warna restock',   1 * 24 * hour,  agents[1].id,
-      undefined, undefined, 'medium'],
-    ['Bu Ratna',      'Cek kepuasan setelah pesanan diterima', 3 * 24 * hour,  agents[0].id,
-      undefined, undefined, 'low'],
-    ['Toko Melati',   'Meeting nego harga grosir 24 pcs',      4 * hour,       agents[1].id,
-      'meeting', 'https://meet.google.com/toko-demo-nego', 'urgent'],
-  ];
-  for (const [contactName, title, offset, assigneeId, kind, meetingLink, priority] of tasks) {
-    const contactId = byName(contactName);
-    if (!contactId) continue;
-    await createTask(ctx, {
-      contactId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id,
-      kind, meetingLink, priority,
-    });
-  }
-});
-
-// A closed-out history for the two newest contacts, so their detail page's
-// Activities panel opens with a real spread instead of an empty state — open
-// tasks under Upcoming, done/cancelled ones grouped across a couple of months.
-await withTenant(db, tenantId, async (tx) => {
-  const ctx = { tx, tenantId, kek };
-  const contacts = await tx.query<{ contact_id: string; display_name: string }>(
-    `select ct.id as contact_id, ct.display_name from contacts ct where ct.tenant_id = $1`, [tenantId]);
-  const byName = (name: string) => contacts.find((c) => c.display_name === name)?.contact_id;
-  const day = 24 * hour;
-
-  const upcoming: [string, string, number, string, string][] = [
-    ['Ibu Wulan Sari',    'Follow-up repeat order dress linen',   -1 * day, agents[0].id, 'high'],
-    ['Ibu Wulan Sari',    'Konfirmasi alamat kirim batch baru',    2 * day, agents[1].id, 'low'],
-    ['Pak Yusuf Hidayat', 'Follow-up order reseller bulan ini',    1 * day, agents[0].id, 'medium'],
-  ];
-  for (const [contactName, title, offset, assigneeId, priority] of upcoming) {
-    const contactId = byName(contactName);
-    if (!contactId) continue;
-    await createTask(ctx, {
-      contactId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id, priority,
-    });
-  }
-
-  const closed: [string, string, number, 'done' | 'cancelled', number, string][] = [
-    ['Ibu Wulan Sari',    'Follow-up ukuran dress linen',   -5 * day,  'done',      -5 * day,  agents[0].id],
-    ['Ibu Wulan Sari',    'Kirim katalog motif baru',        -40 * day, 'done',      -40 * day, agents[1].id],
-    ['Ibu Wulan Sari',    'Cek ongkir Yogyakarta',           -18 * day, 'cancelled', 0,         agents[0].id],
-    ['Pak Yusuf Hidayat', 'Follow-up restock batik reguler', -70 * day, 'done',      -70 * day, agents[0].id],
-  ];
-  for (const [contactName, title, dueOffset, status, completedOffset, assigneeId] of closed) {
-    const contactId = byName(contactName);
-    if (!contactId) continue;
-    const { id } = await createTask(ctx, {
-      contactId, title, dueAt: new Date(now + dueOffset), assigneeId, createdBy: agents[0].id,
-    });
-    await setTaskStatus(ctx, { taskId: id, status, actorId: assigneeId });
-    if (status === 'done') {
-      await tx.query(`update tasks set completed_at = $2 where id = $1`, [id, new Date(now + completedOffset)]);
-    }
   }
 });
 
@@ -472,26 +385,165 @@ await withTenant(db, tenantId, async (tx) => {
   }
 });
 
-// Brands only exist from here on, so the deals seeded earlier are linked back
-// to one now — otherwise Deal's Brand/Kategori columns stay blank on a fresh
-// dev-stack. Matched by what each deal's free-text title is actually about.
+// Deals across the board, brand-first — every one of these is a brand
+// opportunity now, not a WA customer's order, so none of them carry a
+// Contact. Brands only exist from here on, hence this waits until now.
 await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const brandRows = await tx.query<{ id: string; name: string }>(
+    `select id, name from brands where tenant_id = $1`, [tenantId]);
+  const brandIdByName = (name: string) => brandRows.find((b) => b.name === name)?.id ?? null;
+  const stages = await tx.query<{ id: string; name: string }>(
+    'select id, name from pipeline_stages where tenant_id = $1 order by position asc', [tenantId]);
+
+  const deals: [string, string, number, string][] = [
+    ['Rumah Tenun Ikat', 'Paket reseller starter', 3_150_000, 'Baru'],
+    ['Batik Nusantara Store', 'Batik Parang grosir — 3 pcs', 1_440_000, 'Berminat'],
+    ['Sepatu Lokal Jaya', 'Restock 24 pcs', 12_400_000, 'Penawaran'],
+    ['Kerajinan Rotan Asri', 'PO korporat Q1', 24_900_000, 'Nego'],
+    ['Teh Herbal Sehat', 'Pesanan ulang — 6 pcs', 2_880_000, 'Berhasil'],
+  ];
+  for (const [brandName, title, amount, stageName] of deals) {
+    const brandId = brandIdByName(brandName);
+    const stage = stages.find((s) => s.name === stageName);
+    if (!brandId) continue;
+    const deal = await createDeal(ctx, { brandId, title, amountIdr: amount, ownerId: agents[0].id });
+    if (stage) {
+      await tx.query(
+        `update deals set stage_id = $3, status = case when $4 then 'won' else 'open' end where tenant_id = $1 and id = $2`,
+        [tenantId, deal.id, stage.id, stageName === 'Berhasil']);
+    }
+  }
+  await tx.query(
+    `update deals set rots_at = now() - interval '2 days' where tenant_id = $1 and title like 'Paket reseller%'`,
+    [tenantId]);
+
+  // Notes and a target close date on a couple of deals, so Deal Detail opens
+  // with real content instead of two empty fields.
+  const dealRows = await tx.query<{ id: string; title: string }>(
+    `select id, title from deals where tenant_id = $1`, [tenantId]);
+  const dealByTitle = (title: string) => dealRows.find((d) => d.title === title)?.id;
+
+  const poKorporat = dealByTitle('PO korporat Q1');
+  if (poKorporat) {
+    await updateDeal({ tx, tenantId, kek }, {
+      dealId: poKorporat,
+      notes: 'Sudah kirim katalog dan harga grosir. Menunggu PO resmi dari bagian pembelian.',
+      expectedCloseOn: new Date(now + 5 * 24 * hour).toISOString().slice(0, 10),
+    });
+  }
+  const restock = dealByTitle('Restock 24 pcs');
+  if (restock) {
+    await updateDeal({ tx, tenantId, kek }, {
+      dealId: restock,
+      notes: 'Nego harga grosir untuk 24 pcs, nunggu konfirmasi ukuran per warna.',
+      expectedCloseOn: new Date(now + 2 * 24 * hour).toISOString().slice(0, 10),
+    });
+  }
+});
+
+// A handful of follow-ups spanning overdue, due today and upcoming, so Tugas
+// opens with a real spread across its table, kanban and calendar views —
+// each one against the same brand its matching deal above is about, no
+// Contact involved.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const brandRows = await tx.query<{ id: string; name: string }>(
+    `select id, name from brands where tenant_id = $1`, [tenantId]);
+  const byName = (name: string) => brandRows.find((b) => b.name === name)?.id;
+
+  const tasks: [string, string, number, string, string?, string?, string?][] = [
+    ['Batik Nusantara Store', 'Follow-up harga grosir batik parang', -1 * 24 * hour, agents[0].id,
+      undefined, undefined, 'high'],
+    ['Kerajinan Rotan Asri',  'Kirim invoice PO korporat Q1',          2 * hour,        agents[0].id,
+      undefined, undefined, 'urgent'],
+    ['Sepatu Lokal Jaya',     'Konfirmasi ukuran per warna restock',   1 * 24 * hour,  agents[1].id,
+      undefined, undefined, 'medium'],
+    ['Teh Herbal Sehat',      'Cek kepuasan setelah pesanan diterima', 3 * 24 * hour,  agents[0].id,
+      undefined, undefined, 'low'],
+    ['Sepatu Lokal Jaya',     'Meeting nego harga grosir 24 pcs',      4 * hour,       agents[1].id,
+      'meeting', 'https://meet.google.com/toko-demo-nego', 'urgent'],
+  ];
+  for (const [brandName, title, offset, assigneeId, kind, meetingLink, priority] of tasks) {
+    const brandId = byName(brandName);
+    if (!brandId) continue;
+    await createTask(ctx, {
+      brandId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id,
+      kind, meetingLink, priority,
+    });
+  }
+});
+
+// A closed-out history for two brands, so Tugas doesn't just open on a wall
+// of open follow-ups — open ones under Upcoming, done/cancelled ones spread
+// across a couple of months, same shape whether the party is a Contact or,
+// now, a Brand.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
+  const brandRows = await tx.query<{ id: string; name: string }>(
+    `select id, name from brands where tenant_id = $1`, [tenantId]);
+  const byName = (name: string) => brandRows.find((b) => b.name === name)?.id;
+  const day = 24 * hour;
+
+  const upcoming: [string, string, number, string, string][] = [
+    ['Skinlogy Beauty',       'Follow-up katalog harga grosir',          -1 * day, agents[0].id, 'high'],
+    ['Skinlogy Beauty',       'Konfirmasi jadwal kirim sample produk',    2 * day, agents[1].id, 'low'],
+    ['Kopi Kenangan Partner', 'Follow-up progres kerja sama bulan ini',   1 * day, agents[0].id, 'medium'],
+  ];
+  for (const [brandName, title, offset, assigneeId, priority] of upcoming) {
+    const brandId = byName(brandName);
+    if (!brandId) continue;
+    await createTask(ctx, {
+      brandId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id, priority,
+    });
+  }
+
+  const closed: [string, string, number, 'done' | 'cancelled', number, string][] = [
+    ['Skinlogy Beauty',       'Follow-up minat program reseller', -5 * day,  'done',      -5 * day,  agents[0].id],
+    ['Skinlogy Beauty',       'Kirim katalog produk terbaru',      -40 * day, 'done',      -40 * day, agents[1].id],
+    ['Skinlogy Beauty',       'Cek ongkir pengiriman sample',      -18 * day, 'cancelled', 0,         agents[0].id],
+    ['Kopi Kenangan Partner', 'Follow-up restock kemasan',         -70 * day, 'done',      -70 * day, agents[0].id],
+  ];
+  for (const [brandName, title, dueOffset, status, completedOffset, assigneeId] of closed) {
+    const brandId = byName(brandName);
+    if (!brandId) continue;
+    const { id } = await createTask(ctx, {
+      brandId, title, dueAt: new Date(now + dueOffset), assigneeId, createdBy: agents[0].id,
+    });
+    await setTaskStatus(ctx, { taskId: id, status, actorId: assigneeId });
+    if (status === 'done') {
+      await tx.query(`update tasks set completed_at = $2 where id = $1`, [id, new Date(now + completedOffset)]);
+    }
+  }
+});
+
+// A few more Tugas entries the way the app itself creates them: from a
+// Brand's own Meeting/Call/Online Meet row, pointing straight at the brand —
+// no Contact gets manufactured for it, the brand's own number is what a task
+// like this uses. The standalone Tugas Baru form no longer offers a bare
+// Pelanggan picker either, so this is the only path a brand prospect's
+// follow-up takes today.
+await withTenant(db, tenantId, async (tx) => {
+  const ctx = { tx, tenantId, kek };
   const brandRows = await tx.query<{ id: string; name: string }>(
     `select id, name from brands where tenant_id = $1`, [tenantId]);
   const brandIdByName = (name: string) => brandRows.find((b) => b.name === name)?.id ?? null;
 
-  const dealBrands: [string, string][] = [
-    ['Paket reseller starter', 'Rumah Tenun Ikat'],
-    ['Batik Parang grosir — 3 pcs', 'Batik Nusantara Store'],
-    ['Restock 24 pcs', 'Sepatu Lokal Jaya'],
-    ['PO korporat Q1', 'Kerajinan Rotan Asri'],
-    ['Pesanan ulang — 6 pcs', 'Teh Herbal Sehat'],
+  const brandTasks: [string, string, number, string, 'meeting' | 'call' | 'online_meet', string?, string?][] = [
+    ['Rumah Tenun Ikat', 'Meeting nego harga & minimum order', 5 * hour, agents[0].id,
+      'meeting', 'https://meet.google.com/rumah-tenun-nego', 'urgent'],
+    ['Kopi Kenangan Partner', 'Follow-up telepon progres kerja sama', 1 * 24 * hour, agents[0].id,
+      'call', undefined, 'medium'],
+    ['Teh Herbal Sehat', 'Online meet perkenalan program afiliasi', 2 * 24 * hour, agents[1].id,
+      'online_meet', 'https://meet.google.com/teh-herbal-intro', 'medium'],
   ];
-  for (const [dealTitle, brandName] of dealBrands) {
+  for (const [brandName, title, offset, assigneeId, kind, meetingLink, priority] of brandTasks) {
     const brandId = brandIdByName(brandName);
     if (!brandId) continue;
-    await tx.query(`update deals set brand_id = $3 where tenant_id = $1 and title = $2`,
-      [tenantId, dealTitle, brandId]);
+    await createTask(ctx, {
+      brandId, title, dueAt: new Date(now + offset), assigneeId, createdBy: agents[0].id,
+      kind, meetingLink, priority,
+    });
   }
 });
 

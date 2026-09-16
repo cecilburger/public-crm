@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'MCNASIA',
-  description: 'Semua chat pelanggan di satu tempat',
+  description: 'Semua chat client di satu tempat',
 };
 
 export const viewport: Viewport = {

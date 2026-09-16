@@ -19,3 +19,5 @@ export * from './salesTargets.ts';
 export * from './documents.ts';
 export * from './broadcasts.ts';
 export * from './googleCalendar.ts';
+export * from './emailSettings.ts';
+export * from './igBridge.ts';

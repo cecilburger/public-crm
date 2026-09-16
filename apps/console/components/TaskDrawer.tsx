@@ -5,7 +5,7 @@ import { createTaskInline, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import { TaskKindField } from '@/components/TaskKindField';
-import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
+import type { Brand, Member, Deal, TaskKind } from '@/lib/api';
 
 /**
  * A quick-add panel that slides in from the right, so adding a follow-up
@@ -14,14 +14,14 @@ import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
  * a replacement for it.
  */
 export function TaskDrawer({
-  open, onClose, contacts, members, deals, taskKinds,
+  open, onClose, members, deals, taskKinds, brands,
 }: {
   open: boolean;
   onClose: () => void;
-  contacts: Contact[];
   members: Member[];
   deals: Deal[];
   taskKinds: TaskKind[];
+  brands: Brand[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTaskInline, null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -63,16 +63,16 @@ export function TaskDrawer({
         <form ref={formRef} action={formAction} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
           <CsrfField />
           <div className="drawer-body">
-            {contacts.length === 0 ? (
-              <p className="empty" style={{ padding: '24px 0' }}>{t.tasks.noContacts}</p>
+            {brands.length === 0 ? (
+              <p className="empty" style={{ padding: '24px 0' }}>{t.tasks.noBrands}</p>
             ) : (
               <div className="record-grid" style={{ gridTemplateColumns: '1fr' }}>
                 <div className="record-field">
-                  <label htmlFor="d-contactId">{t.tasks.formContact}</label>
-                  <select className="line-input" id="d-contactId" name="contactId" required defaultValue="">
-                    <option value="" disabled>{t.tasks.chooseContact}</option>
-                    {contacts.map((c) => (
-                      <option key={c.id} value={c.id}>{c.displayName ?? c.phone ?? c.id}</option>
+                  <label htmlFor="d-brandId">{t.tasks.formBrand}</label>
+                  <select className="line-input" id="d-brandId" name="brandId" required defaultValue="">
+                    <option value="" disabled>{t.tasks.chooseBrand}</option>
+                    {brands.map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
                   </select>
                 </div>
@@ -89,6 +89,14 @@ export function TaskDrawer({
                 </div>
 
                 <TaskKindField id="d-kind" name="kind" value={kind} onChange={setKind} initialCustomKinds={taskKinds} />
+
+                {kind === 'meeting' ? (
+                  <div className="record-field">
+                    <label htmlFor="d-meetingLink">{t.tasks.formMeetingLink}</label>
+                    <input className="line-input" id="d-meetingLink" name="meetingLink" type="url"
+                           placeholder={t.tasks.meetingLinkPlaceholder} />
+                  </div>
+                ) : null}
 
                 <div className="record-field">
                   <label htmlFor="d-priority">{t.tasks.formPriority}</label>
@@ -125,14 +133,6 @@ export function TaskDrawer({
                   </>
                 ) : null}
 
-                {kind === 'meeting' ? (
-                  <div className="record-field">
-                    <label htmlFor="d-meetingLink">{t.tasks.formMeetingLink}</label>
-                    <input className="line-input" id="d-meetingLink" name="meetingLink" type="url"
-                           placeholder={t.tasks.meetingLinkPlaceholder} />
-                  </div>
-                ) : null}
-
                 <div className="record-field">
                   <label htmlFor="d-assigneeId">{t.tasks.formAssignee}</label>
                   <select className="line-input" id="d-assigneeId" name="assigneeId" defaultValue="">
@@ -162,10 +162,10 @@ export function TaskDrawer({
           </div>
 
           <div className="drawer-foot">
-            <button type="submit" className="btn primary" disabled={pending || contacts.length === 0}>
+            <button type="submit" className="btn primary" disabled={pending || brands.length === 0}>
               {pending ? t.tasks.saving : t.tasks.save}
             </button>
-            <button type="button" className="btn ghost" onClick={onClose}>{t.customers.discard}</button>
+            <button type="button" className="btn ghost" onClick={onClose}>{t.client.discard}</button>
           </div>
         </form>
       </div>

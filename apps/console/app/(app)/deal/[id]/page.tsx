@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { api, ApiError, type Brand, type DealDetailResponse, type Member } from '@/lib/api';
+import { api, ApiError, type Brand, type DealDetailResponse, type Member, type Stage } from '@/lib/api';
 import { DealDetailView } from '@/components/DealDetailView';
 
 export const dynamic = 'force-dynamic';
@@ -15,14 +15,15 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
     throw err;
   }
 
-  const [members, brands] = await Promise.all([
+  const [members, brands, pipelines] = await Promise.all([
     api<Member[]>('/v1/members').catch(() => [] as Member[]),
     api<Brand[]>('/v1/brands').catch(() => [] as Brand[]),
+    api<{ stages: Stage[] }>('/v1/pipelines').catch(() => ({ stages: [] as Stage[] })),
   ]);
 
   return (
     <div className="scroll pad odoo-page stack">
-      <DealDetailView data={data} members={members} brands={brands} />
+      <DealDetailView data={data} members={members} brands={brands} stages={pipelines.stages} />
     </div>
   );
 }

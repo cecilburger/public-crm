@@ -2,16 +2,16 @@
 
 import Link from 'next/link';
 import { useActionState } from 'react';
-import { moveDeal, quickCreateTaskFromDeal, type ActionResult } from '@/app/(app)/actions';
+import { moveDeal, type ActionResult } from '@/app/(app)/actions';
 import { rp, dueLabel, initials } from '@/lib/format';
 import { t } from '@/lib/copy';
-import type { Deal, Member, Stage } from '@/lib/api';
+import type { Deal, Member, Stage, Task } from '@/lib/api';
 import { CsrfField } from '@/components/Csrf';
 import { KIND_ICON_PATHS } from '@/components/KindIcon';
 
-const ACTION_KINDS = ['meeting', 'call', 'online_meet'] as const;
-const ACTION_TITLE: Record<(typeof ACTION_KINDS)[number], string> = {
-  meeting: t.sales.actionMeeting, call: t.sales.actionCall, online_meet: t.sales.actionOnlineMeet,
+const INDICATOR_KINDS = ['meeting', 'call', 'online_meet'] as const;
+const INDICATOR_TITLE: Record<(typeof INDICATOR_KINDS)[number], string> = {
+  meeting: t.sales.hasMeeting, call: t.sales.hasCall, online_meet: t.sales.hasOnlineMeet,
 };
 
 /**
@@ -22,10 +22,12 @@ const ACTION_TITLE: Record<(typeof ACTION_KINDS)[number], string> = {
  * explaining.
  */
 export function DealCard({
-  deal, stages, members, conversationId,
-}: { deal: Deal; stages: Stage[]; members: Member[]; conversationId?: string }) {
+  deal, stages, members, conversationId, dealTasks, onViewTask,
+}: {
+  deal: Deal; stages: Stage[]; members: Member[]; conversationId?: string; dealTasks: Task[];
+  onViewTask: (task: Task) => void;
+}) {
   const [state, action, pending] = useActionState<ActionResult | null, FormData>(moveDeal, null);
-  const [taskState, taskAction, taskPending] = useActionState<ActionResult | null, FormData>(quickCreateTaskFromDeal, null);
   const quiet = deal.status === 'open' && deal.rots_at !== null && new Date(deal.rots_at) < new Date();
   const ownerName = deal.owner_id ? members.find((m) => m.id === deal.owner_id)?.name ?? null : null;
   const due = dueLabel(deal.expected_close_on);
@@ -36,7 +38,6 @@ export function DealCard({
     <article className="deal">
       <Link href={`/deal/${deal.id}`} className="title">{deal.brand_name ?? deal.title}</Link>
       {deal.brand_category ? <div className="line">{deal.brand_category}</div> : null}
-      <div className="line">{deal.contact_name ?? '—'}</div>
 
       {quiet || deal.status === 'won' || deal.status === 'lost' ? (
         <div className="deal-tags">
@@ -54,19 +55,19 @@ export function DealCard({
         <span className={`deal-dot ${dotCls}`} title={t.sales.table.status} />
       </div>
 
-      <form action={taskAction} className="deal-quick-actions">
-        <CsrfField />
-        <input type="hidden" name="contactId" value={deal.contact_id} />
-        <input type="hidden" name="dealId" value={deal.id} />
-        <input type="hidden" name="contactName" value={deal.contact_name ?? ''} />
-        {ACTION_KINDS.map((kind) => (
-          <button key={kind} type="submit" name="kind" value={kind} className={`deal-quick-icon ${kind}`}
-                  disabled={taskPending} title={ACTION_TITLE[kind]}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {KIND_ICON_PATHS[kind]}
-            </svg>
-          </button>
-        ))}
+      <div className="deal-quick-actions">
+        {INDICATOR_KINDS.map((kind) => {
+          const task = dealTasks.find((tk) => tk.kind === kind);
+          if (!task) return null;
+          return (
+            <button key={kind} type="button" className={`deal-quick-icon ${kind}`}
+                    title={INDICATOR_TITLE[kind]} onClick={() => onViewTask(task)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {KIND_ICON_PATHS[kind]}
+              </svg>
+            </button>
+          );
+        })}
         {conversationId ? (
           <Link href={`/obrolan/${conversationId}`} className="deal-quick-icon chat" title={t.sales.actionChat}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -80,8 +81,12 @@ export function DealCard({
             </svg>
           </span>
         )}
-      </form>
-      {taskState?.error ? <p className="error" style={{ fontSize: 11 }}>{taskState.error}</p> : null}
+        <Link href={`/deal/${deal.id}`} className="deal-quick-icon detail" title={t.sales.actionDetail}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            {KIND_ICON_PATHS.detail}
+          </svg>
+        </Link>
+      </div>
 
       <form action={action} style={{ marginTop: 8 }}>
         <CsrfField />

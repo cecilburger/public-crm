@@ -112,7 +112,7 @@ export interface Member {
 export interface Deal {
   id: string; title: string; amount_idr: string | number; status: string;
   stage_id: string; stage: string; position: number; rots_at: string | null;
-  owner_id: string | null; closed_at: string | null; contact_id: string; contact_name: string | null;
+  owner_id: string | null; closed_at: string | null; contact_id: string | null; contact_name: string | null;
   brand_id: string | null; brand_name: string | null; brand_category: string | null;
   expected_close_on: string | null;
 }
@@ -126,7 +126,7 @@ export interface DealDetail {
   id: string; title: string; amountIdr: number; status: string; lostReason: string | null;
   stageId: string; stageName: string; pipelineId: string; pipelineName: string;
   isWon: boolean; isLost: boolean;
-  contactId: string; contactName: string | null; contactPhone: string | null;
+  contactId: string | null; contactName: string | null; contactPhone: string | null;
   ownerId: string | null; sourceConversationId: string | null;
   brandId: string | null; brandName: string | null; brandCategory: string | null;
   expectedCloseOn: string | null; notes: string | null;
@@ -188,6 +188,7 @@ export interface WaBridgeChannel {
   lastSeenAt: string | null;
   lastError: string | null;
   maxPerDay: number;
+  chatTotal: number;
   chat: {
     meeting: number; minat: number; balas: number; belum: number; tolak: number; bot: number;
   };
@@ -200,6 +201,10 @@ export interface Contact {
   tags: string[];
   firstSeenAt: string;
   lastSeenAt: string;
+  notes: string | null;
+  storeName: string | null;
+  storeStatus: 'prospek' | 'aktif' | 'nonaktif' | null;
+  scheduleMeeting: string | null;
 }
 
 export interface ContactDetail {
@@ -210,6 +215,9 @@ export interface ContactDetail {
   tags: string[];
   address: string | null;
   notes: string | null;
+  storeName: string | null;
+  storeStatus: 'prospek' | 'aktif' | 'nonaktif' | null;
+  scheduleMeeting: string | null;
 }
 
 export interface ContactOrder {
@@ -245,9 +253,12 @@ export interface Task {
   repeatUnit: 'day' | 'week' | 'month' | 'year' | null;
   repeatInterval: number;
   repeatUntil: string | null;
-  contactId: string;
+  contactId: string | null;
   contactName: string | null;
   contactPhone: string | null;
+  brandId: string | null;
+  brandName: string | null;
+  brandPhone: string | null;
   dealId: string | null;
   dealTitle: string | null;
   assigneeId: string | null;
@@ -277,6 +288,7 @@ export interface Brand {
   status: 'not_contacted' | 'contacted' | 'replied' | 'interested' | 'rejected';
   assigneeId: string | null;
   notes: string | null;
+  contactId: string | null;
   lastContactedAt: string | null;
   createdBy: string | null;
   createdAt: string;
@@ -286,6 +298,7 @@ export interface Brand {
 export interface MessageTemplate {
   id: string;
   name: string;
+  channel: 'whatsapp' | 'email' | 'other';
   category: 'marketing' | 'utility' | 'authentication';
   language: string;
   body: string;
@@ -294,6 +307,20 @@ export interface MessageTemplate {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface IgBridgeConnection {
+  status: 'disconnected' | 'challenge_required' | 'ready' | 'error';
+  username: string | null;
+  challengeType: 'two_factor' | 'checkpoint' | 'unknown' | null;
+  lastError: string | null;
+  updatedAt: string | null;
+}
+
+export interface EmailSettings {
+  configured: boolean;
+  emailFrom: string | null;
+  updatedAt: string | null;
 }
 
 export interface Broadcast {

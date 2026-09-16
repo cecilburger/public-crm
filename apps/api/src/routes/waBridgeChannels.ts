@@ -67,6 +67,7 @@ export function registerWaBridgeChannelRoutes(app: FastifyInstance, ctx: AppCtx)
       lastSeenAt: r.last_seen_at,
       lastError: r.last_error,
       maxPerDay: r.max_per_day,
+      chatTotal: r.chat_total,
       chat: {
         meeting: r.chat_meeting, minat: r.chat_minat, balas: r.chat_balas,
         belum: r.chat_belum, tolak: r.chat_tolak, bot: r.chat_bot,

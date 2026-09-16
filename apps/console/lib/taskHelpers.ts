@@ -13,3 +13,14 @@ export function isTaskOverdue(task: Task): boolean {
 export function isTaskDueToday(task: Task): boolean {
   return task.status === 'open' && new Date(task.dueAt).toDateString() === new Date().toDateString();
 }
+
+/** A task points at a Contact or, now that neither column is required, a Brand — never neither. */
+export function taskPartyName(task: Task): string | null {
+  return task.contactName ?? task.brandName ?? task.contactPhone ?? task.brandPhone;
+}
+
+export function taskPartyHref(task: Task): string | null {
+  if (task.contactId) return `/client/${task.contactId}`;
+  if (task.brandId) return `/brand/${task.brandId}`;
+  return null;
+}

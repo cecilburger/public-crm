@@ -6,6 +6,8 @@ import { t } from '@/lib/copy';
 import { toDatetimeLocal } from '@/lib/format';
 import { CsrfField } from '@/components/Csrf';
 import { TaskKindField } from '@/components/TaskKindField';
+import { SendMeetingEmailButton } from '@/components/SendMeetingEmailButton';
+import { taskPartyName } from '@/lib/taskHelpers';
 import type { Task, Member, Deal, TaskKind } from '@/lib/api';
 
 /**
@@ -57,7 +59,12 @@ export function TaskDetailDrawer({
       <div className={`drawer-panel ${open ? 'open' : ''}`} role="dialog" aria-modal="true"
            aria-label={t.tasks.detailTitle} aria-hidden={!open}>
         <div className="drawer-head">
-          <h2>{t.tasks.detailTitle}</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2>{t.tasks.detailTitle}</h2>
+            {/* Outside the edit form below on purpose — its own dialog holds
+                its own <form>, and a form cannot nest inside another form. */}
+            {kind === 'meeting' ? <SendMeetingEmailButton taskId={task.id} /> : null}
+          </div>
           <button type="button" className="drawer-close" onClick={onClose} aria-label={t.tasks.close}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -71,8 +78,8 @@ export function TaskDetailDrawer({
           <div className="drawer-body">
             <div className="record-grid" style={{ gridTemplateColumns: '1fr' }}>
               <div className="record-field">
-                <label>{t.tasks.formContact}</label>
-                <p style={{ margin: 0 }}>{task.contactName ?? task.contactPhone ?? '—'}</p>
+                <label>{task.brandId ? t.tasks.formBrand : t.tasks.formContact}</label>
+                <p style={{ margin: 0 }}>{taskPartyName(task) ?? '—'}</p>
               </div>
 
               <div className="record-field">
@@ -164,7 +171,7 @@ export function TaskDetailDrawer({
             <button type="submit" className="btn primary" disabled={pending}>
               {pending ? t.tasks.saving : t.tasks.save}
             </button>
-            <button type="button" className="btn ghost" onClick={onClose}>{t.customers.discard}</button>
+            <button type="button" className="btn ghost" onClick={onClose}>{t.client.discard}</button>
           </div>
         </form>
       </div>

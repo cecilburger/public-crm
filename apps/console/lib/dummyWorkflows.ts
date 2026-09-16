@@ -77,7 +77,7 @@ export const DUMMY_WORKFLOWS: DummyWorkflow[] = [
       { kind: 'trigger', title: '30 Menit Sebelum Meeting', label: 'Jadwal meeting akan dimulai dalam 30 menit' },
       { kind: 'condition', title: 'Cek Jenis Tugas', label: 'Jenis tugas: Meeting' },
       { kind: 'action', title: 'Kirim Notifikasi', label: 'Kirim notifikasi ke penugas' },
-      { kind: 'action', title: 'Kirim WhatsApp', label: 'Kirim WhatsApp pengingat ke pelanggan' },
+      { kind: 'action', title: 'Kirim WhatsApp', label: 'Kirim WhatsApp pengingat ke client' },
     ]),
   },
   {

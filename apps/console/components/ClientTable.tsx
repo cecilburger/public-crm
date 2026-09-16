@@ -3,12 +3,21 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { Contact, ContactPurchaseSummary } from '@/lib/api';
-import { ago, initials, rp } from '@/lib/format';
+import type { Contact } from '@/lib/api';
+import { ago, initials } from '@/lib/format';
 import { t } from '@/lib/copy';
-import { CustomerRowActions } from '@/components/CustomerRowActions';
+import { ClientRowActions } from '@/components/ClientRowActions';
 
 type Group = { label: string | null; rows: Contact[] };
+
+const STORE_STATUS_CHIP: Record<string, string> = { aktif: 'chip good', prospek: 'chip warn', nonaktif: 'chip' };
+
+function formatMeeting(value: string | null): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })} · ${d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`;
+}
 
 // The Filters and Group By controls are independent <details> dropdowns, each
 // absolutely positioned relative to its own <summary>. Nothing stops both from
@@ -38,11 +47,10 @@ function useSingleOpenDropdown() {
   return { filterRef, groupRef, closeOthers };
 }
 
-export function CustomerTable({
-  contacts, conversationByContact = {}, purchasesByContact = {},
+export function ClientTable({
+  contacts, conversationByContact = {},
 }: {
   contacts: Contact[]; conversationByContact?: Record<string, string>;
-  purchasesByContact?: Record<string, ContactPurchaseSummary>;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
@@ -82,14 +90,14 @@ export function CustomerTable({
     }
     const out = [...byTag.entries()].sort(([a], [b]) => a.localeCompare(b))
       .map(([label, rows]): Group => ({ label, rows }));
-    if (untagged.length > 0) out.push({ label: t.customers.noLabel, rows: untagged });
+    if (untagged.length > 0) out.push({ label: t.client.noLabel, rows: untagged });
     return out;
   }, [filtered, groupBy]);
 
   const toggleTag = (tag: string) =>
     setActiveTags((prev) => (prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag]));
 
-  // The kanban card is itself a <Link> to the customer record, so the Chat
+  // The kanban card is itself a <Link> to the client record, so the Chat
   // button can't be a nested <a> — it navigates through the router instead,
   // stopping the click before it bubbles up to the card's own link.
   const goToChat = (conversationId: string) => (e: MouseEvent) => {
@@ -101,14 +109,19 @@ export function CustomerTable({
   const renderKanbanCard = (c: Contact) => {
     const conversationId = conversationByContact[c.id];
     return (
-      <Link href={`/pelanggan/${c.id}`} key={c.id} className="kanban-card">
+      <Link href={`/client/${c.id}`} key={c.id} className="kanban-card">
         <div className="kanban-card-top">
           <span className="kanban-avatar" aria-hidden>{initials(c.displayName)}</span>
           <div className="kanban-details">
             <b className="kanban-title">{c.displayName ?? c.phone ?? '—'}</b>
             <div className="kanban-subtitle mono">{c.phone ?? '—'}</div>
-            {c.tags.length > 0 && (
+            {(c.tags.length > 0 || c.storeStatus) && (
               <div className="kanban-tags">
+                {c.storeStatus ? (
+                  <span className={STORE_STATUS_CHIP[c.storeStatus] ?? 'chip'}>
+                    {t.client.storeStatusLabel[c.storeStatus] ?? c.storeStatus}
+                  </span>
+                ) : null}
                 {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
               </div>
             )}
@@ -116,16 +129,11 @@ export function CustomerTable({
         </div>
         <div className="kanban-card-bottom">
           <span className="dim" style={{ fontSize: 11 }}>{ago(c.lastSeenAt)}</span>
-          {purchasesByContact[c.id] ? (
-            <span className="dim tnum" style={{ fontSize: 11, marginLeft: 8 }}>
-              {purchasesByContact[c.id].count}x · {rp(purchasesByContact[c.id].totalIdr)}
-            </span>
-          ) : null}
           <span className="spacer" />
           <button type="button" className="btn ghost sm" disabled={!conversationId}
-                  title={conversationId ? undefined : t.customers.noChat}
+                  title={conversationId ? undefined : t.client.noChat}
                   onClick={conversationId ? goToChat(conversationId) : undefined}>
-            {t.customers.chat}
+            {t.client.chat}
           </button>
         </div>
       </Link>
@@ -140,7 +148,7 @@ export function CustomerTable({
           <input type="checkbox" style={{ accentColor: 'var(--brand)', cursor: 'pointer' }} />
         </td>
         <td>
-          <Link href={`/pelanggan/${c.id}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <Link href={`/client/${c.id}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <span className="avatar" aria-hidden>{initials(c.displayName)}</span>
             <b>{c.displayName ?? c.phone ?? '—'}</b>
           </Link>
@@ -151,19 +159,30 @@ export function CustomerTable({
             {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
           </span>
         </td>
-        <td className="num">{purchasesByContact[c.id]?.count ?? 0}</td>
-        <td className="num">{rp(purchasesByContact[c.id]?.totalIdr ?? 0)}</td>
+        <td>{c.storeName || <span className="dim">—</span>}</td>
+        <td>
+          {c.storeStatus ? (
+            <span className={STORE_STATUS_CHIP[c.storeStatus] ?? 'chip'}>
+              {t.client.storeStatusLabel[c.storeStatus] ?? c.storeStatus}
+            </span>
+          ) : <span className="dim">—</span>}
+        </td>
+        <td>{formatMeeting(c.scheduleMeeting)}</td>
+        <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={c.notes ?? undefined}>
+          {c.notes || <span className="dim">—</span>}
+        </td>
         <td className="num">{ago(c.lastSeenAt)}</td>
         <td style={{ textAlign: 'center' }}>
           {conversationId ? (
-            <Link href={`/obrolan/${conversationId}`} className="btn ghost sm">{t.customers.chat}</Link>
+            <Link href={`/obrolan/${conversationId}`} className="btn ghost sm">{t.client.chat}</Link>
           ) : (
-            <button type="button" className="btn ghost sm" disabled title={t.customers.noChat}>
-              {t.customers.chat}
+            <button type="button" className="btn ghost sm" disabled title={t.client.noChat}>
+              {t.client.chat}
             </button>
           )}
         </td>
-        <td style={{ textAlign: 'center' }}><CustomerRowActions id={c.id} name={c.displayName ?? c.phone ?? '—'} /></td>
+        <td style={{ textAlign: 'center' }}><ClientRowActions id={c.id} name={c.displayName ?? c.phone ?? '—'} /></td>
       </tr>
     );
   };
@@ -173,7 +192,7 @@ export function CustomerTable({
       <div className="odoo-control-panel">
         <div className="odoo-cp-top">
           <div className="odoo-cp-breadcrumb">
-            <h1>{t.customers.title}</h1>
+            <h1>{t.client.title}</h1>
           </div>
           <div className="odoo-cp-search">
             <div className="search-box">
@@ -181,26 +200,26 @@ export function CustomerTable({
                 <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
               </svg>
               <input className="line-search-input" value={query} onChange={(e) => setQuery(e.target.value)}
-                     placeholder={t.customers.searchPlaceholder} aria-label={t.customers.searchPlaceholder} />
+                     placeholder={t.client.searchPlaceholder} aria-label={t.client.searchPlaceholder} />
             </div>
           </div>
         </div>
         <div className="odoo-cp-bottom">
           <div className="odoo-cp-actions">
-            <Link href="/pelanggan/baru" className="btn primary">{t.customers.add}</Link>
+            <Link href="/client/baru" className="btn primary">{t.client.add}</Link>
           </div>
           <div className="odoo-cp-right">
             <span className="dim tnum" style={{ fontSize: 12.5, marginRight: 8 }}>
-              {filtered.length} {t.customers.title.toLowerCase()}
+              {filtered.length} {t.client.title.toLowerCase()}
             </span>
 
             <details className="dropdown" ref={filterRef} onToggle={(e) => e.currentTarget.open && closeOthers('filter')}>
               <summary className="btn ghost sm">
-                {t.customers.filters}{activeTags.length > 0 ? ` (${activeTags.length})` : ''}
+                {t.client.filters}{activeTags.length > 0 ? ` (${activeTags.length})` : ''}
               </summary>
               <div className="dropdown-body vertical">
                 {availableTags.length === 0 ? (
-                  <p className="dim" style={{ fontSize: 12.5, padding: '4px 6px' }}>{t.customers.noFilters}</p>
+                  <p className="dim" style={{ fontSize: 12.5, padding: '4px 6px' }}>{t.client.noFilters}</p>
                 ) : availableTags.map((tag) => (
                   <label key={tag} className="dropdown-check">
                     <input type="checkbox" checked={activeTags.includes(tag)} onChange={() => toggleTag(tag)} />
@@ -212,30 +231,30 @@ export function CustomerTable({
 
             <details className="dropdown" ref={groupRef} onToggle={(e) => e.currentTarget.open && closeOthers('group')}>
               <summary className="btn ghost sm">
-                {t.customers.groupBy}{groupBy !== 'none' ? ' •' : ''}
+                {t.client.groupBy}{groupBy !== 'none' ? ' •' : ''}
               </summary>
               <div className="dropdown-body vertical">
                 <label className="dropdown-check">
-                  <input type="radio" name="pelanggan-groupby" checked={groupBy === 'none'}
+                  <input type="radio" name="client-groupby" checked={groupBy === 'none'}
                          onChange={() => setGroupBy('none')} />
-                  {t.customers.noGroup}
+                  {t.client.noGroup}
                 </label>
                 <label className="dropdown-check">
-                  <input type="radio" name="pelanggan-groupby" checked={groupBy === 'tag'}
+                  <input type="radio" name="client-groupby" checked={groupBy === 'tag'}
                          onChange={() => setGroupBy('tag')} />
-                  {t.customers.groupByTag}
+                  {t.client.groupByTag}
                 </label>
               </div>
             </details>
 
             <div className="odoo-view-switchers">
-              <button className={`btn icon ${viewMode === 'kanban' ? 'active' : 'ghost'}`} 
+              <button className={`btn icon ${viewMode === 'kanban' ? 'active' : 'ghost'}`}
                       onClick={() => setViewMode('kanban')} aria-label="Kanban">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
                   <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
                 </svg>
               </button>
-              <button className={`btn icon ${viewMode === 'list' ? 'active' : 'ghost'}`} 
+              <button className={`btn icon ${viewMode === 'list' ? 'active' : 'ghost'}`}
                       onClick={() => setViewMode('list')} aria-label="List">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
                   <line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line>
@@ -250,14 +269,14 @@ export function CustomerTable({
         {filtered.length === 0 ? (
           <div className="panel" style={{ marginTop: 14 }}>
             <p className="empty" style={{ padding: '24px 0' }}>
-              {contacts.length === 0 ? t.customers.noCustomers : t.customers.noMatches}
+              {contacts.length === 0 ? t.client.noClients : t.client.noMatches}
             </p>
           </div>
         ) : (
           groups.map((g) => (
             <div key={g.label ?? '__all__'} style={{ marginTop: 14 }}>
               {g.label ? <div className="group-header" style={{ marginBottom: viewMode === 'kanban' ? 14 : 0, borderRadius: viewMode === 'kanban' ? 8 : undefined }}>{g.label} <span className="dim">({g.rows.length})</span></div> : null}
-              
+
               {viewMode === 'kanban' ? (
                 <div className="kanban-grid">
                   {g.rows.map(renderKanbanCard)}
@@ -268,14 +287,16 @@ export function CustomerTable({
                     <thead>
                       <tr>
                         <th style={{ width: 44 }} aria-label="checkbox"></th>
-                        <th>{t.customers.name}</th>
-                        <th>{t.customers.phone}</th>
-                        <th>{t.customers.tags}</th>
-                        <th className="num">{t.customers.purchases.count}</th>
-                        <th>{t.customers.purchases.column}</th>
-                        <th className="num">{t.customers.lastSeen}</th>
-                        <th style={{ textAlign: 'center' }}>{t.customers.chat}</th>
-                        <th style={{ textAlign: 'center' }}>{t.customers.actions}</th>
+                        <th>{t.client.name}</th>
+                        <th>{t.client.phone}</th>
+                        <th>{t.client.tags}</th>
+                        <th>{t.client.storeName}</th>
+                        <th>{t.client.storeStatus}</th>
+                        <th>{t.client.scheduleMeeting}</th>
+                        <th>{t.client.notes}</th>
+                        <th className="num">{t.client.lastSeen}</th>
+                        <th style={{ textAlign: 'center' }}>{t.client.chat}</th>
+                        <th style={{ textAlign: 'center' }}>{t.client.actions}</th>
                       </tr>
                     </thead>
                     <tbody>{g.rows.map(row)}</tbody>

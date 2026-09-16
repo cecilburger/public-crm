@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import type { Task, Member, Contact, Deal, TaskKind, GoogleCalendarStatus, GoogleCalendarEvent } from '@/lib/api';
+import type { Task, Member, Deal, TaskKind, Brand, GoogleCalendarStatus, GoogleCalendarEvent } from '@/lib/api';
 import { initials } from '@/lib/format';
 import { t } from '@/lib/copy';
-import { formatTaskDue, isTaskOverdue, isTaskDueToday } from '@/lib/taskHelpers';
-import { markTaskDone } from '@/app/(app)/actions';
+import { formatTaskDue, isTaskOverdue, isTaskDueToday, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
+import { markTaskDone, disconnectGoogleCalendar } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 import { TaskDrawer } from '@/components/TaskDrawer';
@@ -14,6 +14,8 @@ import { TaskDetailDrawer } from '@/components/TaskDetailDrawer';
 import { TaskKanban } from '@/components/TaskKanban';
 import { TaskCalendar } from '@/components/TaskCalendar';
 import { KindIcon } from '@/components/KindIcon';
+import { SendCalendarEventEmailButton } from '@/components/SendCalendarEventEmailButton';
+import { GoogleCalendarEventDetailDrawer } from '@/components/GoogleCalendarEventDetailDrawer';
 
 const GOOGLE_WINDOW_DAYS = 30;
 
@@ -37,9 +39,9 @@ const TABS: { key: 'all' | 'due' | Task['status']; label: string }[] = [
 type ViewMode = 'table' | 'kanban' | 'calendar';
 
 export function TaskTable({
-  tasks, members, contacts, deals, taskKinds, googleStatus,
+  tasks, members, deals, taskKinds, brands, googleStatus,
 }: {
-  tasks: Task[]; members: Member[]; contacts: Contact[]; deals: Deal[]; taskKinds: TaskKind[];
+  tasks: Task[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[]; brands: Brand[];
   googleStatus: GoogleCalendarStatus;
 }) {
   const [query, setQuery] = useState('');
@@ -47,6 +49,7 @@ export function TaskTable({
   const [view, setView] = useState<ViewMode>('table');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [detailGoogleEvent, setDetailGoogleEvent] = useState<GoogleCalendarEvent | null>(null);
 
   const names = new Map(members.map((m) => [m.id, m.name]));
 
@@ -62,7 +65,8 @@ export function TaskTable({
       if (tab === 'due' && tk.status !== 'open') return false;
       if ((tab === 'done' || tab === 'cancelled') && tk.status !== tab) return false;
       if (!q) return true;
-      const haystack = [tk.title, tk.contactName, tk.contactPhone, tk.dealTitle].filter(Boolean).join(' ').toLowerCase();
+      const haystack = [tk.title, tk.contactName, tk.contactPhone, tk.brandName, tk.brandPhone, tk.dealTitle]
+        .filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(q);
     });
   }, [tasks, query, tab]);
@@ -131,6 +135,17 @@ export function TaskTable({
         <div className="odoo-cp-bottom">
           <div className="odoo-cp-actions">
             <button type="button" className="btn primary" onClick={() => setDrawerOpen(true)}>{t.tasks.add}</button>
+            {googleStatus.connected ? (
+              <form action={disconnectGoogleCalendar}>
+                <CsrfField />
+                <button type="submit" className="btn ghost sm" title={t.tasks.disconnectHint}>
+                  <span className="google-dot" aria-hidden /> {t.tasks.googleConnected}
+                  {googleStatus.email ? <span className="dim" style={{ marginLeft: 5 }}>({googleStatus.email})</span> : null}
+                </button>
+              </form>
+            ) : (
+              <a href="/api/google-calendar/connect" className="btn ghost sm">{t.tasks.googleConnect}</a>
+            )}
           </div>
           <div className="odoo-cp-right">
             {TABS.map((tab_) => (
@@ -226,9 +241,13 @@ export function TaskTable({
                     <td className="dim">—</td>
                     <td style={{ textAlign: 'center' }}>
                       <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        <button type="button" className="btn ghost sm" onClick={() => setDetailGoogleEvent(row.event)}>
+                          {t.tasks.detail}
+                        </button>
                         <a href={row.event.htmlLink} target="_blank" rel="noreferrer" className="btn ghost sm">
                           {t.tasks.openInGoogle}
                         </a>
+                        {row.event.meetingLink ? <SendCalendarEventEmailButton event={row.event} /> : null}
                       </span>
                     </td>
                   </tr>
@@ -252,10 +271,17 @@ export function TaskTable({
                     </td>
                     <td><span className={PRIORITY_CHIP[row.task.priority]}>{t.tasks.priorityLabel[row.task.priority] ?? row.task.priority}</span></td>
                     <td>
-                      <Link href={`/pelanggan/${row.task.contactId}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                        <span className="avatar" aria-hidden>{initials(row.task.contactName)}</span>
-                        <b>{row.task.contactName ?? row.task.contactPhone ?? '—'}</b>
-                      </Link>
+                      {taskPartyHref(row.task) ? (
+                        <Link href={taskPartyHref(row.task)!} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                          <span className="avatar" aria-hidden>{initials(taskPartyName(row.task))}</span>
+                          <b>{taskPartyName(row.task) ?? '—'}</b>
+                        </Link>
+                      ) : (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                          <span className="avatar" aria-hidden>{initials(taskPartyName(row.task))}</span>
+                          <b>{taskPartyName(row.task) ?? '—'}</b>
+                        </span>
+                      )}
                     </td>
                     <td>
                       {formatTaskDue(row.task.dueAt)}
@@ -293,9 +319,10 @@ export function TaskTable({
       </div>
 
       <TaskDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
-                  contacts={contacts} members={members} deals={deals} taskKinds={taskKinds} />
+                  members={members} deals={deals} taskKinds={taskKinds} brands={brands} />
       <TaskDetailDrawer task={detailTask} open={detailTask !== null} onClose={() => setDetailTask(null)}
                         members={members} deals={deals} taskKinds={taskKinds} />
+      <GoogleCalendarEventDetailDrawer event={detailGoogleEvent} onClose={() => setDetailGoogleEvent(null)} />
     </>
   );
 }

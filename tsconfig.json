@@ -39,6 +39,7 @@
     "apps/api/**/*.ts",
     "apps/worker/**/*.ts",
     "apps/wa-bridge/**/*.ts",
+    "apps/ig-bridge/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": [

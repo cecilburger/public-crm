@@ -1,11 +1,14 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply } from '@/lib/api';
+import {
+  api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply, type Brand,
+  type WaBridgeChannel,
+} from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { Composer } from '@/components/Composer';
 import { DraftCard } from '@/components/DraftCard';
-import { assignConversation, resolveConversation, markAsCustomer } from '../../actions';
+import { assignConversation, resolveConversation, createDealFromConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 
 export const dynamic = 'force-dynamic';
@@ -24,11 +27,15 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
     throw err;
   }
 
-  const [me, members, deals, quickReplies] = await Promise.all([
+  const [me, members, deals, quickReplies, brands, channels] = await Promise.all([
     api<Me>('/v1/me'),
     api<Member[]>('/v1/members').catch(() => [] as Member[]),
     api<Deal[]>('/v1/deals').catch(() => [] as Deal[]),
     api<QuickReply[]>('/v1/quick-replies').catch(() => [] as QuickReply[]),
+    api<Brand[]>('/v1/brands').catch(() => [] as Brand[]),
+    // Multiple WhatsApp Web numbers can be connected at once — this is which
+    // one this specific conversation is actually happening on.
+    api<WaBridgeChannel[]>('/v1/wa-bridge/channels').catch(() => [] as WaBridgeChannel[]),
   ]);
 
   const { conversation, contact, messages, draft } = detail;
@@ -38,7 +45,12 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
   const openValue = contactDeals.filter((d) => d.status === 'open')
     .reduce((sum, d) => sum + Number(d.amount_idr), 0);
   const mine = conversation.assignee_id === me.user.id;
-  const isCustomer = contact.tags.includes('customer');
+  // If this contact is a known brand's PIC, the deal belongs to that brand —
+  // same as everywhere else deals are brand-first; otherwise fall back to
+  // the contact so the deal still has somewhere to attach.
+  const matchedBrand = brands.find((b) => b.contactId === conversation.contact_id);
+  const dealTitle = matchedBrand?.name ?? contact.displayName ?? contact.phone ?? 'Deal Baru';
+  const sendingChannel = channels.find((c) => c.id === conversation.channel_id);
 
   return (
     <div style={{ display: 'flex', minHeight: 0 }}>
@@ -48,6 +60,15 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
             <h2 style={{ fontSize: 15 }}>{contact.displayName ?? contact.phone ?? '—'}</h2>
             {contact.displayName ? <span className="mono dim">{contact.phone ?? '—'}</span> : null}
           </div>
+
+          {/* Which of the (possibly several) connected WhatsApp Web numbers
+              this conversation is actually on — so replying never means
+              guessing whose name and number the contact sees. */}
+          <span className="chip" title={sendingChannel?.phoneE164 ?? undefined}>
+            {t.waBridge.chattingFrom}: {sendingChannel
+              ? `${sendingChannel.displayName}${sendingChannel.phoneE164 ? ` · ${sendingChannel.phoneE164}` : ''}`
+              : t.waBridge.unknownNumber}
+          </span>
 
           {/* A WhatsApp Web session has no 24-hour Meta window — it can always
               reply freely, so the chip and the composer's template branch never
@@ -65,15 +86,14 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
             </form>
           ) : null}
 
-          {isCustomer ? (
-            <span className="chip good">{t.chats.markedCustomer}</span>
-          ) : (
-            <form action={markAsCustomer}>
-              <CsrfField />
-              <input type="hidden" name="conversationId" value={conversation.id} />
-              <button className="btn sm" type="submit">{t.chats.markCustomer}</button>
-            </form>
-          )}
+          <form action={createDealFromConversation}>
+            <CsrfField />
+            <input type="hidden" name="conversationId" value={conversation.id} />
+            <input type="hidden" name="contactId" value={matchedBrand ? '' : (conversation.contact_id ?? '')} />
+            <input type="hidden" name="brandId" value={matchedBrand?.id ?? ''} />
+            <input type="hidden" name="title" value={dealTitle} />
+            <button className="btn primary sm" type="submit">{t.sales.add}</button>
+          </form>
 
           <details className="dropdown">
             <summary className="btn sm">
@@ -118,9 +138,9 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
                   quickReplies={quickReplies} />
       </div>
 
-      <aside className="context" aria-label={t.chats.aboutCustomer}>
+      <aside className="context" aria-label={t.chats.aboutClient}>
         <section>
-          <h3>{t.chats.aboutCustomer}</h3>
+          <h3>{t.chats.aboutClient}</h3>
           <div className="kv"><span>{t.chats.name}</span><span className="v">{contact.displayName ?? '—'}</span></div>
           <div className="kv"><span>{t.chats.phone}</span><span className="v">{contact.phone ?? '—'}</span></div>
           <div className="kv"><span>{t.chats.lastChat}</span><span className="v">{ago(conversation.last_inbound_at)}</span></div>
