@@ -319,6 +319,13 @@ export interface IgBridgeConnection {
   updatedAt: string | null;
 }
 
+export interface IgMetaConnection {
+  status: 'disconnected' | 'connected' | 'error';
+  igUsername: string | null;
+  lastError: string | null;
+  updatedAt: string | null;
+}
+
 export interface EmailSettings {
   configured: boolean;
   emailFrom: string | null;

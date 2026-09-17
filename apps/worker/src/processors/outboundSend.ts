@@ -1,7 +1,11 @@
 import { guardOutbound, sendRatePerSecond, normalisePhone, toMicros, META_RATE_IDR } from '@kirana/core';
-import { withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, type Database } from '@kirana/db';
+import {
+  withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, getDecryptedIgToken, type Database,
+} from '@kirana/db';
 import type { MetaClient } from '../meta.ts';
 import type { WaBridgeClient } from '../waBridge.ts';
+
+const IG_GRAPH_URL = 'https://graph.instagram.com';
 
 export interface SendDeps {
   db: Database;
@@ -25,9 +29,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
+      ig_psid_enc: string | null;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
-              c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id, ct.phone_enc
+              c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id,
+              ct.phone_enc, ct.ig_psid_enc
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
@@ -41,6 +47,43 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
 
     const keys = await tenantKeys(tx, deps.kek, job.tenantId);
     const body = msg.body_enc ? openField(keys, job.tenantId, msg.body_enc) : '';
+
+    // No phone number in the loop at all for Instagram — the recipient is an
+    // opaque IGSID on the contact, and the credential lives in
+    // `ig_meta_connections`, not on the channel row the way Meta's WhatsApp
+    // Cloud API credential does.
+    if (msg.channel_kind === 'instagram') {
+      const psid = msg.ig_psid_enc ? openField(keys, job.tenantId, msg.ig_psid_enc) : null;
+      const ig = psid ? await getDecryptedIgToken({ tx, tenantId: job.tenantId, kek: deps.kek }) : null;
+      if (!psid || !ig) {
+        await markFailed(tx, job, 'channel_unavailable');
+        return { status: 'failed' };
+      }
+      try {
+        const res = await fetch(`${IG_GRAPH_URL}/${ig.igUserId}/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${ig.accessToken}` },
+          body: JSON.stringify({ recipient: { id: psid }, message: { text: body } }),
+        });
+        const resBody = await res.json() as { message_id?: string; error?: { message?: string } };
+        if (!res.ok) throw new Error(resBody.error?.message ?? `Instagram send failed (${res.status})`);
+
+        await tx.query(
+          `update messages set status = 'sent', provider_message_id = $3 where tenant_id = $1 and id = $2`,
+          [job.tenantId, job.messageId, resBody.message_id ?? null],
+        );
+        await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
+          [job.tenantId, job.messageId]);
+        return { status: 'sent', providerMessageId: resBody.message_id };
+      } catch (err) {
+        // Instagram gives no structured "retry vs permanent" signal the way
+        // Meta's WhatsApp error codes do, so a failed send here is treated as
+        // permanent rather than retried into the same error forever.
+        await markFailed(tx, job, (err as Error).message.slice(0, 500));
+        return { status: 'failed' };
+      }
+    }
+
     const to = msg.phone_enc ? normalisePhone(openField(keys, job.tenantId, msg.phone_enc)) : null;
     if (!to) {
       await markFailed(tx, job, 'channel_unavailable');

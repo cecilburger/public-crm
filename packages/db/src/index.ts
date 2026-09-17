@@ -21,3 +21,4 @@ export * from './broadcasts.ts';
 export * from './googleCalendar.ts';
 export * from './emailSettings.ts';
 export * from './igBridge.ts';
+export * from './igMeta.ts';

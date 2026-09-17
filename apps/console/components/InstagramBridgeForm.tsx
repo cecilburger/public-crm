@@ -68,7 +68,7 @@ export function InstagramBridgeForm({ connection }: { connection: IgBridgeConnec
 
   return (
     <div className="panel">
-      <header><h2>{t.instagramBridge.title}</h2></header>
+      <header><h2>{t.instagramBridge.sectionTitle}</h2></header>
       <div className="body stack" style={{ gap: 14 }}>
         <div className="notice" style={{ background: 'var(--warn-soft)', borderColor: 'var(--warn)' }}>
           <span className="notice-icon" style={{ background: 'var(--warn)' }}>!</span>
