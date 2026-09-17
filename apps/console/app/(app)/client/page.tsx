@@ -1,25 +1,8 @@
-import { api, type Contact, type ConversationSummary } from '@/lib/api';
-import { ClientTable } from '@/components/ClientTable';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
-
-export default async function ClientsPage() {
-  const [contacts, conversations] = await Promise.all([
-    api<Contact[]>('/v1/contacts'),
-    api<ConversationSummary[]>('/v1/conversations?limit=200'),
-  ]);
-
-  // Conversations come back newest-first, so the first one seen per contact
-  // is the one worth linking to — a client with two threads still gets a
-  // single "Chat" link, and it goes to the live one.
-  const conversationByContact: Record<string, string> = {};
-  for (const c of conversations) {
-    if (!(c.contact_id in conversationByContact)) conversationByContact[c.contact_id] = c.id;
-  }
-
-  return (
-    <div className="scroll pad odoo-page stack">
-      <ClientTable contacts={contacts} conversationByContact={conversationByContact} />
-    </div>
-  );
+// The Client menu is now two filtered views (Client Deal, Client On Proses),
+// not one flat list — this bare path only exists so an old link or bookmark
+// still lands somewhere real instead of a 404.
+export default function ClientPage() {
+  redirect('/client/proses');
 }

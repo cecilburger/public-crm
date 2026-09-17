@@ -3,10 +3,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { Contact } from '@/lib/api';
+import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
 import { ago, initials } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { ClientRowActions } from '@/components/ClientRowActions';
+import { ClientQuickAddTaskDrawer } from '@/components/ClientQuickAddTaskDrawer';
+import { ClientAddDrawer } from '@/components/ClientAddDrawer';
+import { ClientDetailDrawer } from '@/components/ClientDetailDrawer';
 
 type Group = { label: string | null; rows: Contact[] };
 
@@ -48,16 +51,28 @@ function useSingleOpenDropdown() {
 }
 
 export function ClientTable({
-  contacts, conversationByContact = {},
+  contacts, conversationByContact = {}, members = [], deals = [], taskKinds = [],
+  title = t.client.title, emptyMessage = t.client.noClients,
 }: {
   contacts: Contact[]; conversationByContact?: Record<string, string>;
+  members?: Member[]; deals?: Deal[]; taskKinds?: TaskKind[];
+  title?: string; emptyMessage?: string;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [groupBy, setGroupBy] = useState<'none' | 'tag'>('none');
   const [viewMode, setViewMode] = useState<'kanban' | 'list'>('list');
+  const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [presetContact, setPresetContact] = useState<{ id: string; name: string } | null>(null);
+  const [addClientOpen, setAddClientOpen] = useState(false);
+  const [detailContact, setDetailContact] = useState<Contact | null>(null);
   const { filterRef, groupRef, closeOthers } = useSingleOpenDropdown();
+
+  const openScheduleMeeting = (contact: { id: string; name: string }) => {
+    setPresetContact(contact);
+    setTaskDrawerOpen(true);
+  };
 
   const availableTags = useMemo(() => {
     const set = new Set<string>();
@@ -97,46 +112,56 @@ export function ClientTable({
   const toggleTag = (tag: string) =>
     setActiveTags((prev) => (prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag]));
 
-  // The kanban card is itself a <Link> to the client record, so the Chat
-  // button can't be a nested <a> — it navigates through the router instead,
-  // stopping the click before it bubbles up to the card's own link.
+  // The kanban card's own click opens the detail drawer, so the Chat button
+  // (a real navigation) has to stop the click before it bubbles up and opens
+  // the drawer on top of the navigation.
   const goToChat = (conversationId: string) => (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     router.push(`/obrolan/${conversationId}`);
   };
 
+  // Same reasoning as goToChat — the button sits inside the card's own click area.
+  const clickScheduleMeeting = (contact: { id: string; name: string }) => (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openScheduleMeeting(contact);
+  };
+
   const renderKanbanCard = (c: Contact) => {
     const conversationId = conversationByContact[c.id];
     return (
-      <Link href={`/client/${c.id}`} key={c.id} className="kanban-card">
+      <div key={c.id} className="kanban-card" role="button" tabIndex={0}
+           onClick={() => setDetailContact(c)}
+           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDetailContact(c); }}>
         <div className="kanban-card-top">
           <span className="kanban-avatar" aria-hidden>{initials(c.displayName)}</span>
           <div className="kanban-details">
             <b className="kanban-title">{c.displayName ?? c.phone ?? '—'}</b>
             <div className="kanban-subtitle mono">{c.phone ?? '—'}</div>
-            {(c.tags.length > 0 || c.storeStatus) && (
+            {c.storeStatus ? (
               <div className="kanban-tags">
-                {c.storeStatus ? (
-                  <span className={STORE_STATUS_CHIP[c.storeStatus] ?? 'chip'}>
-                    {t.client.storeStatusLabel[c.storeStatus] ?? c.storeStatus}
-                  </span>
-                ) : null}
-                {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
+                <span className={STORE_STATUS_CHIP[c.storeStatus] ?? 'chip'}>
+                  {t.client.storeStatusLabel[c.storeStatus] ?? c.storeStatus}
+                </span>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
         <div className="kanban-card-bottom">
           <span className="dim" style={{ fontSize: 11 }}>{ago(c.lastSeenAt)}</span>
           <span className="spacer" />
+          <button type="button" className="btn ghost sm"
+                  onClick={clickScheduleMeeting({ id: c.id, name: c.displayName ?? c.phone ?? '—' })}>
+            {t.tasks.kindLabel.meeting}
+          </button>
           <button type="button" className="btn ghost sm" disabled={!conversationId}
                   title={conversationId ? undefined : t.client.noChat}
                   onClick={conversationId ? goToChat(conversationId) : undefined}>
             {t.client.chat}
           </button>
         </div>
-      </Link>
+      </div>
     );
   };
 
@@ -148,17 +173,16 @@ export function ClientTable({
           <input type="checkbox" style={{ accentColor: 'var(--brand)', cursor: 'pointer' }} />
         </td>
         <td>
-          <Link href={`/client/${c.id}`} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <button type="button" onClick={() => setDetailContact(c)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 9, background: 'none', border: 'none',
+                    padding: 0, cursor: 'pointer', font: 'inherit', color: 'inherit', textAlign: 'left',
+                  }}>
             <span className="avatar" aria-hidden>{initials(c.displayName)}</span>
             <b>{c.displayName ?? c.phone ?? '—'}</b>
-          </Link>
+          </button>
         </td>
         <td className="mono">{c.phone ?? '—'}</td>
-        <td>
-          <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-            {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
-          </span>
-        </td>
         <td>{c.storeName || <span className="dim">—</span>}</td>
         <td>
           {c.storeStatus ? (
@@ -182,7 +206,10 @@ export function ClientTable({
             </button>
           )}
         </td>
-        <td style={{ textAlign: 'center' }}><ClientRowActions id={c.id} name={c.displayName ?? c.phone ?? '—'} /></td>
+        <td style={{ textAlign: 'center' }}>
+          <ClientRowActions id={c.id} name={c.displayName ?? c.phone ?? '—'}
+                            onOpenDetail={() => setDetailContact(c)} onScheduleMeeting={openScheduleMeeting} />
+        </td>
       </tr>
     );
   };
@@ -192,7 +219,7 @@ export function ClientTable({
       <div className="odoo-control-panel">
         <div className="odoo-cp-top">
           <div className="odoo-cp-breadcrumb">
-            <h1>{t.client.title}</h1>
+            <h1>{title}</h1>
           </div>
           <div className="odoo-cp-search">
             <div className="search-box">
@@ -206,7 +233,12 @@ export function ClientTable({
         </div>
         <div className="odoo-cp-bottom">
           <div className="odoo-cp-actions">
-            <Link href="/client/baru" className="btn primary">{t.client.add}</Link>
+            <button type="button" className="btn primary" onClick={() => setAddClientOpen(true)}>
+              {t.client.add}
+            </button>
+            <button type="button" className="btn ghost" onClick={() => { setPresetContact(null); setTaskDrawerOpen(true); }}>
+              {t.client.scheduleMeeting}
+            </button>
           </div>
           <div className="odoo-cp-right">
             <span className="dim tnum" style={{ fontSize: 12.5, marginRight: 8 }}>
@@ -269,7 +301,7 @@ export function ClientTable({
         {filtered.length === 0 ? (
           <div className="panel" style={{ marginTop: 14 }}>
             <p className="empty" style={{ padding: '24px 0' }}>
-              {contacts.length === 0 ? t.client.noClients : t.client.noMatches}
+              {contacts.length === 0 ? emptyMessage : t.client.noMatches}
             </p>
           </div>
         ) : (
@@ -289,7 +321,6 @@ export function ClientTable({
                         <th style={{ width: 44 }} aria-label="checkbox"></th>
                         <th>{t.client.name}</th>
                         <th>{t.client.phone}</th>
-                        <th>{t.client.tags}</th>
                         <th>{t.client.storeName}</th>
                         <th>{t.client.storeStatus}</th>
                         <th>{t.client.scheduleMeeting}</th>
@@ -307,6 +338,12 @@ export function ClientTable({
           ))
         )}
       </div>
+
+      <ClientQuickAddTaskDrawer open={taskDrawerOpen} onClose={() => { setTaskDrawerOpen(false); setPresetContact(null); }}
+                                contacts={contacts} members={members} deals={deals} taskKinds={taskKinds}
+                                presetContact={presetContact} />
+      <ClientAddDrawer open={addClientOpen} onClose={() => setAddClientOpen(false)} />
+      <ClientDetailDrawer contact={detailContact} open={detailContact !== null} onClose={() => setDetailContact(null)} />
     </>
   );
 }

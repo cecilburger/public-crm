@@ -1,10 +1,18 @@
+import { t } from '@/lib/copy';
 import { TaskTable } from '@/components/TaskTable';
 import { GcalNotice } from '@/components/GcalNotice';
-import { loadTaskPageData } from './loadTaskPageData';
+import { loadTaskPageData } from '../tugas/loadTaskPageData';
 
 export const dynamic = 'force-dynamic';
 
-export default async function TasksPage({
+/**
+ * Same page as Tugas — same `TaskTable` (search, tabs, table/kanban/kalender
+ * toggle, the Google Calendar connect button) — just opened straight to the
+ * Kalender view instead of the table, for a menu whose whole point is the
+ * calendar. The Google connection itself is shared with Tugas, not a
+ * separate one: connecting from either page connects both.
+ */
+export default async function CalendarPage({
   searchParams,
 }: { searchParams: Promise<{ gcal?: string; detail?: string }> }) {
   const params = await searchParams;
@@ -15,7 +23,8 @@ export default async function TasksPage({
       {params.gcal === 'connected' ? <GcalNotice variant="connected" /> : null}
       {params.gcal === 'error' ? <GcalNotice variant="error" detail={params.detail} /> : null}
       <TaskTable tasks={tasks} members={members} deals={deals} taskKinds={taskKinds}
-                 brands={brands} googleStatus={googleStatus} />
+                 brands={brands} googleStatus={googleStatus}
+                 title={t.nav.calendar} defaultView="calendar" />
     </div>
   );
 }

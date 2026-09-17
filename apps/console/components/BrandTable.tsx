@@ -264,7 +264,7 @@ export function BrandTable({ brands, members }: { brands: Brand[]; members: Memb
               <thead>
                 <tr>
                   <th>{t.brand.name}</th>
-                  <th>{t.brand.picName}</th>
+                  <th>{t.brand.phone}</th>
                   <th>{t.brand.category}</th>
                   <th>{t.brand.source}</th>
                   <th>{t.brand.status}</th>
@@ -286,9 +286,8 @@ export function BrandTable({ brands, members }: { brands: Brand[]; members: Memb
                         </span>
                       </Link>
                     </td>
-                    <td>
-                      {b.picName ?? <span className="dim">—</span>}
-                      {b.phone ? <span className="mono dim" style={{ display: 'block', fontSize: 11 }}>{b.phone}</span> : null}
+                    <td className="mono">
+                      {b.phone ?? <span className="dim">—</span>}
                     </td>
                     <td>
                       {b.category ?? <span className="dim">—</span>}

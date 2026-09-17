@@ -1,15 +1,16 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import {
-  api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply, type Brand,
+  api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply,
   type WaBridgeChannel,
 } from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { Composer } from '@/components/Composer';
 import { DraftCard } from '@/components/DraftCard';
-import { assignConversation, resolveConversation, createDealFromConversation } from '../../actions';
+import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
+import { AddClientFromChatButton } from '@/components/AddClientFromChatButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +28,11 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
     throw err;
   }
 
-  const [me, members, deals, quickReplies, brands, channels] = await Promise.all([
+  const [me, members, deals, quickReplies, channels] = await Promise.all([
     api<Me>('/v1/me'),
     api<Member[]>('/v1/members').catch(() => [] as Member[]),
     api<Deal[]>('/v1/deals').catch(() => [] as Deal[]),
     api<QuickReply[]>('/v1/quick-replies').catch(() => [] as QuickReply[]),
-    api<Brand[]>('/v1/brands').catch(() => [] as Brand[]),
     // Multiple WhatsApp Web numbers can be connected at once — this is which
     // one this specific conversation is actually happening on.
     api<WaBridgeChannel[]>('/v1/wa-bridge/channels').catch(() => [] as WaBridgeChannel[]),
@@ -45,11 +45,6 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
   const openValue = contactDeals.filter((d) => d.status === 'open')
     .reduce((sum, d) => sum + Number(d.amount_idr), 0);
   const mine = conversation.assignee_id === me.user.id;
-  // If this contact is a known brand's PIC, the deal belongs to that brand —
-  // same as everywhere else deals are brand-first; otherwise fall back to
-  // the contact so the deal still has somewhere to attach.
-  const matchedBrand = brands.find((b) => b.contactId === conversation.contact_id);
-  const dealTitle = matchedBrand?.name ?? contact.displayName ?? contact.phone ?? 'Deal Baru';
   const sendingChannel = channels.find((c) => c.id === conversation.channel_id);
 
   return (
@@ -86,14 +81,11 @@ export default async function ChatWaThreadPage({ params }: { params: Promise<{ i
             </form>
           ) : null}
 
-          <form action={createDealFromConversation}>
-            <CsrfField />
-            <input type="hidden" name="conversationId" value={conversation.id} />
-            <input type="hidden" name="contactId" value={matchedBrand ? '' : (conversation.contact_id ?? '')} />
-            <input type="hidden" name="brandId" value={matchedBrand?.id ?? ''} />
-            <input type="hidden" name="title" value={dealTitle} />
-            <button className="btn primary sm" type="submit">{t.sales.add}</button>
-          </form>
+          {contact.tags.includes('customer') ? (
+            <span className="chip good">{t.chats.alreadyClient}</span>
+          ) : (
+            <AddClientFromChatButton contactId={conversation.contact_id} contactName={contact.displayName} />
+          )}
 
           <details className="dropdown">
             <summary className="btn sm">
