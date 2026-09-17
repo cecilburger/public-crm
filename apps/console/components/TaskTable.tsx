@@ -39,14 +39,14 @@ const TABS: { key: 'all' | 'due' | Task['status']; label: string }[] = [
 type ViewMode = 'table' | 'kanban' | 'calendar';
 
 export function TaskTable({
-  tasks, members, deals, taskKinds, brands, googleStatus,
+  tasks, members, deals, taskKinds, brands, googleStatus, title = t.tasks.title, defaultView = 'table',
 }: {
   tasks: Task[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[]; brands: Brand[];
-  googleStatus: GoogleCalendarStatus;
+  googleStatus: GoogleCalendarStatus; title?: string; defaultView?: ViewMode;
 }) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'due' | Task['status']>('due');
-  const [view, setView] = useState<ViewMode>('table');
+  const [view, setView] = useState<ViewMode>(defaultView);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [detailGoogleEvent, setDetailGoogleEvent] = useState<GoogleCalendarEvent | null>(null);
@@ -120,7 +120,7 @@ export function TaskTable({
       <div className="odoo-control-panel">
         <div className="odoo-cp-top">
           <div className="odoo-cp-breadcrumb">
-            <h1>{t.tasks.title}</h1>
+            <h1>{title}</h1>
           </div>
           <div className="odoo-cp-search">
             <div className="search-box">

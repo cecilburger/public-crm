@@ -198,9 +198,11 @@ export interface Contact {
   id: string;
   displayName: string | null;
   phone: string | null;
+  email: string | null;
   tags: string[];
   firstSeenAt: string;
   lastSeenAt: string;
+  address: string | null;
   notes: string | null;
   storeName: string | null;
   storeStatus: 'prospek' | 'aktif' | 'nonaktif' | null;

@@ -2,7 +2,9 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { api, ApiError, type DocumentLayoutElement, type BroadcastPreview, type BroadcastDetail } from '@/lib/api';
+import {
+  api, ApiError, type DocumentLayoutElement, type BroadcastPreview, type BroadcastDetail, type ContactDetail,
+} from '@/lib/api';
 import { t } from '@/lib/copy';
 import { assertCsrf, CsrfError } from '@/lib/csrf';
 
@@ -153,6 +155,7 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
     await submitTaskForm(fields);
     revalidatePath('/tugas');
     if (fields.brandId) revalidatePath(`/brand/${fields.brandId}`);
+    if (fields.contactId) { revalidatePath('/client/deal'); revalidatePath('/client/proses'); }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
@@ -289,8 +292,44 @@ export async function createClient(_prev: ActionResult | null, form: FormData): 
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
-  revalidatePath('/client');
-  redirect('/client');
+  revalidatePath('/client/deal');
+  revalidatePath('/client/proses');
+  redirect('/client/proses');
+}
+
+/**
+ * Same as `createClient`, minus the redirect — for the slide-in drawer on
+ * the Client Deal/On Proses tables themselves, which are already on one of
+ * those pages and just need the list to refresh and the panel to close, not
+ * a navigation. The full-page form at `/client/baru` still exists and still
+ * works exactly as before; this is an additional, faster path in.
+ */
+export async function createClientInline(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
+    readClientForm(form);
+
+  try {
+    await api('/v1/contacts', {
+      method: 'POST',
+      body: {
+        ...(displayName ? { displayName } : {}),
+        ...(phone ? { phone } : {}),
+        ...(email ? { email } : {}),
+        ...(address ? { address } : {}),
+        ...(notes ? { notes } : {}),
+        ...(storeName ? { storeName } : {}),
+        ...(storeStatus ? { storeStatus } : {}),
+        ...(scheduleMeeting ? { scheduleMeeting } : {}),
+        tags,
+      },
+    });
+    revalidatePath('/client/deal');
+    revalidatePath('/client/proses');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
+  }
 }
 
 export async function updateClient(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -309,7 +348,8 @@ export async function updateClient(_prev: ActionResult | null, form: FormData): 
         scheduleMeeting: scheduleMeeting || null,
       },
     });
-    revalidatePath('/client');
+    revalidatePath('/client/deal');
+    revalidatePath('/client/proses');
     revalidatePath(`/client/${id}`);
     return { ok: true };
   } catch (err) {
@@ -321,8 +361,9 @@ export async function deleteClient(form: FormData): Promise<void> {
   await assertCsrf(form);
   const id = String(form.get('id') ?? '');
   await api(`/v1/contacts/${id}`, { method: 'DELETE' });
-  revalidatePath('/client');
-  redirect('/client');
+  revalidatePath('/client/deal');
+  revalidatePath('/client/proses');
+  redirect('/client/proses');
 }
 
 /* ------------------------------------------------------------------- brand */
@@ -756,6 +797,47 @@ export async function createDealFromConversation(form: FormData): Promise<void> 
   revalidatePath('/deal');
   revalidatePath('/chat-wa', 'layout');
   redirect('/deal');
+}
+
+/**
+ * The "Tambah Client" button on a Chat WA thread — this contact already has
+ * a row in `contacts` (they messaged in), so this tags them `customer`
+ * rather than creating a second one; a fresh `POST /v1/contacts` for the
+ * same phone number would just collide with the unique index and fail. A
+ * schedule-meeting date is required so the new client lands in Client On
+ * Proses immediately instead of appearing in neither list. Fetches the
+ * current record first so fields this form doesn't touch (address, notes,
+ * store status…) aren't wiped by the PATCH, which expects the whole record.
+ */
+export async function addClientFromChat(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const contactId = String(form.get('contactId') ?? '');
+  const displayName = String(form.get('displayName') ?? '').trim();
+  const scheduleMeeting = String(form.get('scheduleMeeting') ?? '').trim();
+  if (!contactId || !scheduleMeeting) return { ok: false, error: t.chats.addClientFailed };
+
+  try {
+    const current = await api<ContactDetail>(`/v1/contacts/${contactId}`);
+    const tags = current.tags.includes('customer') ? current.tags : [...current.tags, 'customer'];
+    await api(`/v1/contacts/${contactId}`, {
+      method: 'PATCH',
+      body: {
+        // `current.phone` already comes back masked or real depending on this
+        // actor's own `contact:export` permission — sending it straight back
+        // is safe either way, since the PATCH route itself drops it when the
+        // actor can't reveal numbers, the same rule `updateClient` follows.
+        displayName: displayName || current.displayName, phone: current.phone, email: current.email,
+        address: current.address, notes: current.notes, tags,
+        storeName: current.storeName, storeStatus: current.storeStatus, scheduleMeeting,
+      },
+    });
+    revalidatePath('/client/proses');
+    revalidatePath('/client/deal');
+    revalidatePath('/chat-wa', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chats.addClientFailed };
+  }
 }
 
 export async function updateDealDetails(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {

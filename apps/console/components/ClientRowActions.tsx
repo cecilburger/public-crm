@@ -1,23 +1,35 @@
 'use client';
 
 import { useRef } from 'react';
-import Link from 'next/link';
 import { deleteClient } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 
 /**
- * Edit and delete, right on the row — clicking the name still opens the same
- * full form, this just means you don't have to.
+ * Edit, delete, and Jadwal Meeting, right on the row — Detail/Edit both open
+ * the same slide-in `ClientDetailDrawer` (see `ClientTable`), same as
+ * clicking the name now does; the full page at `/client/[id]` is still one
+ * click away from inside that drawer. Jadwal Meeting opens the same
+ * quick-add task drawer as the toolbar's "Tambah Tugas" button, just
+ * pre-aimed at this client with kind=meeting — see
+ * `ClientQuickAddTaskDrawer`'s `presetContact`.
  */
-export function ClientRowActions({ id, name }: { id: string; name: string }) {
+export function ClientRowActions({
+  id, name, onOpenDetail, onScheduleMeeting,
+}: {
+  id: string; name: string; onOpenDetail: () => void;
+  onScheduleMeeting: (contact: { id: string; name: string }) => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   return (
     <>
       <span style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-        <Link href={`/client/${id}`} className="btn ghost sm">{t.client.detail}</Link>
-        <Link href={`/client/${id}`} className="btn ghost sm">{t.client.edit}</Link>
+        <button type="button" className="btn ghost sm" onClick={onOpenDetail}>{t.client.detail}</button>
+        <button type="button" className="btn ghost sm" onClick={onOpenDetail}>{t.client.edit}</button>
+        <button type="button" className="btn ghost sm" onClick={() => onScheduleMeeting({ id, name })}>
+          {t.tasks.kindLabel.meeting}
+        </button>
         <button type="button" className="btn ghost sm" style={{ color: 'var(--danger)' }}
                 onClick={() => dialogRef.current?.showModal()}>
           {t.client.delete}

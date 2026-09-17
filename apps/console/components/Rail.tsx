@@ -17,8 +17,11 @@ const ICONS = {
   chats: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z" />,
   chatWa: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 7h6M9 11h6M9 15h3" /></>,
   client: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6.5 7-6.5s7 2.9 7 6.5" /></>,
+  clientDeal: <><circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5 5.5-5.5" /></>,
+  clientProses: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 2" /></>,
   orders: <><path d="M3 7l2-4h14l2 4M3 7h18M3 7v13a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V7" /><path d="M9 11a3 3 0 0 0 6 0" /></>,
   tasks: <><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M8 12.5l2.3 2.3L16 9" /></>,
+  calendar: <><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" /></>,
   contact: <><rect x="4" y="4" width="16" height="17" rx="2" /><circle cx="12" cy="10.5" r="2.3" /><path d="M8.3 16.5c.7-1.7 2-2.5 3.7-2.5s3 .8 3.7 2.5M9 4V2.5M15 4V2.5" /></>,
   brand: <><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" /></>,
   brandManagement: <><path d="M12 3v12M8 7l4-4 4 4" /><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></>,
@@ -92,33 +95,53 @@ function useTheme(): [ThemePref, () => void] {
  * sits above this on its own, messaging lives in the Inbox drawer, and
  * Billing/history stay under Settings — none of that is in the way of the
  * person whose job is answering customers.
+ *
+ * Kelola Brand (`/brand-management`) is hidden from here for now, not
+ * deleted — the page and its import flow still work if visited directly.
  */
 const NAV_BEFORE_SALES = [
-  { href: '/client', label: t.nav.client, icon: 'client' as const },
-  { href: '/tugas', label: t.nav.tasks, icon: 'tasks' as const },
+  { href: '/calendar', label: t.nav.calendar, icon: 'calendar' as const },
   { href: '/brand', label: t.nav.brand, icon: 'brand' as const },
-  { href: '/brand-management', label: t.nav.brandManagement, icon: 'brandManagement' as const },
 ];
-const NAV_AFTER_SALES = [
-  { href: '/tim', label: t.nav.team, icon: 'team' as const },
+// Tugas (`/tugas`) is hidden from the rail for now, not deleted — the page
+// still works if visited directly, and the Client pages' "Jadwal Meeting"
+// action links straight into it.
+const TASKS: { href: string; label: string; icon: keyof typeof ICONS }[] = [
+  { href: '/tugas', label: t.nav.tasks, icon: 'tasks' as const },
+];
+// Tim (`/tim`) is hidden from here for now, not deleted — the page still
+// works if visited directly.
+const NAV_AFTER_SALES: { href: string; label: string; icon: keyof typeof ICONS }[] = [];
+
+// Client Deal and Client On Proses are the same table, filtered two ways —
+// one drawer, same idea as Deal/Broadcast, rather than two flat top-level items.
+const CLIENT = [
+  { href: '/client/proses', label: t.nav.clientProses, icon: 'clientProses' as const },
+  { href: '/client/deal', label: t.nav.clientDeal, icon: 'clientDeal' as const },
 ];
 
-// Its own drawer, same idea as Customize — starts with just Workflow, more
-// automation types will land here later.
+// Hidden from the rail for now (not deleted — /automation/workflow still
+// works if visited directly). Its own drawer, same idea as Customize —
+// starts with just Workflow, more automation types will land here later.
 const AUTOMATION = [
   { href: '/automation/workflow', label: t.automation.workflowTitle, icon: 'workflow' as const },
 ];
 
-// Deal's own drawer — the deal board and the targets it's measured against
-// read as one topic, so Target lives here instead of as a bare top-level item.
+// Hidden from the rail for now (not deleted — /deal and /target still work
+// if visited directly, and this list is what a restore re-adds a render
+// block for). Deal's own drawer — the deal board and the targets it's
+// measured against read as one topic, so Target lives here instead of as a
+// bare top-level item.
 const DEAL = [
   { href: '/deal', label: t.nav.sales, icon: 'sales' as const },
   { href: '/target', label: t.nav.target, icon: 'target' as const },
 ];
 
-// Its own top-level drawer, not under Pengaturan — the templates a broadcast
-// sends are only useful in service of sending one, so Template Pesan moved
-// here instead of staying a settings tab nobody without broadcast access needs.
+// Hidden from the rail for now (not deleted — /broadcast and
+// /broadcast/template-pesan still work if visited directly). Its own
+// top-level drawer, not under Pengaturan — the templates a broadcast sends
+// are only useful in service of sending one, so Template Pesan moved here
+// instead of staying a settings tab nobody without broadcast access needs.
 const BROADCAST = [
   { href: '/broadcast', label: t.broadcast.title, icon: 'broadcast' as const },
   { href: '/broadcast/template-pesan', label: t.messageTemplate.title, icon: 'messageTemplate' as const },
@@ -134,16 +157,19 @@ const INBOX = [
   { href: '/channel-wa', label: t.nav.channelWa, badge: false, icon: 'channelWa' as const },
 ];
 
-// A drawer of its own, same idea as Settings — reports an agent checks
-// occasionally, not the three things they do every day.
+// Hidden from the rail for now (not deleted — /status-nomor and
+// /performa-agen still work if visited directly). A drawer of its own, same
+// idea as Settings — reports an agent checks occasionally, not the three
+// things they do every day.
 const MONITORING = [
   { href: '/status-nomor', label: t.nav.waStatus, icon: 'waStatus' as const },
   { href: '/performa-agen', label: t.nav.agentPerformance, icon: 'agentPerformance' as const },
 ];
 
-// Where a tenant shapes its own paperwork — starts with Dokumen (the PDF
-// quotation/invoice template editor), more will land here later. The page
-// itself doesn't exist yet; this just reserves its place in the menu.
+// Hidden from the rail for now (not deleted — /customize/dokumen still
+// works if visited directly). Where a tenant shapes its own paperwork —
+// starts with Dokumen (the PDF quotation/invoice template editor), more
+// will land here later.
 const CUSTOMIZE = [
   { href: '/customize/dokumen', label: t.nav.document, icon: 'document' as const },
 ];
@@ -208,23 +234,12 @@ export function Rail({
     system: 'themeSystem', light: 'themeLight', dark: 'themeDark',
   };
 
+  const onClient = CLIENT.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`))
+    || pathname === '/client' || pathname.startsWith('/client/');
+  const [clientExpanded, toggleClient] = useExpandable(onClient);
+
   const onInbox = INBOX.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
   const [inboxExpanded, toggleInbox] = useExpandable(onInbox);
-
-  const onAutomation = AUTOMATION.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [automationExpanded, toggleAutomation] = useExpandable(onAutomation);
-
-  const onMonitoring = MONITORING.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [monitoringExpanded, toggleMonitoring] = useExpandable(onMonitoring);
-
-  const onCustomize = CUSTOMIZE.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [customizeExpanded, toggleCustomize] = useExpandable(onCustomize);
-
-  const onDeal = DEAL.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [dealExpanded, toggleDeal] = useExpandable(onDeal);
-
-  const onBroadcast = BROADCAST.some((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
-  const [broadcastExpanded, toggleBroadcast] = useExpandable(onBroadcast);
 
   // A group toggle only opens a flyout while collapsed there's nowhere to put
   // it, so the click both expands the rail and opens the group instead.
@@ -304,137 +319,21 @@ export function Rail({
         ) : null}
       </div>
 
-      {NAV_BEFORE_SALES.map((n) => item(n.href, n.label, n.icon))}
-
       <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleBroadcast)}
-                aria-expanded={broadcastExpanded} aria-current={onBroadcast ? 'page' : undefined}
-                title={collapsed ? t.nav.broadcast : undefined}>
+        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleClient)}
+                aria-expanded={clientExpanded} aria-current={onClient ? 'page' : undefined}
+                title={collapsed ? t.nav.client : undefined}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">{ICONS.broadcast}</svg>
-          <span className="navitem-label">{t.nav.broadcast}</span>
+               strokeLinecap="round" strokeLinejoin="round">{ICONS.client}</svg>
+          <span className="navitem-label">{t.nav.client}</span>
           <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: broadcastExpanded ? 'rotate(90deg)' : undefined }}>
+               strokeLinecap="round" strokeLinejoin="round" style={{ transform: clientExpanded ? 'rotate(90deg)' : undefined }}>
             {ICONS.chevron}
           </svg>
         </button>
-        {broadcastExpanded && !collapsed ? (
+        {clientExpanded && !collapsed ? (
           <div className="rail-sub">
-            {BROADCAST.map((b) => {
-              const active = pathname === b.href;
-              return (
-                <Link key={b.href} href={b.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-                       strokeLinecap="round" strokeLinejoin="round">{ICONS[b.icon]}</svg>
-                  <span className="rail-sub-label">{b.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
-
-      <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleDeal)}
-                aria-expanded={dealExpanded} aria-current={onDeal ? 'page' : undefined}
-                title={collapsed ? t.nav.sales : undefined}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">{ICONS.sales}</svg>
-          <span className="navitem-label">{t.nav.sales}</span>
-          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: dealExpanded ? 'rotate(90deg)' : undefined }}>
-            {ICONS.chevron}
-          </svg>
-        </button>
-        {dealExpanded && !collapsed ? (
-          <div className="rail-sub">
-            {DEAL.map((p) => {
-              const active = pathname === p.href || pathname.startsWith(`${p.href}/`);
-              return (
-                <Link key={p.href} href={p.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-                       strokeLinecap="round" strokeLinejoin="round">{ICONS[p.icon]}</svg>
-                  <span className="rail-sub-label">{p.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
-
-      {NAV_AFTER_SALES.map((n) => item(n.href, n.label, n.icon))}
-
-      <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleAutomation)}
-                aria-expanded={automationExpanded} aria-current={onAutomation ? 'page' : undefined}
-                title={collapsed ? t.nav.automation : undefined}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">{ICONS.automation}</svg>
-          <span className="navitem-label">{t.nav.automation}</span>
-          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: automationExpanded ? 'rotate(90deg)' : undefined }}>
-            {ICONS.chevron}
-          </svg>
-        </button>
-        {automationExpanded && !collapsed ? (
-          <div className="rail-sub">
-            {AUTOMATION.map((a) => {
-              const active = pathname === a.href || pathname.startsWith(`${a.href}/`);
-              return (
-                <Link key={a.href} href={a.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-                       strokeLinecap="round" strokeLinejoin="round">{ICONS[a.icon]}</svg>
-                  <span className="rail-sub-label">{a.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
-
-      <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleMonitoring)}
-                aria-expanded={monitoringExpanded} aria-current={onMonitoring ? 'page' : undefined}
-                title={collapsed ? t.nav.monitoring : undefined}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">{ICONS.monitoring}</svg>
-          <span className="navitem-label">{t.nav.monitoring}</span>
-          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: monitoringExpanded ? 'rotate(90deg)' : undefined }}>
-            {ICONS.chevron}
-          </svg>
-        </button>
-        {monitoringExpanded && !collapsed ? (
-          <div className="rail-sub">
-            {MONITORING.map((m) => {
-              const active = pathname === m.href || pathname.startsWith(`${m.href}/`);
-              return (
-                <Link key={m.href} href={m.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-                       strokeLinecap="round" strokeLinejoin="round">{ICONS[m.icon]}</svg>
-                  <span className="rail-sub-label">{m.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
-
-      <div>
-        <button type="button" className="navitem navitem-toggle" onClick={() => openGroup(toggleCustomize)}
-                aria-expanded={customizeExpanded} aria-current={onCustomize ? 'page' : undefined}
-                title={collapsed ? t.nav.customize : undefined}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">{ICONS.customize}</svg>
-          <span className="navitem-label">{t.nav.customize}</span>
-          <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round" style={{ transform: customizeExpanded ? 'rotate(90deg)' : undefined }}>
-            {ICONS.chevron}
-          </svg>
-        </button>
-        {customizeExpanded && !collapsed ? (
-          <div className="rail-sub">
-            {CUSTOMIZE.map((c) => {
+            {CLIENT.map((c) => {
               const active = pathname === c.href || pathname.startsWith(`${c.href}/`);
               return (
                 <Link key={c.href} href={c.href} className="rail-sub-row" aria-current={active ? 'page' : undefined}>
@@ -447,6 +346,10 @@ export function Rail({
           </div>
         ) : null}
       </div>
+
+      {NAV_BEFORE_SALES.map((n) => item(n.href, n.label, n.icon))}
+
+      {NAV_AFTER_SALES.map((n) => item(n.href, n.label, n.icon))}
 
       <div className="railfoot">
         <button type="button" className="navitem navitem-toggle" onClick={cycleTheme}

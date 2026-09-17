@@ -56,14 +56,14 @@ export async function upsertContactByPhone(
 /** Everyone who has ever messaged in, optionally narrowed to one tag — the Pelanggan page asks for `tag: 'customer'`. */
 export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: number } = {}) {
   return ctx.tx.query<{
-    id: string; display_name: string | null; phone_enc: string | null; tags: string[];
+    id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null; tags: string[];
     first_seen_at: Date; last_seen_at: Date;
     attributes: {
       address?: string | null; notes?: string | null;
       storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
     } | null;
   }>(
-    `select id, display_name, phone_enc, tags, first_seen_at, last_seen_at, attributes
+    `select id, display_name, phone_enc, email_enc, tags, first_seen_at, last_seen_at, attributes
        from contacts
       where tenant_id = $1 and deleted_at is null
         and ($3::text is null or $3 = any(tags))

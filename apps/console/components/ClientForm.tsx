@@ -9,7 +9,8 @@ import { initials } from '@/lib/format';
 import { ContactTimeline } from '@/components/ContactTimeline';
 import { ClientPurchases } from '@/components/ClientPurchases';
 import { ClientActivities } from '@/components/ClientActivities';
-import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member, Task } from '@/lib/api';
+import { ClientTaskDrawer } from '@/components/ClientTaskDrawer';
+import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member, Task, Deal, TaskKind } from '@/lib/api';
 
 /**
  * One sheet, two callers: a blank one for `/client/baru`, a filled-in one
@@ -18,14 +19,16 @@ import type { ContactDetail, ContactOrder, ContactTimelineEvent, Member, Task } 
  * absent, whatever gets typed here becomes a new contact.
  */
 export function ClientForm({
-  contact, conversationId = null, timeline, members = [], orders = [], tasks = [],
+  contact, conversationId = null, timeline, members = [], orders = [], tasks = [], deals = [], taskKinds = [],
 }: {
   contact: ContactDetail | null; conversationId?: string | null;
   timeline?: ContactTimelineEvent[]; members?: Member[]; orders?: ContactOrder[]; tasks?: Task[];
+  deals?: Deal[]; taskKinds?: TaskKind[];
 }) {
   const action = contact ? updateClient : createClient;
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
 
   // Preview only — nothing here is submitted with the form yet, there is
   // nowhere on the backend to put it. The `name`-less file input below is
@@ -73,6 +76,11 @@ export function ClientForm({
                   {t.client.delete}
                 </button>
               ) : null}
+              {contact ? (
+                <button type="button" className="btn ghost" onClick={() => setTaskDrawerOpen(true)}>
+                  {t.tasks.add}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -115,11 +123,10 @@ export function ClientForm({
                 <input className="line-input" id="address" name="address"
                       defaultValue={contact?.address ?? ''} placeholder={t.client.addressPlaceholder} />
               </div>
-              <div className="record-field">
-                <label htmlFor="tags">{t.client.tags}</label>
-                <input className="line-input" id="tags" name="tags" defaultValue={contact?.tags.join(', ') ?? ''} />
-                <p className="record-hint">{t.client.tagsHint}</p>
-              </div>
+              {/* Label field removed from the form — the tags themselves (incl.
+                  `customer`, which every Client list filters on) still ride
+                  along as a hidden field so saving never wipes them out. */}
+              <input type="hidden" name="tags" value={contact?.tags.join(', ') ?? ''} />
               {contact ? (
                 <div className="record-field">
                   <label>{t.client.chat}</label>
@@ -208,6 +215,11 @@ export function ClientForm({
             </div>
           </div>
         </dialog>
+      ) : null}
+
+      {contact ? (
+        <ClientTaskDrawer open={taskDrawerOpen} onClose={() => setTaskDrawerOpen(false)}
+                          contact={contact} members={members} deals={deals} taskKinds={taskKinds} />
       ) : null}
     </>
   );
