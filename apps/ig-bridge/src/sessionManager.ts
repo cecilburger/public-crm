@@ -94,6 +94,14 @@ export class SessionManager {
     await fs.writeFile(this.usernameFile(tenantId), username, 'utf8').catch(() => {});
   }
 
+  /** Lets `DmWatcher` notice a tenant it already marked "observed" is
+   * actually sitting on a dead browser connection (crashed, or CDP just
+   * dropped) — its inbox observer died with that browser, silently, and
+   * nothing re-attaches it on its own. */
+  isConnected(tenantId: string): boolean {
+    return this.contexts.get(tenantId)?.connected ?? false;
+  }
+
   async getOwnUsername(tenantId: string): Promise<string | null> {
     const cached = this.ownUsernames.get(tenantId);
     if (cached) return cached;
@@ -185,7 +193,20 @@ export class SessionManager {
 
   private async ensureBrowser(tenantId: string): Promise<Browser | null> {
     const existing = this.contexts.get(tenantId);
-    if (existing) return existing;
+    // A cached `Browser` whose underlying CDP connection has died (the
+    // browser process crashed, or Chrome's own remote-debugging connection
+    // just dropped — confirmed live, with the OS process still alive) fails
+    // every `newPage()` call on it with `Protocol error: Connection closed`
+    // — forever, since nothing here previously re-checked before handing it
+    // back out. Every send and every inbox read shares this same cache, so
+    // one dead connection silently broke both at once until the process was
+    // restarted by hand. Discarding it here and falling through to relaunch
+    // is what makes that self-heal instead.
+    if (existing) {
+      if (existing.connected) return existing;
+      this.contexts.delete(tenantId);
+      await existing.close().catch(() => {});
+    }
 
     const inFlight = this.launching.get(tenantId);
     if (inFlight) return inFlight;
@@ -460,7 +481,8 @@ export class SessionManager {
     const page = await this.newPage(tenantId);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Instagram yang aktif untuk tenant ini');
     try {
-      await sendThreadMessage(page, threadId, text);
+      const ownUsername = await this.getOwnUsername(tenantId);
+      await sendThreadMessage(page, threadId, text, ownUsername);
     } catch (err) {
       if (err instanceof SessionExpiredError) this.forgetSession(tenantId);
       throw err;

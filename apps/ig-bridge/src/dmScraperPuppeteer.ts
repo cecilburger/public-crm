@@ -101,12 +101,24 @@ const FIRST_LEAF_TEXT_JS = `
  * the way a person would leave the Instagram tab open, not be repeatedly
  * re-navigated. `domcontentloaded` fires once the HTML shell is parsed,
  * well before Instagram's own React app has fetched and rendered the
- * actual conversation list — the settle wait gives that async render a
- * head start. */
+ * actual conversation list — the wait below gives that async render room
+ * to actually finish, rather than assuming a fixed delay always will.
+ *
+ * That matters more here than almost anywhere else in this file:
+ * `installInboxObserver`'s very first `scan()` runs immediately after this
+ * returns, and a `MutationObserver` only fires on *future* DOM changes — if
+ * this returns while the thread list is still the loading skeleton, that
+ * first scan reports zero threads, and the observer then has nothing to
+ * compare the next real scan against until some *other* unrelated mutation
+ * happens to fire it. Confirmed live: a thread with a genuinely new message
+ * sitting right there on Instagram's own page went completely unreported,
+ * with no error anywhere, because the skeleton was still up when this used
+ * to return after a flat 2s sleep. */
 export async function gotoInbox(page: Page): Promise<void> {
   await page.goto('https://www.instagram.com/direct/inbox/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
-  await sleep(2000);
+  await page.waitForSelector('div[aria-label="Thread list"] div[role="button"]', { timeout: 15000 }).catch(() => {});
+  await sleep(500);
 }
 
 /**
@@ -256,52 +268,68 @@ export async function discoverThreadId(page: Page, key: string): Promise<string 
  * separately (by comparing `senderUsername` against the connected
  * account's own username), not by anything here.
  */
+/**
+ * Shared with `sendThreadMessage`'s own post-send verification below — same
+ * aria-label walk, so a message counts as "there" in exactly one place.
+ */
+const SCRAPE_MESSAGES_JS = `
+  (function () {
+    var out = [];
+    var triggers = Array.prototype.slice.call(
+      document.querySelectorAll('div[aria-label^="See more options for message from "]'));
+    for (var i = 0; i < triggers.length; i++) {
+      var trigger = triggers[i];
+      var ariaLabel = trigger.getAttribute('aria-label') || '';
+      var senderUsername = ariaLabel.replace('See more options for message from ', '').trim();
+      if (!senderUsername) continue;
+
+      var node = trigger;
+      var text = '';
+      for (var hop = 0; hop < 6 && node; hop++) {
+        node = node.parentElement;
+        var t = (node && node.innerText ? node.innerText : '').trim();
+        if (t.length > text.length) text = t;
+      }
+      // Walking further up for a longer match than the immediate bubble
+      // sometimes reaches far enough to also swallow the hover toolbar
+      // next to it (React/Reply/"See more options", all labelled with
+      // this same sender's name) — confirmed live on a thread with
+      // several messages, where two bodies came back with these three
+      // glued on. Stripped by exact substring rather than avoided by
+      // walking fewer hops, since fewer hops was what originally
+      // under-shot real message text.
+      var chromePhrases = [
+        'React to message from ' + senderUsername,
+        'Reply to message from ' + senderUsername,
+        'See more options for message from ' + senderUsername,
+      ];
+      for (var c = 0; c < chromePhrases.length; c++) {
+        text = text.split(chromePhrases[c]).join('');
+      }
+      text = text.trim();
+      if (text) out.push({ senderUsername: senderUsername, text: text });
+    }
+    return out;
+  })();
+`;
+
 export async function readThreadMessages(page: Page, threadId: string): Promise<ScrapedMessage[]> {
   await page.goto(`https://www.instagram.com/direct/t/${threadId}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
-  await sleep(1200);
+  // A flat 1.2s sleep here used to be the whole wait — confirmed live (a
+  // debug screenshot caught mid-fail) that `domcontentloaded` plus 1.2s
+  // still lands on Instagram's own loading skeleton (shimmer placeholder
+  // bars, no real message text anywhere in the DOM) often enough to be the
+  // actual cause of "empty scrape of a known thread", not a genuine
+  // transient blip — worse under the CPU/memory pressure of several dev
+  // servers running at once. Waiting for the same message-bubble marker
+  // `SCRAPE_MESSAGES_JS` itself looks for, instead of a fixed clock, means
+  // this returns as soon as real content is actually there — and still
+  // gives it up to 8s before accepting a thread might genuinely have
+  // nothing to show yet (a brand new, empty conversation).
+  await page.waitForSelector('div[aria-label^="See more options for message from "]', { timeout: 8000 }).catch(() => {});
 
-  const messages = await page.evaluate(`
-    (function () {
-      var out = [];
-      var triggers = Array.prototype.slice.call(
-        document.querySelectorAll('div[aria-label^="See more options for message from "]'));
-      for (var i = 0; i < triggers.length; i++) {
-        var trigger = triggers[i];
-        var ariaLabel = trigger.getAttribute('aria-label') || '';
-        var senderUsername = ariaLabel.replace('See more options for message from ', '').trim();
-        if (!senderUsername) continue;
-
-        var node = trigger;
-        var text = '';
-        for (var hop = 0; hop < 6 && node; hop++) {
-          node = node.parentElement;
-          var t = (node && node.innerText ? node.innerText : '').trim();
-          if (t.length > text.length) text = t;
-        }
-        // Walking further up for a longer match than the immediate bubble
-        // sometimes reaches far enough to also swallow the hover toolbar
-        // next to it (React/Reply/"See more options", all labelled with
-        // this same sender's name) — confirmed live on a thread with
-        // several messages, where two bodies came back with these three
-        // glued on. Stripped by exact substring rather than avoided by
-        // walking fewer hops, since fewer hops was what originally
-        // under-shot real message text.
-        var chromePhrases = [
-          'React to message from ' + senderUsername,
-          'Reply to message from ' + senderUsername,
-          'See more options for message from ' + senderUsername,
-        ];
-        for (var c = 0; c < chromePhrases.length; c++) {
-          text = text.split(chromePhrases[c]).join('');
-        }
-        text = text.trim();
-        if (text) out.push({ senderUsername: senderUsername, text: text });
-      }
-      return out;
-    })();
-  `) as ScrapedMessage[];
-  return messages;
+  return await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
 }
 
 /**
@@ -369,14 +397,55 @@ export async function acceptPendingRequests(page: Page): Promise<string[]> {
   return accepted;
 }
 
+/** Thrown when the composer still holds the typed text well after Enter, or
+ * when the composer cleared but the message never actually showed up as a
+ * new bubble from our own account — either way, this text never reached the
+ * other side. Distinguished from a network/navigation failure so callers can
+ * tell "definitely never reached Instagram" apart from "sent, response
+ * unclear". */
+export class SendNotConfirmedError extends Error {}
+
 /**
  * Best-effort composer selectors, confirmed reachable only once a request
  * is accepted (Instagram hides the composer entirely on an unaccepted
- * one) — `page.type` re-focuses the element by selector before typing, so
- * the explicit click beforehand is only there to dismiss any placeholder
- * state, not strictly required.
+ * one).
+ *
+ * Confirmed live (inspected the real composer directly): it's a Meta
+ * Lexical editor (`data-lexical-editor="true"`), not a plain
+ * `<textarea>`. Lexical keeps its own internal editor-state tree built
+ * from `beforeinput` events, so `page.type()`'s character-by-character
+ * synthetic `keydown`/`keypress` sequence can land in the visible DOM
+ * without Lexical's own state ever registering it — the box looked
+ * typed-into and Enter cleared it, yet nothing was ever actually sent, on
+ * several confirmed live attempts. `page.keyboard.sendCharacter()`
+ * instead issues a single CDP `Input.insertText` call with the *whole*
+ * string at once (despite the name, it isn't limited to one character —
+ * confirmed by reading puppeteer-core's own implementation), the same
+ * primitive a real paste uses — confirmed live (typed through the
+ * browser extension, which goes through this same insertText path) that
+ * this *does* register with Lexical and arms the send button, where the
+ * same text via `page.type()`'s per-character `keydown`/`keypress` loop
+ * did not.
+ *
+ * Typing and pressing Enter alone is still not proof of delivery even
+ * with `insertText` — confirmed live, several `page.type()`-based sends
+ * reported success (no exception, no rejected promise) yet never
+ * appeared in the real conversation on Instagram's own side. Worse,
+ * confirmed live again after switching to `sendCharacter()`: a thread
+ * Instagram had started silently rate-limiting (heavy back-and-forth spam
+ * during testing) still cleared the composer on every Enter — the client
+ * optimistically empties it regardless of whether the server actually
+ * accepted the message — so a composer-emptiness check alone still
+ * reports "sent" for a message that never left. The only thing that
+ * actually proves delivery is the same signal `readThreadMessages` (and
+ * therefore the real inbox) would see: a new bubble from our own account
+ * whose text matches what was typed. That's what's polled for below,
+ * using the identical `SCRAPE_MESSAGES_JS` walk so "sent" here means the
+ * exact same thing "received" means when reading a thread.
  */
-export async function sendThreadMessage(page: Page, threadId: string, text: string): Promise<void> {
+export async function sendThreadMessage(
+  page: Page, threadId: string, text: string, ownUsername: string | null,
+): Promise<void> {
   await page.goto(`https://www.instagram.com/direct/t/${threadId}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
 
@@ -386,7 +455,22 @@ export async function sendThreadMessage(page: Page, threadId: string, text: stri
     'textarea[placeholder="Message..."]',
   ].join(', ');
   await page.waitForSelector(selector, { timeout: 15_000 });
-  await page.click(selector).catch(() => {});
-  await page.type(selector, text, { delay: 10 });
+  await page.click(selector);
+  await page.keyboard.sendCharacter(text);
   await page.keyboard.press('Enter');
+
+  const wanted = text.trim();
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const messages = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
+    const last = messages[messages.length - 1];
+    if (last && last.text === wanted
+        && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase())) {
+      return;
+    }
+    await sleep(400);
+  }
+  throw new SendNotConfirmedError(
+    'Pesan sudah diketik tapi tidak muncul sebagai pesan terkirim di thread — kemungkinan ditolak diam-diam oleh Instagram (mis. thread kena rate-limit)',
+  );
 }

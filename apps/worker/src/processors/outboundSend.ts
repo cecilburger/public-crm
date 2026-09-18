@@ -87,19 +87,17 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       }
     }
 
-    const to = msg.phone_enc ? normalisePhone(openField(keys, job.tenantId, msg.phone_enc)) : null;
-    if (!to) {
-      await markFailed(tx, job, 'channel_unavailable');
-      return { status: 'failed' };
-    }
-
     // `instagram-private-api`-driven, so there is no template/window/quality
     // policy to run through `guardOutbound` here either — same reasoning as
     // `whatsapp_web` just below, and its own simpler path for the same reason.
     // The thread id (not a phone number or IGSID) is what tells `apps/ig-bridge`
     // which DM to open; it was stashed on the contact by the last inbound
     // message from them, so a contact who has never messaged in has nowhere to
-    // send.
+    // send. Checked *before* the phone-number branch below, not after it: a
+    // bridge contact has no `phone_enc` at all, so the generic "no phone on
+    // record" guard meant for the phone-based channels caught and failed
+    // every bridge send before it ever reached this block — confirmed live,
+    // this was the reason nothing sent through Chat IG ever went anywhere.
     if (msg.channel_kind === 'instagram_bridge') {
       const threadId = msg.ig_thread_id_enc ? openField(keys, job.tenantId, msg.ig_thread_id_enc) : null;
       if (!threadId) {
@@ -121,6 +119,12 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         await scheduleRetry(tx, job, err as Error);
         throw err;
       }
+    }
+
+    const to = msg.phone_enc ? normalisePhone(openField(keys, job.tenantId, msg.phone_enc)) : null;
+    if (!to) {
+      await markFailed(tx, job, 'channel_unavailable');
+      return { status: 'failed' };
     }
 
     // A QR-paired session has no Meta template/window rules and no per-second

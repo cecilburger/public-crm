@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { Page } from 'puppeteer';
 import type { SessionManager } from './sessionManager.ts';
 import {
   gotoInbox, installInboxObserver, discoverThreadId, readThreadMessages, acceptPendingRequests,
@@ -85,6 +86,30 @@ export class DmWatcher {
   // eligible once to be matched against a later scrape and absorbed rather
   // than re-reported — see `markSentByUs`.
   private recentlySentByUs = new Map<string, Map<string, { text: string; at: number }[]>>();
+  // tenantId -> the tail of this tenant's own processing queue. The
+  // client-side observer debounces to one `scan()` per 1.5s of quiet, but
+  // says nothing about how long *our* side takes to act on it — a scan
+  // whose `handleInboxChange` is still mid-`readChangedThread` (a page
+  // navigation, up to several seconds) when the next debounced scan lands
+  // used to start a second, fully concurrent `handleInboxChange` on the
+  // same tenant. Two concurrent reads of the same thread race on the same
+  // anchor in `diffNewMessages` — confirmed live as both the "empty
+  // scrape" spam (one read catches the thread page mid-navigation from the
+  // other) and messages reported twice (each read computing its own
+  // "what's new" against a `prev` the other hadn't finished updating yet).
+  // Chaining every call for a tenant onto this promise makes them run one
+  // at a time, same tenant, no exceptions.
+  private processingChain = new Map<string, Promise<void>>();
+  // tenantId -> the long-lived page the inbox observer is installed on.
+  // Kept so housekeeping can ping it directly — the whole-browser
+  // `isConnected()` check doesn't catch this one dying on its own (its
+  // renderer crashing or getting reclaimed under memory pressure while the
+  // rest of the browser, and every short-lived tab `newPage()` opens for a
+  // send or a read, stays completely fine). Confirmed live: a real message
+  // sitting right there on Instagram's own page never reached the CRM
+  // because this one tab had gone quiet — no error anywhere, since nothing
+  // was polling it to notice.
+  private observerPages = new Map<string, Page>();
 
   constructor(
     private sessions: SessionManager,
@@ -104,6 +129,41 @@ export class DmWatcher {
   private async housekeeping(): Promise<void> {
     const tenantIds = await this.sessions.knownTenantIds();
     for (const tenantId of tenantIds) {
+      // A tenant marked "observed" sat on a browser whose CDP connection has
+      // since died (crash, or the connection just dropped) — its inbox
+      // `MutationObserver` died with that browser. `ensureBrowser` on the
+      // session side already self-heals the browser itself on the next
+      // `newPage()` call, but nothing makes a *new* observer land on the
+      // *new* browser's page without this: `observedTenants` would keep
+      // this tenant marked attached forever, so `attachTenant` below would
+      // never run again and inbound messages would stay silently stuck.
+      if (this.observedTenants.has(tenantId) && !this.sessions.isConnected(tenantId)) {
+        this.log.warn({ tenantId }, 'ig-bridge: observed tenant\'s browser connection died — re-attaching');
+        this.observedTenants.delete(tenantId);
+        this.observerPages.delete(tenantId);
+      }
+      // The browser-level check above only catches the *whole* browser
+      // dying. The observer's own tab can go quiet on its own — its
+      // renderer crashing, or getting reclaimed under memory pressure —
+      // while the browser and every other tab stay completely healthy, so
+      // `isConnected()` alone sees nothing wrong. A real message can then
+      // sit visible on Instagram's own page indefinitely, never read,
+      // with no error anywhere to notice by. A cheap ping catches that: a
+      // hung or crashed page either rejects or never resolves, so it's
+      // raced against a short timeout rather than trusted to reject on
+      // its own.
+      if (this.observedTenants.has(tenantId)) {
+        const page = this.observerPages.get(tenantId);
+        const alive = page && !page.isClosed() && await Promise.race([
+          page.evaluate('1').then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+        ]).catch(() => false);
+        if (!alive) {
+          this.log.warn({ tenantId }, 'ig-bridge: observed tenant\'s inbox tab went unresponsive — re-attaching');
+          this.observedTenants.delete(tenantId);
+          this.observerPages.delete(tenantId);
+        }
+      }
       if (!this.observedTenants.has(tenantId)) {
         await this.attachTenant(tenantId).catch((err) =>
           this.log.warn({ err, tenantId }, 'ig-bridge: failed to attach tenant to dm watcher'));
@@ -151,12 +211,17 @@ export class DmWatcher {
     try {
       await gotoInbox(page);
       await installInboxObserver(page, (threads) => {
-        void this.handleInboxChange(tenantId, threads).catch((err) =>
-          this.log.warn({ err, tenantId }, 'ig-bridge: failed handling an inbox change'));
+        const prior = this.processingChain.get(tenantId) ?? Promise.resolve();
+        const next = prior
+          .then(() => this.handleInboxChange(tenantId, threads))
+          .catch((err) => this.log.warn({ err, tenantId }, 'ig-bridge: failed handling an inbox change'));
+        this.processingChain.set(tenantId, next);
       });
+      this.observerPages.set(tenantId, page);
       this.log.info({ tenantId }, 'ig-bridge: inbox observer attached');
     } catch (err) {
       this.observedTenants.delete(tenantId);
+      this.observerPages.delete(tenantId);
       if (isSessionExpiredError(err)) {
         this.sessions.forgetSession(tenantId);
         this.onEvent({ event: 'session_error', tenantId, error: (err as Error).message });
