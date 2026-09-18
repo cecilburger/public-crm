@@ -17,6 +17,8 @@ npm run typecheck
 # see the console, no Docker needed: two terminals
 npm run dev:stack     # API + seeded workspace on an in-memory Postgres
 npm run dev:console   # console → http://localhost:3000
+npm run dev:ig-bridge
+npm run dev -w @kirana/wa-bridge
 
 # the real stack
 cp .env.example .env
