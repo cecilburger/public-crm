@@ -13,6 +13,8 @@ import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from './autop
 import { purgeExpiredData, verifyAllAuditChains, expireUnpaidOrders, sweepSecurityClocks } from './processors/retention.ts';
 import { runHealthChecks } from './processors/healthChecks.ts';
 import { closePeriodAndIssueInvoice, checkUsageThresholds, runDunning } from './processors/billingRollup.ts';
+import { BdBrainClient } from './bdBrain.ts';
+import { processBdDraft } from './processors/bdDraft.ts';
 
 const e = env();
 const kek = loadKek(e.KIRANA_KEK);
@@ -82,6 +84,17 @@ const accessTokenFor = async (tenantId: string, channelId: string): Promise<stri
   });
 };
 
+// The BD flow lives in `trained-cb` (Python) and is reached over HTTP. It is
+// optional: a deployment that only sells a catalogue never routes here. When
+// it is unset and a brand does reply, the job fails loudly naming this
+// variable rather than answering a brand with a product catalogue.
+const bdBrain = process.env.BD_BRAIN_URL
+  ? new BdBrainClient(process.env.BD_BRAIN_URL, process.env.BD_BRAIN_SECRET ?? '')
+  : null;
+if (!bdBrain) {
+  console.warn('BD_BRAIN_URL is not set — BD conversations will not be answered');
+}
+
 const workers = [
   new Worker('inbound.normalise', async (job: Job) =>
     processInboundWebhook({ db, control, kek, dispatch, publish }, job.data.webhookEventId), { connection, concurrency: 16 }),
@@ -91,6 +104,15 @@ const workers = [
 
   new Worker('autopilot.draft', async (job: Job) =>
     processAutopilotDraft({ db, kek, model: autopilot, dispatch }, job.data), { connection, concurrency: 6 }),
+
+  new Worker('bd.draft', async (job: Job) => {
+    if (!bdBrain) {
+      const err = new Error('BD_BRAIN_URL is not configured — cannot answer a BD conversation');
+      (err as Error & { permanent?: boolean }).permanent = true;
+      throw err;
+    }
+    return processBdDraft({ db, kek, brain: bdBrain, dispatch }, job.data);
+  }, { connection, concurrency: 6 }),
 
   new Worker('billing.rollup', async (job: Job) =>
     closePeriodAndIssueInvoice(db, job.data.tenantId, new Date(), email), { connection, concurrency: 4 }),

@@ -5,6 +5,7 @@ import {
 } from '@kirana/db';
 
 const IG_GRAPH_URL = 'https://graph.instagram.com';
+import { isBdConversation } from './bdDraft.ts';
 
 export interface NormaliseDeps {
   db: Database;
@@ -169,10 +170,24 @@ async function processWaBridgeEvent(
 
     if (!result.duplicate) {
       deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
-      await deps.dispatch({
-        queue: 'autopilot.draft',
-        payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
-      });
+      // A brand is BD's to answer, not Autopilot's. Exactly one brain replies.
+      const bd = await withTenant(deps.db, channel.tenant_id, (tx) =>
+        isBdConversation(tx, channel.tenant_id, result.conversationId));
+      await deps.dispatch(bd
+        ? {
+            queue: 'bd.draft',
+            payload: {
+              tenantId: channel.tenant_id, conversationId: result.conversationId,
+              text: m.body || '',
+            },
+          }
+        : {
+            queue: 'autopilot.draft',
+            payload: {
+              tenantId: channel.tenant_id, conversationId: result.conversationId,
+              messageId: result.messageId,
+            },
+          });
     }
     return { status: 'processed' };
   }
