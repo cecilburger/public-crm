@@ -1176,6 +1176,29 @@ export async function connectInstagramBridge(_prev: IgBridgeResult | null, form:
   }
 }
 
+export async function connectInstagramBridgeWithCookie(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const username = String(form.get('username') ?? '').trim();
+  const sessionId = String(form.get('sessionId') ?? '').trim();
+  const csrfToken = String(form.get('csrfToken') ?? '').trim();
+  const dsUserId = String(form.get('dsUserId') ?? '').trim();
+  if (!username || !sessionId) return { ok: false, error: t.instagramBridge.missingCookieFields };
+
+  try {
+    const res = await api<{ status: 'ready' | 'failed'; error?: string }>(
+      '/v1/instagram-bridge/login-cookie', {
+        method: 'POST',
+        body: { username, sessionId, csrfToken: csrfToken || undefined, dsUserId: dsUserId || undefined },
+      },
+    );
+    revalidatePath('/pengaturan/instagram');
+    if (res.status === 'failed') return { ok: false, error: res.error ?? t.instagramBridge.failed };
+    return { ok: true, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
+  }
+}
+
 export async function submitInstagramChallenge(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const code = String(form.get('code') ?? '').trim();

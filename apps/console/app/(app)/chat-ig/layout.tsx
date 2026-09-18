@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { api, type ConversationSummary, type IgMetaConnection } from '@/lib/api';
+import { api, type ConversationSummary, type IgMetaConnection, type IgBridgeConnection } from '@/lib/api';
 import { awaitingReply } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { ConversationList } from '@/components/ConversationList';
@@ -8,11 +8,18 @@ import { AutoRefresh } from '@/components/AutoRefresh';
 export const dynamic = 'force-dynamic';
 
 export default async function ChatIgLayout({ children }: { children: React.ReactNode }) {
-  const [conversations, metaConnection] = await Promise.all([
-    api<ConversationSummary[]>('/v1/conversations?channelKind=instagram&limit=100'),
+  const [conversations, metaConnection, bridgeConnection] = await Promise.all([
+    // Both the official Graph API channel and the Playwright bridge's own
+    // channel feed the same inbox — one `channelKind` per connection method,
+    // shown together since they're both "Instagram" to whoever's answering.
+    api<ConversationSummary[]>('/v1/conversations?channelKind=instagram,instagram_bridge&limit=100'),
     api<IgMetaConnection>('/v1/instagram-meta/status').catch(() => null),
+    api<IgBridgeConnection>('/v1/instagram-bridge/status').catch(() => null),
   ]);
   const waiting = conversations.filter(awaitingReply).length;
+  const connectedUsername = metaConnection?.status === 'connected'
+    ? metaConnection.igUsername
+    : bridgeConnection?.status === 'ready' ? bridgeConnection.username : null;
 
   return (
     <>
@@ -24,9 +31,9 @@ export default async function ChatIgLayout({ children }: { children: React.React
         {waiting > 0 ? <span className="chip warn">{waiting} {t.chats.filterNeedsReply.toLowerCase()}</span> : null}
         <span className="spacer" />
         <AutoRefresh seconds={10} />
-        {metaConnection?.status === 'connected' ? (
+        {connectedUsername ? (
           <span className="chip good">
-            <span className="google-dot" aria-hidden /> @{metaConnection.igUsername}
+            <span className="google-dot" aria-hidden /> @{connectedUsername}
           </span>
         ) : (
           <Link href="/pengaturan/instagram" className="btn ghost sm">{t.chatIg.goToSettings}</Link>

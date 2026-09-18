@@ -2,7 +2,7 @@
 
 import { useActionState, useEffect, useState } from 'react';
 import {
-  connectInstagramBridge, submitInstagramChallenge, disconnectInstagramBridge,
+  connectInstagramBridge, connectInstagramBridgeWithCookie, submitInstagramChallenge, disconnectInstagramBridge,
   type ActionResult, type IgBridgeResult,
 } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
@@ -27,9 +27,12 @@ export function InstagramBridgeForm({ connection }: { connection: IgBridgeConnec
   const [username, setUsername] = useState(connection.username ?? '');
   const [challengeType, setChallengeType] = useState(connection.challengeType);
   const [errorMsg, setErrorMsg] = useState<string | null>(connection.lastError);
+  const [method, setMethod] = useState<'password' | 'cookie'>('password');
 
   const [loginState, loginAction, loginPending] =
     useActionState<IgBridgeResult | null, FormData>(connectInstagramBridge, null);
+  const [cookieState, cookieAction, cookiePending] =
+    useActionState<IgBridgeResult | null, FormData>(connectInstagramBridgeWithCookie, null);
   const [challengeState, challengeAction, challengePending] =
     useActionState<IgBridgeResult | null, FormData>(submitInstagramChallenge, null);
   const [disconnectState, disconnectAction, disconnectPending] =
@@ -45,6 +48,16 @@ export function InstagramBridgeForm({ connection }: { connection: IgBridgeConnec
       setErrorMsg(loginState.error ?? t.instagramBridge.failed);
     }
   }, [loginState]);
+
+  useEffect(() => {
+    if (!cookieState) return;
+    if (cookieState.ok) {
+      setErrorMsg(null);
+      setStep('ready');
+    } else {
+      setErrorMsg(cookieState.error ?? t.instagramBridge.failed);
+    }
+  }, [cookieState]);
 
   useEffect(() => {
     if (!challengeState) return;
@@ -107,25 +120,74 @@ export function InstagramBridgeForm({ connection }: { connection: IgBridgeConnec
             </div>
           </form>
         ) : (
-          <form action={loginAction} className="stack" style={{ gap: 14 }}>
-            <CsrfField />
+          <div className="stack" style={{ gap: 14 }}>
             <div className="record-field">
-              <label htmlFor="ig-username">{t.instagramBridge.username}</label>
-              <input className="line-input" id="ig-username" name="username" autoComplete="off"
-                     onChange={(e) => setUsername(e.target.value)}
-                     placeholder={t.instagramBridge.usernamePlaceholder} />
+              <label htmlFor="ig-method">{t.instagramBridge.methodLabel}</label>
+              <select className="line-input" id="ig-method" value={method}
+                      onChange={(e) => { setMethod(e.target.value as 'password' | 'cookie'); setErrorMsg(null); }}>
+                <option value="password">{t.instagramBridge.methodPassword}</option>
+                <option value="cookie">{t.instagramBridge.methodCookie}</option>
+              </select>
             </div>
-            <div className="record-field">
-              <label htmlFor="ig-password">{t.instagramBridge.password}</label>
-              <input className="line-input" id="ig-password" name="password" type="password" autoComplete="off" />
-            </div>
-            {errorMsg ? <p className="error">{errorMsg}</p> : null}
-            <div>
-              <button type="submit" className="btn primary" disabled={loginPending}>
-                {loginPending ? t.instagramBridge.connecting : t.instagramBridge.connect}
-              </button>
-            </div>
-          </form>
+
+            {method === 'password' ? (
+              <form action={loginAction} className="stack" style={{ gap: 14 }}>
+                <CsrfField />
+                <div className="record-field">
+                  <label htmlFor="ig-username">{t.instagramBridge.username}</label>
+                  <input className="line-input" id="ig-username" name="username" autoComplete="off"
+                         onChange={(e) => setUsername(e.target.value)}
+                         placeholder={t.instagramBridge.usernamePlaceholder} />
+                </div>
+                <div className="record-field">
+                  <label htmlFor="ig-password">{t.instagramBridge.password}</label>
+                  <input className="line-input" id="ig-password" name="password" type="password" autoComplete="off" />
+                </div>
+                {errorMsg ? <p className="error">{errorMsg}</p> : null}
+                <div>
+                  <button type="submit" className="btn primary" disabled={loginPending}>
+                    {loginPending ? t.instagramBridge.connecting : t.instagramBridge.connect}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form action={cookieAction} className="stack" style={{ gap: 14 }}>
+                <CsrfField />
+                <p className="record-hint" style={{ margin: 0 }}>{t.instagramBridge.cookieHint}</p>
+                <details>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{t.instagramBridge.cookieGuideTitle}</summary>
+                  <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                    {t.instagramBridge.cookieGuideSteps.map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                </details>
+                <div className="record-field">
+                  <label htmlFor="ig-cookie-username">{t.instagramBridge.username}</label>
+                  <input className="line-input" id="ig-cookie-username" name="username" autoComplete="off"
+                         onChange={(e) => setUsername(e.target.value)}
+                         placeholder={t.instagramBridge.usernamePlaceholder} />
+                </div>
+                <div className="record-field">
+                  <label htmlFor="ig-sessionid">{t.instagramBridge.sessionId}</label>
+                  <input className="line-input" id="ig-sessionid" name="sessionId" autoComplete="off"
+                         placeholder={t.instagramBridge.sessionIdPlaceholder} />
+                </div>
+                <div className="record-field">
+                  <label htmlFor="ig-csrftoken">{t.instagramBridge.csrfToken}</label>
+                  <input className="line-input" id="ig-csrftoken" name="csrfToken" autoComplete="off" />
+                </div>
+                <div className="record-field">
+                  <label htmlFor="ig-dsuserid">{t.instagramBridge.dsUserId}</label>
+                  <input className="line-input" id="ig-dsuserid" name="dsUserId" autoComplete="off" />
+                </div>
+                {errorMsg ? <p className="error">{errorMsg}</p> : null}
+                <div>
+                  <button type="submit" className="btn primary" disabled={cookiePending}>
+                    {cookiePending ? t.instagramBridge.connecting : t.instagramBridge.connect}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         )}
 
         {connection.updatedAt ? (

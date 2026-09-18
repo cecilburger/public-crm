@@ -152,11 +152,12 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
       // The same gate the worker applies — and the same exception: a
-      // WA-bridge (whatsapp_web) session has no Meta 24-hour/template rule,
-      // so it skips the guard entirely rather than failing here before the
-      // message ever reaches the queue. Failing here for a real Meta channel
-      // gives the agent an explanation now instead of a silent rejection later.
-      if (channel[0]?.kind !== 'whatsapp_web') {
+      // WA-bridge (whatsapp_web) or IG-bridge (instagram_bridge) session has
+      // no Meta 24-hour/template rule, so both skip the guard entirely
+      // rather than failing here before the message ever reaches the queue.
+      // Failing here for a real Meta channel gives the agent an explanation
+      // now instead of a silent rejection later.
+      if (channel[0]?.kind !== 'whatsapp_web' && channel[0]?.kind !== 'instagram_bridge') {
         const guard = guardOutbound({
           lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
           now: new Date(),
@@ -243,8 +244,8 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       const channel = await tx.query<{ kind: string; quality: string }>(
         'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
-      // Same whatsapp_web exception as the plain-reply route above.
-      if (channel[0]?.kind !== 'whatsapp_web') {
+      // Same whatsapp_web/instagram_bridge exception as the plain-reply route above.
+      if (channel[0]?.kind !== 'whatsapp_web' && channel[0]?.kind !== 'instagram_bridge') {
         const guard = guardOutbound({
           lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
           now: new Date(),

@@ -6,7 +6,9 @@
   "main": "./src/main.ts",
   "scripts": { "dev": "tsx watch src/main.ts" },
   "dependencies": {
-    "playwright": "^1.49.1",
+    "puppeteer": "^23.11.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "fastify": "^5.2.1"
   }
 }

@@ -459,6 +459,174 @@ export async function ingestInboundInstagramMessage(
   };
 }
 
+/**
+ * Same idea as `upsertContactByIgPsid`, for a DM read off the real
+ * instagram.com UI through `apps/ig-bridge` instead of the Graph API — a
+ * scraped message never carries an IGSID, only the other party's @username,
+ * so this identity has to be its own column rather than reusing the psid one.
+ */
+export async function upsertContactByIgUsername(
+  ctx: Ctx, args: { username: string; displayName?: string | null; now?: Date },
+): Promise<{ id: string; created: boolean }> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const normalised = args.username.trim().toLowerCase();
+  const bidx = fieldIndex(keys.indexKey, normalised);
+  const now = args.now ?? new Date();
+
+  const rows = await ctx.tx.query<{ id: string; created: boolean }>(
+    `insert into contacts (tenant_id, display_name, ig_username_enc, ig_username_bidx, first_seen_at, last_seen_at)
+     values ($1, $2, $3, $4, $5, $5)
+     on conflict (tenant_id, ig_username_bidx) where ig_username_bidx is not null
+     do update set last_seen_at = excluded.last_seen_at,
+                   display_name = coalesce(contacts.display_name, excluded.display_name)
+     returning id, (xmax = 0) as created`,
+    [ctx.tenantId, args.displayName ?? null, sealField(keys, ctx.tenantId, normalised), bidx, now],
+  );
+  return { id: rows[0]!.id, created: rows[0]!.created };
+}
+
+/**
+ * Same shape as `ingestInboundInstagramMessage`, sourced from `apps/ig-bridge`'s
+ * scraper instead of the Graph API webhook. Two things differ: identity is the
+ * @username (`upsertContactByIgUsername`), and the DM's own thread id gets
+ * stashed on the contact so a later reply can jump straight to that thread
+ * instead of searching for the person by username again.
+ */
+export async function ingestInboundInstagramDmMessage(
+  ctx: Ctx,
+  args: {
+    channelId: string; username: string; threadId: string; body: string; providerMessageId: string;
+    displayName?: string | null; providerTs?: Date; now?: Date;
+  },
+): Promise<InboundResult> {
+  const now = args.now ?? new Date();
+
+  const dup = await ctx.tx.query<{ id: string; conversation_id: string }>(
+    `select id, conversation_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (dup[0]) {
+    const c = await ctx.tx.query<{ contact_id: string }>(
+      'select contact_id from conversations where tenant_id = $1 and id = $2',
+      [ctx.tenantId, dup[0].conversation_id],
+    );
+    return {
+      messageId: dup[0].id, conversationId: dup[0].conversation_id,
+      contactId: c[0]?.contact_id ?? '', duplicate: true, billed: false,
+    };
+  }
+
+  const inboundAt = args.providerTs ?? now;
+  const contact = await upsertContactByIgUsername(ctx, { username: args.username, displayName: args.displayName, now });
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  await ctx.tx.query(
+    `update contacts set ig_thread_id_enc = $3 where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, contact.id, sealField(keys, ctx.tenantId, args.threadId)],
+  );
+
+  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: inboundAt });
+
+  const inserted = await ctx.tx.query<{ id: string }>(
+    `insert into messages
+       (tenant_id, conversation_id, channel_id, direction, sender_type, sender_id,
+        body_enc, media, provider_message_id, status, provider_ts)
+     values ($1,$2,$3,'inbound','contact',$4,$5,$6,$7,'received',$8)
+     returning id`,
+    [ctx.tenantId, conversation.id, args.channelId, contact.id,
+     sealField(keys, ctx.tenantId, args.body), JSON.stringify([]),
+     args.providerMessageId, inboundAt],
+  );
+
+  await ctx.tx.query(
+    `update conversations
+        set last_inbound_at = $3, last_message_at = greatest(last_message_at, $3),
+            status = case when status = 'resolved' then 'open' else status end
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, conversation.id, inboundAt],
+  );
+
+  const metered = await recordConversationActivity(ctx.tx, {
+    tenantId: ctx.tenantId, contactId: contact.id, channelId: args.channelId,
+    messageId: inserted[0]!.id, now,
+  });
+
+  return {
+    messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id,
+    duplicate: false, billed: metered.billed,
+  };
+}
+
+/**
+ * `recordPhoneReply`'s counterpart for the DM bridge: a reply the connected
+ * account sent from the real Instagram app itself, outside the console —
+ * `apps/ig-bridge`'s watcher sees it the same way it sees an inbound
+ * message (both are just rows in the thread) and tells them apart only by
+ * comparing the sender against the connected account's own username, then
+ * reports this one as an agent reply instead. Deduped on the same
+ * `provider_message_id` column as everything else, but in practice a reply
+ * sent *through* the console never reaches here at all — `DmWatcher`
+ * recognises its own recent sends before ever emitting them, so this only
+ * fires for a message that genuinely originated on the phone.
+ */
+export async function recordIgBridgeAgentReply(
+  ctx: Ctx,
+  args: {
+    channelId: string; username: string; threadId: string; body: string; providerMessageId: string;
+    displayName?: string | null; providerTs?: Date; now?: Date;
+  },
+): Promise<PhoneReplyResult> {
+  const now = args.now ?? new Date();
+
+  const dup = await ctx.tx.query<{ id: string; conversation_id: string }>(
+    `select id, conversation_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (dup[0]) {
+    const c = await ctx.tx.query<{ contact_id: string }>(
+      'select contact_id from conversations where tenant_id = $1 and id = $2',
+      [ctx.tenantId, dup[0].conversation_id],
+    );
+    return {
+      messageId: dup[0].id, conversationId: dup[0].conversation_id,
+      contactId: c[0]?.contact_id ?? '', duplicate: true,
+    };
+  }
+
+  const at = args.providerTs ?? now;
+  const contact = await upsertContactByIgUsername(ctx, { username: args.username, displayName: args.displayName, now });
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  await ctx.tx.query(
+    `update contacts set ig_thread_id_enc = $3 where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, contact.id, sealField(keys, ctx.tenantId, args.threadId)],
+  );
+
+  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: at });
+
+  const inserted = await ctx.tx.query<{ id: string }>(
+    `insert into messages
+       (tenant_id, conversation_id, channel_id, direction, sender_type,
+        body_enc, provider_message_id, status, provider_ts)
+     values ($1,$2,$3,'outbound','agent',$4,$5,'sent',$6)
+     returning id`,
+    [ctx.tenantId, conversation.id, args.channelId,
+     sealField(keys, ctx.tenantId, args.body), args.providerMessageId, at],
+  );
+
+  await ctx.tx.query(
+    `update conversations
+        set last_message_at = greatest(last_message_at, $3),
+            first_response_at = coalesce(first_response_at, $3)
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, conversation.id, at],
+  );
+
+  return { messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id, duplicate: false };
+}
+
 /* ----------------------------------------------------------------- outbound */
 
 /**
@@ -596,7 +764,7 @@ export async function listInbox(
       where c.tenant_id = $1
         and ($2::text is null or c.status = $2)
         and ($3::uuid is null or c.assignee_id = $3)
-        and ($5::text is null or ch.kind = $5)
+        and ($5::text is null or ch.kind = any(string_to_array($5, ',')))
       order by c.last_message_at desc nulls last
       limit $4`,
     [ctx.tenantId, args.status ?? null, args.assigneeId ?? null, Math.min(args.limit ?? 50, 200),
