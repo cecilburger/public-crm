@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import crypto from 'node:crypto';
 import { verifyWebhookSignature, ipAllowed, parseAllowList } from '@kirana/core';
 import { withoutTenant } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
@@ -163,6 +164,76 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       ));
 
     webhookEvents.inc({ provider: 'wa_bridge', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    if (inserted[0]) {
+      await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
+    }
+
+    return reply.status(200).send({ received: true });
+  });
+
+  /**
+   * The Instagram Playwright bridge (`apps/ig-bridge`) — the counterpart to
+   * `/v1/webhooks/wa-bridge` for a scraped, unofficial session. There is no
+   * real provider message id to dedupe on (scraping never sees one), so the
+   * bridge's own poller deliberately re-reports every message it still sees
+   * on each pass; the external id here is a deterministic hash of
+   * (tenant, thread, sender, text) so a message that was already ingested
+   * lands on the same `webhook_events` row instead of a new one — the same
+   * `(provider, external_id)` idempotency barrier every other provider uses,
+   * just fed a synthesized key instead of one Meta or WhatsApp handed us.
+   */
+  app.post('/v1/webhooks/ig-bridge', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${ctx.env.IG_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'ig-bridge webhook rejected: bad secret');
+      webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'bad_signature' });
+      return reply.status(401).send();
+    }
+
+    const body = req.body as {
+      tenantId?: string; event?: string; error?: string;
+      message?: {
+        threadId?: string; participantUsername?: string; senderUsername?: string; text?: string;
+        direction?: 'inbound' | 'outbound'; index?: number;
+      };
+    };
+    if (!body.tenantId || !body.event) {
+      webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    const m = body.event === 'message' ? body.message : null;
+    if (body.event === 'message'
+      && (!m?.threadId || !m.participantUsername || !m.senderUsername || !m.text || !m.direction || m.index === undefined)) {
+      webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // Keyed on the sender and the message's position in the thread, not
+    // just its text — scraping gives no real per-message id, and without
+    // the position a repeated word ("halo", "oyy", ...), routine in casual
+    // chat, would hash identically to its own earlier occurrence and be
+    // dropped as a false duplicate on every repeat after the first.
+    const externalId = m
+      ? crypto.createHash('sha256')
+          .update(`ig_dm:${body.tenantId}:${m.threadId}:${m.senderUsername}:${m.index}:${m.text}`)
+          .digest('hex')
+      : `${body.tenantId}:${body.event}:${Date.now()}`;
+
+    const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
+      tx.query<{ id: string }>(
+        `insert into webhook_events (provider, external_id, signature_ok, payload)
+         values ('ig_bridge_dm', $1, true, $2)
+         on conflict (provider, external_id) do nothing
+         returning id`,
+        [externalId, JSON.stringify(body)],
+      ));
+
+    webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    req.log.info(
+      { tenantId: body.tenantId, event: body.event, outcome: inserted[0] ? 'accepted' : 'duplicate' },
+      'ig-bridge webhook received',
+    );
     if (inserted[0]) {
       await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
     }

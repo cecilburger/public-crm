@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { invalid } from '@kirana/core';
-import { getIgBridgeConnection, setIgBridgeConnection, clearIgBridgeConnection } from '@kirana/db';
+import { getIgBridgeConnection, setIgBridgeConnection, clearIgBridgeConnection, ensureInstagramBridgeChannel } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
  * Pengaturan → Instagram: logs a tenant's Instagram account into
- * `apps/ig-bridge`'s Playwright-driven session by proxying the real
- * username/password through, once, over this request — kirana's own
+ * `apps/ig-bridge` — which speaks Instagram's own private mobile-app API via
+ * `instagram-private-api` rather than driving a browser — by proxying the
+ * real username/password through, once, over this request. Kirana's own
  * database never stores the password, only the username (for display) and
  * whatever status the bridge last reported. Gated behind `channel:manage`,
  * same tier as the WhatsApp Web pairing and SMTP settings.
@@ -58,8 +59,9 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     }
     const result = call.body;
 
-    await ctx.asTenant(req, (tx) => {
+    await ctx.asTenant(req, async (tx) => {
       if (result.status === 'ready') {
+        await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username: result.username });
         return setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
           status: 'ready', username: result.username, challengeType: null, lastError: null, actorId: actor.userId,
         });
@@ -79,6 +81,51 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     return result;
   });
 
+  /**
+   * The alternative to `/login`: a `sessionid` cookie lifted from a real,
+   * manually-authenticated browser session (Instagram sees an ordinary
+   * human login, never this route) instead of the account's password.
+   * Resolves synchronously to `ready`/`failed` the same as `/login` — there
+   * is no challenge step here, since importing an already-authenticated
+   * session skips the login flow that would trigger one.
+   */
+  app.post('/v1/instagram-bridge/login-cookie', async (req) => {
+    const actor = ctx.guard(req, 'channel:manage');
+    const body = z.object({
+      username: z.string().min(1).max(120), sessionId: z.string().min(1).max(4000),
+      csrfToken: z.string().max(200).optional(), dsUserId: z.string().max(60).optional(),
+    }).safeParse(req.body);
+    if (!body.success) throw invalid('Isi username dan session cookie Instagram');
+
+    const call = await bridgeCall<LoginResult>(`/internal/sessions/${actor.tenantId}/login-cookie`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: body.data.username, sessionId: body.data.sessionId,
+        csrfToken: body.data.csrfToken, dsUserId: body.data.dsUserId,
+      }),
+    });
+    if (!call.ok || !call.body) {
+      throw invalid('Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge)');
+    }
+    const result = call.body;
+
+    await ctx.asTenant(req, async (tx) => {
+      if (result.status === 'ready') {
+        await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username: result.username });
+        return setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          status: 'ready', username: result.username, challengeType: null, lastError: null, actorId: actor.userId,
+        });
+      }
+      return setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+        status: 'error', username: undefined, challengeType: null,
+        lastError: result.status === 'failed' ? result.error : 'Gagal login dengan session cookie',
+        actorId: actor.userId,
+      });
+    });
+
+    return result;
+  });
+
   app.post('/v1/instagram-bridge/challenge', async (req) => {
     const actor = ctx.guard(req, 'channel:manage');
     const body = z.object({ code: z.string().min(1).max(20) }).safeParse(req.body);
@@ -91,10 +138,10 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     if (!call.ok || !call.body) throw invalid('Layanan Instagram Bridge tidak bisa dihubungi');
     const result = call.body;
 
-    await ctx.asTenant(req, (tx) => {
+    await ctx.asTenant(req, async (tx) => {
       if (result.status === 'ready') {
         return setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
-          status: 'ready', challengeType: null, lastError: null, actorId: actor.userId,
+          status: 'ready', username: result.username, challengeType: null, lastError: null, actorId: actor.userId,
         });
       }
       if (result.status === 'challenge_required') {
@@ -107,6 +154,11 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
         status: 'error', challengeType: null, lastError: result.error, actorId: actor.userId,
       });
     });
+
+    if (result.status === 'ready') {
+      await ctx.asTenant(req, (tx) =>
+        ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username: result.username }));
+    }
 
     return result;
   });

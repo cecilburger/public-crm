@@ -1,15 +1,26 @@
 /**
- * The whole backend in one process, on an in-memory Postgres, with a seeded
- * workspace that looks like a working day.
+ * The whole backend in one process, on Postgres, with a seeded workspace that
+ * looks like a working day.
  *
  * This is for developing the console and for demos — `make up` is the real
  * stack. It runs the same API code, the same migrations and the same row-level
  * security policies, so anything that works here works there.
  *
+ * The data directory persists to disk across restarts (`.dev-stack-data/`,
+ * gitignored) rather than living only in memory: this same process is also
+ * the one you reconnect real external sessions against (a WhatsApp Web QR
+ * pairing, an Instagram Playwright login) that take real, slow, rate-limit-
+ * sensitive setup — losing that on every restart made every single edit to
+ * this codebase mean redoing that setup by hand. The demo seed below only
+ * runs once, the first time there is no 'toko-demo' tenant yet; every
+ * restart after that reuses whatever is already there, seed included.
+ *
  *   npm run dev:stack     → http://localhost:8080
  */
+import path from 'node:path';
+import crypto from 'node:crypto';
 import {
-  connectPglite, migrate, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
+  connectPglite, migrate, withoutTenant, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
   createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
@@ -26,24 +37,64 @@ import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billin
 import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from '../apps/worker/src/autopilot/model.ts';
 import { GraphMetaClient } from '../apps/worker/src/meta.ts';
 import { WaBridgeClient } from '../apps/worker/src/waBridge.ts';
+import { IgBridgeClient } from '../apps/worker/src/igBridgeClient.ts';
 
 process.env.NODE_ENV ??= 'development';
 process.env.LOG_LEVEL ??= 'warn';
 
-const e = env();
+const e = {
+  ...env(),
+  // Business data (contacts, deals, the Instagram Bridge connection, …) now
+  // persists across restarts in `.dev-stack-data/` — the browser's login
+  // session deliberately does not, so a restart still lands back on the sign-
+  // in page the way it always used to. A fresh random secret each run makes
+  // every token signed by a previous run fail verification immediately,
+  // without touching a single row of the data itself.
+  JWT_SECRET: crypto.randomBytes(32).toString('hex'),
+};
 const kek = loadKek(e.KIRANA_KEK);
 
-const db = await connectPglite();
+const dataDir = path.join(import.meta.dirname, '..', '.dev-stack-data');
+const db = await connectPglite(dataDir);
 await migrate(db);
 
-const { tenantId } = await provisionTenant(db, kek, {
+const existingTenant = await withoutTenant(db, 'checking for an existing dev-stack workspace', (tx) =>
+  tx.query<{ id: string }>(`select id from tenants where slug = 'toko-demo'`));
+
+let tenantId: string;
+
+// The same choice the worker makes: a real model when a key is configured,
+// a deterministic stand-in otherwise, through the identical guardrail path.
+// Declared here, ahead of the seed/reuse branch below, so both the demo
+// seeding pass (which drafts replies for the conversations it creates) and
+// the server's own inbound-message dispatch handler (wired up much further
+// down, well after this branch has closed) can reach it — it used to live
+// inside the seed branch's own `else` block, which left `runAutopilot`
+// genuinely out of scope for every dispatch on a *reused* workspace, since
+// that path skips the branch it was declared in entirely.
+const autopilot: AutopilotModel = process.env.ANTHROPIC_API_KEY
+  ? new ClaudeAutopilot({ model: e.AUTOPILOT_MODEL, effort: e.AUTOPILOT_EFFORT })
+  : new ScriptedAutopilot();
+
+const runAutopilot = (payload: unknown) =>
+  processAutopilotDraft(
+    { db, kek, model: autopilot, dispatch: async () => {}, publicBaseUrl: e.PUBLIC_BASE_URL },
+    payload as { tenantId: string; conversationId: string; messageId?: string },
+  );
+
+if (existingTenant[0]) {
+  tenantId = existingTenant[0].id;
+  console.log(`[dev-stack] reusing existing workspace ${tenantId} from ${dataDir} — skipping demo seed`);
+} else {
+
+({ tenantId } = await provisionTenant(db, kek, {
   slug: 'toko-demo',
   name: 'Toko Demo Nusantara',
   ownerEmail: 'rani@toko-demo.id',
   ownerName: 'Rani Putri',
   ownerPassword: 'demo-password-1234',
   plan: 'growth',
-});
+}));
 
 const agents = await Promise.all([
   addUser(db, tenantId, { email: 'dimas@toko-demo.id', name: 'Dimas Arya', password: 'demo-password-1234', role: 'agent' }),
@@ -547,18 +598,6 @@ await withTenant(db, tenantId, async (tx) => {
   }
 });
 
-// The same choice the worker makes: a real model when a key is configured,
-// a deterministic stand-in otherwise, through the identical guardrail path.
-const autopilot: AutopilotModel = process.env.ANTHROPIC_API_KEY
-  ? new ClaudeAutopilot({ model: e.AUTOPILOT_MODEL, effort: e.AUTOPILOT_EFFORT })
-  : new ScriptedAutopilot();
-
-const runAutopilot = (payload: unknown) =>
-  processAutopilotDraft(
-    { db, kek, model: autopilot, dispatch: async () => {}, publicBaseUrl: e.PUBLIC_BASE_URL },
-    payload as { tenantId: string; conversationId: string; messageId?: string },
-  );
-
 // Draft replies for the seeded conversations, so the inbox opens with real
 // suggestions waiting rather than an empty demo.
 // Read the list first, then draft outside the transaction: processAutopilotDraft
@@ -660,6 +699,8 @@ await withTenant(db, tenantId, async (tx) => {
 });
 await closePeriodAndIssueInvoice(db, tenantId);
 
+} // end of the first-run-only demo seed
+
 // Channel credentials are stored encrypted per tenant; unwrapped only in
 // memory, only for the send being performed — same as the real worker.
 const accessTokenFor = async (tid: string, channelId: string): Promise<string> => {
@@ -676,6 +717,7 @@ const accessTokenFor = async (tid: string, channelId: string): Promise<string> =
 // somewhere real to go, so that half of `processOutbound` is worth wiring in.
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
 const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
+const igBridge = new IgBridgeClient(e.IG_BRIDGE_URL, e.IG_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
@@ -700,22 +742,22 @@ const app = buildApp({
       const job = payload as { tenantId: string; messageId: string };
       // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real
       // Meta credentials — there is nowhere for `processOutbound` to actually
-      // send those, only a guaranteed failure. A WhatsApp Web number has a
-      // real `apps/wa-bridge` session behind it, so only that kind is worth
-      // routing through the real send path here; everything else stays the
-      // no-op it always was in this demo stack.
-      const isWaBridge = await withTenant(db, job.tenantId, async (tx) => {
+      // send those, only a guaranteed failure. A real, live-session-backed
+      // channel (WhatsApp Web, or Instagram through the Playwright bridge)
+      // is worth routing through the real send path here; everything else
+      // stays the no-op it always was in this demo stack.
+      const channelKind = await withTenant(db, job.tenantId, async (tx) => {
         const rows = await tx.query<{ kind: string }>(
           `select ch.kind from messages m
              join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
             where m.tenant_id = $1 and m.id = $2`,
           [job.tenantId, job.messageId],
         );
-        return rows[0]?.kind === 'whatsapp_web';
-      }).catch(() => false);
+        return rows[0]?.kind ?? null;
+      }).catch(() => null);
 
-      if (isWaBridge) {
-        await processOutbound({ db, kek, meta, waBridge, accessTokenFor }, job)
+      if (channelKind === 'whatsapp_web' || channelKind === 'instagram_bridge') {
+        await processOutbound({ db, kek, meta, waBridge, igBridge, accessTokenFor }, job)
           .catch((err) => console.error('[dev-stack] outbound send failed:', (err as Error).message));
       }
     }
@@ -725,7 +767,7 @@ const app = buildApp({
 await app.listen({ port: e.PORT, host: '127.0.0.1' });
 
 console.log(`
-  MCNASIA dev stack (in-memory Postgres, real API)
+  MCNASIA dev stack (persistent Postgres in .dev-stack-data/, real API)
 
   API        http://localhost:${e.PORT}
   workspace  toko-demo

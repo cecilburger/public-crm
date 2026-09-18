@@ -1,9 +1,11 @@
 import { guardOutbound, sendRatePerSecond, normalisePhone, toMicros, META_RATE_IDR } from '@kirana/core';
 import {
-  withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, getDecryptedIgToken, type Database,
+  withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, getDecryptedIgToken,
+  type Database,
 } from '@kirana/db';
 import type { MetaClient } from '../meta.ts';
 import type { WaBridgeClient } from '../waBridge.ts';
+import type { IgBridgeClient } from '../igBridgeClient.ts';
 
 const IG_GRAPH_URL = 'https://graph.instagram.com';
 
@@ -12,6 +14,7 @@ export interface SendDeps {
   kek: Buffer;
   meta: MetaClient;
   waBridge: WaBridgeClient;
+  igBridge: IgBridgeClient;
   accessTokenFor: (tenantId: string, channelId: string) => Promise<string>;
 }
 
@@ -29,11 +32,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
-      ig_psid_enc: string | null;
+      ig_psid_enc: string | null; ig_thread_id_enc: string | null;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
               c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id,
-              ct.phone_enc, ct.ig_psid_enc
+              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
@@ -81,6 +84,40 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         // permanent rather than retried into the same error forever.
         await markFailed(tx, job, (err as Error).message.slice(0, 500));
         return { status: 'failed' };
+      }
+    }
+
+    // `instagram-private-api`-driven, so there is no template/window/quality
+    // policy to run through `guardOutbound` here either — same reasoning as
+    // `whatsapp_web` just below, and its own simpler path for the same reason.
+    // The thread id (not a phone number or IGSID) is what tells `apps/ig-bridge`
+    // which DM to open; it was stashed on the contact by the last inbound
+    // message from them, so a contact who has never messaged in has nowhere to
+    // send. Checked *before* the phone-number branch below, not after it: a
+    // bridge contact has no `phone_enc` at all, so the generic "no phone on
+    // record" guard meant for the phone-based channels caught and failed
+    // every bridge send before it ever reached this block — confirmed live,
+    // this was the reason nothing sent through Chat IG ever went anywhere.
+    if (msg.channel_kind === 'instagram_bridge') {
+      const threadId = msg.ig_thread_id_enc ? openField(keys, job.tenantId, msg.ig_thread_id_enc) : null;
+      if (!threadId) {
+        await markFailed(tx, job, 'channel_unavailable');
+        return { status: 'failed' };
+      }
+      try {
+        await deps.igBridge.send({ tenantId: job.tenantId, threadId, body });
+        await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
+          [job.tenantId, job.messageId]);
+        await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
+          [job.tenantId, job.messageId]);
+        return { status: 'sent' };
+      } catch (err) {
+        if ((err as { permanent?: boolean }).permanent === true) {
+          await markFailed(tx, job, (err as Error).message.slice(0, 500));
+          return { status: 'failed' };
+        }
+        await scheduleRetry(tx, job, err as Error);
+        throw err;
       }
     }
 

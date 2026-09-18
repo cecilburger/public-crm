@@ -71,6 +71,29 @@ export async function setIgBridgeConnection(
   });
 }
 
+/**
+ * The routing anchor for Chat IG's bridge-sourced messages — same idea as
+ * `ensureInstagramChannel` for the official API, but its own `kind` so a
+ * tenant can run both connections side by side without their conversations
+ * colliding on the same channel row. External identity is the @username
+ * (the private API's IGSID-equivalent is per-app, not something this
+ * account-level connection has), refreshed on every successful login in
+ * case the same account is reconnected under a changed handle.
+ */
+export async function ensureInstagramBridgeChannel(
+  ctx: Ctx, args: { username: string },
+): Promise<{ channelId: string }> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `insert into channels (tenant_id, kind, display_name, external_id, status)
+     values ($1, 'instagram_bridge', $2, $3, 'connected')
+     on conflict (kind, external_id) where external_id is not null
+     do update set display_name = excluded.display_name, status = 'connected', tenant_id = excluded.tenant_id
+     returning id`,
+    [ctx.tenantId, `@${args.username}`, args.username],
+  );
+  return { channelId: rows[0]!.id };
+}
+
 export async function clearIgBridgeConnection(ctx: Ctx, args: { actorId: string }): Promise<void> {
   await ctx.tx.query(
     `update ig_bridge_connections
@@ -83,4 +106,8 @@ export async function clearIgBridgeConnection(ctx: Ctx, args: { actorId: string 
     actorType: 'user', actorId: args.actorId, action: 'ig_bridge.disconnected',
     resourceType: 'tenant', resourceId: ctx.tenantId,
   });
+  await ctx.tx.query(
+    `update channels set status = 'disabled' where tenant_id = $1 and kind = 'instagram_bridge'`,
+    [ctx.tenantId],
+  );
 }

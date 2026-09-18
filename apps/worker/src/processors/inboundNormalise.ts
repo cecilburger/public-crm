@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import {
-  withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, recordPhoneReply,
-  advanceDealsOnEvent, getDecryptedIgToken, type Database,
+  withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, ingestInboundInstagramDmMessage,
+  recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken, type Database,
 } from '@kirana/db';
 
 const IG_GRAPH_URL = 'https://graph.instagram.com';
@@ -35,6 +36,9 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
   // bridge is its own provider rather than pretending to be Meta.
   if (claimed[0].provider === 'wa_bridge') {
     return processWaBridgeEvent(deps, webhookEventId, claimed[0].payload as unknown as WaBridgeEventPayload);
+  }
+  if (claimed[0].provider === 'ig_bridge_dm') {
+    return processIgBridgeDmEvent(deps, webhookEventId, claimed[0].payload as unknown as IgBridgeDmEventPayload);
   }
   if ((claimed[0].payload as { platform?: string }).platform === 'instagram') {
     return processInstagramEvent(deps, webhookEventId, claimed[0].payload as unknown as InstagramEventPayload);
@@ -293,6 +297,94 @@ async function processInstagramEvent(
       queue: 'autopilot.draft',
       payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
     });
+  }
+  return { status: 'processed' };
+}
+
+/* ----------------------------------------------------------------- ig-bridge */
+
+export type IgBridgeDmEventPayload =
+  | {
+      tenantId: string; event: 'message';
+      message: {
+        threadId: string; participantUsername: string; senderUsername: string; text: string;
+        direction: 'inbound' | 'outbound'; index: number;
+      };
+    }
+  | { tenantId: string; event: 'session_error'; error: string };
+
+/**
+ * `apps/ig-bridge`'s scraped counterpart to `processInstagramEvent` — same
+ * destination rows, different source and a different identity column
+ * (`ingestInboundInstagramDmMessage`/`recordIgBridgeAgentReply` key on
+ * @username, not an IGSID, since scraping never sees one). `direction`
+ * tells the two apart: an 'outbound' event is a reply the connected account
+ * sent from the real Instagram app itself — `DmWatcher` already recognises
+ * (and skips re-reporting) anything sent *through* the console, so every
+ * 'outbound' event that reaches here genuinely came from the phone.
+ */
+async function processIgBridgeDmEvent(
+  deps: NormaliseDeps, webhookEventId: string, payload: IgBridgeDmEventPayload,
+): Promise<{ status: string }> {
+  if (payload.event === 'session_error') {
+    await withoutTenant(deps.control, 'recording an expired ig-bridge session', (tx) =>
+      tx.query(
+        `update ig_bridge_connections set status = 'error', last_error = $2, updated_at = now()
+          where tenant_id = $1`,
+        [payload.tenantId, payload.error],
+      ));
+    await withoutTenant(deps.control, 'marking the ig-bridge channel disconnected', (tx) =>
+      tx.query(`update channels set status = 'error' where tenant_id = $1 and kind = 'instagram_bridge'`,
+        [payload.tenantId]));
+    return { status: 'processed' };
+  }
+
+  const channels = await withoutTenant(deps.control, 'resolving ig-bridge channel to tenant', (tx) =>
+    tx.query<{ id: string }>(
+      `select id from channels where tenant_id = $1 and kind = 'instagram_bridge'`,
+      [payload.tenantId],
+    ));
+  const channel = channels[0];
+  if (!channel) {
+    console.error(`[ig-bridge-dm] no 'instagram_bridge' channel found for tenant ${payload.tenantId} — reconnect from Pengaturan → Instagram so the channel row gets (re)created`);
+    return await fail(deps, webhookEventId, `no ig-bridge channel for tenant ${payload.tenantId}`);
+  }
+
+  // Keyed on the sender and the message's position in the thread, not just
+  // its text (mirrors the hash the webhook route already committed the
+  // spool row under) — scraping gives no real per-message id, so a
+  // repeated word sent at two different times would otherwise hash
+  // identically to its own earlier occurrence and vanish as a false
+  // duplicate every time after the first.
+  const externalId = crypto.createHash('sha256')
+    .update(`ig_dm:${payload.tenantId}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.index}:${payload.message.text}`)
+    .digest('hex');
+
+  const result = payload.message.direction === 'outbound'
+    ? await withTenant(deps.db, payload.tenantId, (tx) =>
+        recordIgBridgeAgentReply({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
+          channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
+          body: payload.message.text, providerMessageId: externalId,
+        }))
+    : await withTenant(deps.db, payload.tenantId, (tx) =>
+        ingestInboundInstagramDmMessage({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
+          channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
+          body: payload.message.text, providerMessageId: externalId,
+        }));
+
+  console.log(`[ig-bridge-dm] ${result.duplicate ? 'duplicate, skipped' : 'ingested'} (${payload.message.direction}): ${payload.message.participantUsername} in thread ${payload.message.threadId}`);
+
+  if (!result.duplicate) {
+    deps.publish?.(payload.tenantId, { type: 'message', conversationId: result.conversationId });
+    // A reply the agent already sent — from the console or, here, from
+    // their own phone — needs no autopilot draft; there is nothing new for
+    // it to answer.
+    if (payload.message.direction === 'inbound') {
+      await deps.dispatch({
+        queue: 'autopilot.draft',
+        payload: { tenantId: payload.tenantId, conversationId: result.conversationId, messageId: result.messageId },
+      });
+    }
   }
   return { status: 'processed' };
 }
