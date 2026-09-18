@@ -1,4 +1,9 @@
-import { withTenant, withoutTenant, ingestInboundMessage, recordPhoneReply, advanceDealsOnEvent, type Database } from '@kirana/db';
+import {
+  withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, recordPhoneReply,
+  advanceDealsOnEvent, getDecryptedIgToken, type Database,
+} from '@kirana/db';
+
+const IG_GRAPH_URL = 'https://graph.instagram.com';
 
 export interface NormaliseDeps {
   db: Database;
@@ -30,6 +35,9 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
   // bridge is its own provider rather than pretending to be Meta.
   if (claimed[0].provider === 'wa_bridge') {
     return processWaBridgeEvent(deps, webhookEventId, claimed[0].payload as unknown as WaBridgeEventPayload);
+  }
+  if ((claimed[0].payload as { platform?: string }).platform === 'instagram') {
+    return processInstagramEvent(deps, webhookEventId, claimed[0].payload as unknown as InstagramEventPayload);
   }
 
   const value = claimed[0].payload as {
@@ -209,6 +217,83 @@ async function processWaBridgeEvent(
     }
   });
 
+  return { status: 'processed' };
+}
+
+/* --------------------------------------------------------------- instagram */
+
+export interface InstagramEventPayload {
+  platform: 'instagram';
+  igAccountId: string;
+  messagingEvent: {
+    sender?: { id?: string };
+    recipient?: { id?: string };
+    timestamp?: number;
+    message?: { mid?: string; text?: string; is_echo?: boolean };
+  };
+}
+
+/**
+ * Instagram's webhook is Messenger-Platform-shaped, not the `changes[].value`
+ * shape WhatsApp Business Account uses — `apps/api`'s webhook route already
+ * told them apart at spool time, so this only ever sees the Instagram shape.
+ */
+async function processInstagramEvent(
+  deps: NormaliseDeps, webhookEventId: string, payload: InstagramEventPayload,
+): Promise<{ status: string }> {
+  const m = payload.messagingEvent.message;
+  if (!m?.mid) return { status: 'processed' };
+
+  // Meta echoes a message this app itself just sent back through the same
+  // webhook, flagged `is_echo` — `queueOutboundMessage` already recorded it
+  // once at send time, so the echo is acknowledged and dropped, not ingested
+  // a second time as if it were new.
+  if (m.is_echo) return { status: 'processed' };
+
+  const channels = await withoutTenant(deps.control, 'resolving instagram channel to tenant', (tx) =>
+    tx.query<{ id: string; tenant_id: string }>(
+      `select id, tenant_id from channels where kind = 'instagram' and external_id = $1`,
+      [payload.igAccountId],
+    ));
+  const channel = channels[0];
+  if (!channel) return await fail(deps, webhookEventId, `unknown instagram channel ${payload.igAccountId}`);
+
+  const psid = payload.messagingEvent.sender?.id;
+  if (!psid) return await fail(deps, webhookEventId, 'instagram message with no sender psid');
+
+  // Instagram's webhook carries no profile info the way WhatsApp's does
+  // inline (`contacts[].profile.name`) — a lookup is the only way to show
+  // something better than the bare psid. Best-effort: a contact still gets
+  // recorded even when this fails, just without a name yet.
+  const displayName = await withTenant(deps.db, channel.tenant_id, async (tx) => {
+    const ig = await getDecryptedIgToken({ tx, tenantId: channel.tenant_id, kek: deps.kek });
+    if (!ig) return null;
+    try {
+      const res = await fetch(`${IG_GRAPH_URL}/${psid}?${new URLSearchParams({
+        fields: 'username', access_token: ig.accessToken,
+      })}`);
+      if (!res.ok) return null;
+      const profile = await res.json() as { username?: string };
+      return profile.username ?? null;
+    } catch {
+      return null;
+    }
+  });
+
+  const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
+    ingestInboundInstagramMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
+      channelId: channel.id, psid, body: m.text || '[unsupported message]',
+      providerMessageId: m.mid!, displayName,
+      providerTs: payload.messagingEvent.timestamp ? new Date(payload.messagingEvent.timestamp) : undefined,
+    }));
+
+  if (!result.duplicate) {
+    deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
+    await deps.dispatch({
+      queue: 'autopilot.draft',
+      payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
+    });
+  }
   return { status: 'processed' };
 }
 

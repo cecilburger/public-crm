@@ -68,11 +68,26 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     }
 
     const body = req.body as {
-      entry?: { id: string; changes?: { value?: Record<string, unknown> }[] }[];
+      object?: string;
+      entry?: {
+        id: string;
+        changes?: { value?: Record<string, unknown> }[];
+        // Instagram's own shape — Messenger-Platform style, not the
+        // `changes[].value` shape WhatsApp Business Account webhooks use.
+        messaging?: { message?: { mid?: string } }[];
+      }[];
     };
 
     const events: { externalId: string; value: Record<string, unknown> }[] = [];
     for (const entry of body.entry ?? []) {
+      if (body.object === 'instagram') {
+        for (const messagingEvent of entry.messaging ?? []) {
+          const mid = messagingEvent.message?.mid;
+          if (!mid) continue;
+          events.push({ externalId: mid, value: { platform: 'instagram', igAccountId: entry.id, messagingEvent } });
+        }
+        continue;
+      }
       for (const change of entry.changes ?? []) {
         const value = change.value ?? {};
         const messages = (value.messages as { id: string }[] | undefined) ?? [];

@@ -43,6 +43,7 @@ export const t = {
     inbox: 'Inbox',
     chats: 'Obrolan',
     chatWa: 'Chat WA',
+    chatIg: 'Chat IG',
     client: 'Client',
     clientDeal: 'Client Deal',
     clientProses: 'Client On Proses',
@@ -559,6 +560,7 @@ export const t = {
 
   instagramBridge: {
     title: 'Instagram',
+    sectionTitle: 'Login Otomatis (Playwright)',
     subtitle: 'Login Instagram lewat otomasi browser (bukan API resmi Meta) — cara ini melanggar Ketentuan Layanan Instagram dan berisiko akun kena checkpoint atau terkunci. Pakai akun cadangan dulu kalau belum yakin.',
     username: 'Username Instagram',
     usernamePlaceholder: 'namaakun',
@@ -579,6 +581,21 @@ export const t = {
     submittingCode: 'Mengirim…',
     missingCode: 'Isi kode verifikasi',
     failed: 'Gagal menghubungkan Instagram',
+    lastUpdated: (when: string) => `Terakhir diubah ${when}`,
+  },
+
+  instagramMeta: {
+    sectionTitle: 'API Resmi (Meta)',
+    subtitle: 'Jalur resmi Instagram Graph API — tidak melanggar Ketentuan Layanan. Generate token dari Meta App Dashboard (Instagram > API setup with Instagram Login > Generate access tokens), lalu tempel di sini. Token berlaku ~60 hari, setelah itu generate ulang.',
+    accessToken: 'Access Token',
+    accessTokenPlaceholder: 'IGAA…',
+    connect: 'Verifikasi & Simpan',
+    connecting: 'Memverifikasi…',
+    missingToken: 'Tempel access token-nya dulu',
+    connectedAs: (username: string) => `Terhubung sebagai @${username}`,
+    disconnect: 'Putuskan',
+    disconnecting: 'Memutuskan…',
+    failed: 'Gagal memverifikasi token Instagram',
     lastUpdated: (when: string) => `Terakhir diubah ${when}`,
   },
 
@@ -639,6 +656,13 @@ export const t = {
   statuses: {
     open: 'Berjalan', pending: 'Menunggu', snoozed: 'Ditunda', resolved: 'Selesai',
   } as Record<string, string>,
+
+  chatIg: {
+    title: 'Chat IG',
+    subtitle: 'Chat langsung dari akun Instagram yang terhubung lewat API resmi Meta.',
+    notConnected: 'Instagram belum terhubung.',
+    goToSettings: 'Hubungkan di Pengaturan → Instagram',
+  },
 
   waBridge: {
     title: 'Chat WA',

@@ -53,6 +53,31 @@ export async function upsertContactByPhone(
   return { id: rows[0]!.id, created: rows[0]!.created };
 }
 
+/**
+ * Same idea as `upsertContactByPhone`, for a contact who only ever reached
+ * us over Instagram — the platform never hands over a phone number, only
+ * this opaque per-app Instagram-scoped ID (IGSID), so it gets its own blind
+ * index rather than being forced through the phone one.
+ */
+export async function upsertContactByIgPsid(
+  ctx: Ctx, args: { psid: string; displayName?: string | null; now?: Date },
+): Promise<{ id: string; created: boolean }> {
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const bidx = fieldIndex(keys.indexKey, args.psid);
+  const now = args.now ?? new Date();
+
+  const rows = await ctx.tx.query<{ id: string; created: boolean }>(
+    `insert into contacts (tenant_id, display_name, ig_psid_enc, ig_psid_bidx, first_seen_at, last_seen_at)
+     values ($1, $2, $3, $4, $5, $5)
+     on conflict (tenant_id, ig_psid_bidx) where ig_psid_bidx is not null
+     do update set last_seen_at = excluded.last_seen_at,
+                   display_name = coalesce(contacts.display_name, excluded.display_name)
+     returning id, (xmax = 0) as created`,
+    [ctx.tenantId, args.displayName ?? null, sealField(keys, ctx.tenantId, args.psid), bidx, now],
+  );
+  return { id: rows[0]!.id, created: rows[0]!.created };
+}
+
 /** Everyone who has ever messaged in, optionally narrowed to one tag — the Pelanggan page asks for `tag: 'customer'`. */
 export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: number } = {}) {
   return ctx.tx.query<{
@@ -346,6 +371,72 @@ export async function ingestInboundMessage(
      returning id`,
     [ctx.tenantId, conversation.id, args.channelId, contact.id,
      sealField(keys, ctx.tenantId, args.body), JSON.stringify(args.media ?? []),
+     args.providerMessageId, inboundAt],
+  );
+
+  await ctx.tx.query(
+    `update conversations
+        set last_inbound_at = $3, last_message_at = greatest(last_message_at, $3),
+            status = case when status = 'resolved' then 'open' else status end
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, conversation.id, inboundAt],
+  );
+
+  const metered = await recordConversationActivity(ctx.tx, {
+    tenantId: ctx.tenantId, contactId: contact.id, channelId: args.channelId,
+    messageId: inserted[0]!.id, now,
+  });
+
+  return {
+    messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id,
+    duplicate: false, billed: metered.billed,
+  };
+}
+
+/**
+ * Same shape as `ingestInboundMessage`, for an Instagram DM — the one thing
+ * that has to differ is contact identity (IGSID via `upsertContactByIgPsid`
+ * instead of a phone number), so this stays its own function rather than
+ * threading an identity-type flag through the phone-shaped one.
+ */
+export async function ingestInboundInstagramMessage(
+  ctx: Ctx,
+  args: {
+    channelId: string; psid: string; body: string; providerMessageId: string;
+    displayName?: string | null; providerTs?: Date; now?: Date;
+  },
+): Promise<InboundResult> {
+  const now = args.now ?? new Date();
+
+  const dup = await ctx.tx.query<{ id: string; conversation_id: string }>(
+    `select id, conversation_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (dup[0]) {
+    const c = await ctx.tx.query<{ contact_id: string }>(
+      'select contact_id from conversations where tenant_id = $1 and id = $2',
+      [ctx.tenantId, dup[0].conversation_id],
+    );
+    return {
+      messageId: dup[0].id, conversationId: dup[0].conversation_id,
+      contactId: c[0]?.contact_id ?? '', duplicate: true, billed: false,
+    };
+  }
+
+  const inboundAt = args.providerTs ?? now;
+  const contact = await upsertContactByIgPsid(ctx, { psid: args.psid, displayName: args.displayName, now });
+  const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: inboundAt });
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const inserted = await ctx.tx.query<{ id: string }>(
+    `insert into messages
+       (tenant_id, conversation_id, channel_id, direction, sender_type, sender_id,
+        body_enc, media, provider_message_id, status, provider_ts)
+     values ($1,$2,$3,'inbound','contact',$4,$5,$6,$7,'received',$8)
+     returning id`,
+    [ctx.tenantId, conversation.id, args.channelId, contact.id,
+     sealField(keys, ctx.tenantId, args.body), JSON.stringify([]),
      args.providerMessageId, inboundAt],
   );
 

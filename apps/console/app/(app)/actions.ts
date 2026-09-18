@@ -1204,6 +1204,31 @@ export async function disconnectInstagramBridge(_prev: ActionResult | null, form
   }
 }
 
+export async function connectInstagramMeta(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const accessToken = String(form.get('accessToken') ?? '').trim();
+  if (!accessToken) return { ok: false, error: t.instagramMeta.missingToken };
+
+  try {
+    await api('/v1/instagram-meta/connect', { method: 'POST', body: { accessToken } });
+    revalidatePath('/pengaturan/instagram');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramMeta.failed };
+  }
+}
+
+export async function disconnectInstagramMeta(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api('/v1/instagram-meta/disconnect', { method: 'POST' });
+    revalidatePath('/pengaturan/instagram');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramMeta.failed };
+  }
+}
+
 /* ------------------------------------------------------------ balasan cepat */
 
 /** One action for both adding and editing — the presence of an id decides. */
