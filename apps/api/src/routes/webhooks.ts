@@ -194,7 +194,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       tenantId?: string; event?: string; error?: string;
       message?: {
         threadId?: string; participantUsername?: string; senderUsername?: string; text?: string;
-        direction?: 'inbound' | 'outbound';
+        direction?: 'inbound' | 'outbound'; index?: number;
       };
     };
     if (!body.tenantId || !body.event) {
@@ -203,17 +203,20 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     }
 
     const m = body.event === 'message' ? body.message : null;
-    if (body.event === 'message' && (!m?.threadId || !m.participantUsername || !m.senderUsername || !m.text || !m.direction)) {
+    if (body.event === 'message'
+      && (!m?.threadId || !m.participantUsername || !m.senderUsername || !m.text || !m.direction || m.index === undefined)) {
       webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'invalid_payload' });
       return reply.status(400).send();
     }
 
-    // Keyed on the actual sender, not the contact — an inbound and an
-    // outbound message with identical text on the same thread must not
-    // collide on the same idempotency row.
+    // Keyed on the sender and the message's position in the thread, not
+    // just its text — scraping gives no real per-message id, and without
+    // the position a repeated word ("halo", "oyy", ...), routine in casual
+    // chat, would hash identically to its own earlier occurrence and be
+    // dropped as a false duplicate on every repeat after the first.
     const externalId = m
       ? crypto.createHash('sha256')
-          .update(`ig_dm:${body.tenantId}:${m.threadId}:${m.senderUsername}:${m.text}`)
+          .update(`ig_dm:${body.tenantId}:${m.threadId}:${m.senderUsername}:${m.index}:${m.text}`)
           .digest('hex')
       : `${body.tenantId}:${body.event}:${Date.now()}`;
 

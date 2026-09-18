@@ -211,6 +211,13 @@ export class SessionManager {
     return path.join(this.authDir, tenantId);
   }
 
+  /** Public so `DmWatcher` can persist its own per-tenant state (thread
+   * read-anchors) alongside the Chrome profile, without duplicating the
+   * naming scheme. */
+  getProfileDir(tenantId: string): string {
+    return this.profileDir(tenantId);
+  }
+
   /**
    * Confirmed live: launching headless Chrome against a profile that was
    * last shut down uncleanly (killed by a crash, a forced process exit, or

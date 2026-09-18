@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { SessionManager } from './sessionManager.ts';
 import {
   gotoInbox, installInboxObserver, discoverThreadId, readThreadMessages, acceptPendingRequests,
@@ -10,6 +12,19 @@ export type DmWatcherEvent =
       message: {
         threadId: string; participantUsername: string; senderUsername: string; text: string;
         direction: 'inbound' | 'outbound';
+        /** A number that only ever goes up for a given thread, assigned by
+         * `diffNewMessages` the moment a message is first recognised as
+         * new — NOT its position in the DOM. Instagram's visible message
+         * window doesn't always cover the same range of history on two
+         * scrapes of the same thread, so a DOM-position index is unstable:
+         * confirmed live, it made already-ingested messages reappear as
+         * "new" whenever the visible window shifted. This counter is
+         * stable because it is never recomputed from the DOM — only
+         * handed out once per genuinely new message. The webhook route
+         * hashes on (thread, sender, seq, text); without it, a repeated
+         * short word ("halo", "oyy", ...) would hash identically to its
+         * own earlier occurrence and be dropped as a false duplicate. */
+        index: number;
       };
     }
   | { event: 'session_error'; tenantId: string; error: string };
@@ -37,16 +52,27 @@ const RECENTLY_SENT_WINDOW_MS = 5 * 60_000;
  * short-lived fresh tab instead, so neither disturbs the long-lived
  * observer page (re-navigating it would tear the observer down).
  *
- * Every message the changed thread currently shows is re-emitted on each
- * change, not just the newest one — deliberately: there is no real
- * provider message id to key off while scraping, so `apps/api`'s webhook
- * route dedupes on a hash of (tenant, thread, sender, text) instead, and
- * expects to see the same message again on a later pass.
+ * Each changed thread is diffed against the last full read of it
+ * (`diffNewMessages`) so only genuinely new messages are ever emitted —
+ * there is no real provider message id to key off while scraping, so
+ * re-emitting the whole visible history on every change (the original
+ * design here) relied entirely on downstream content hashing to catch
+ * repeats, which broke in two different ways confirmed live: a person
+ * repeating a short word ("halo", "oyy", ...) hashed identically to their
+ * own earlier message and vanished as a false duplicate, and Instagram's
+ * visible message window doesn't always cover the same range of history
+ * between scrapes, so already-ingested messages could resurface as
+ * "new". Diffing against a remembered anchor sidesteps both.
  */
 export class DmWatcher {
   private observedTenants = new Set<string>();
   private knownThreadIds = new Map<string, Map<string, string>>();
   private lastSignatures = new Map<string, Map<string, string>>();
+  // threadId -> the full message list as last scraped, oldest first — the
+  // anchor `diffNewMessages` diffs the next scrape against.
+  private lastMessageList = new Map<string, Map<string, { senderUsername: string; text: string }[]>>();
+  // threadId -> next sequence number to hand out — see `DmWatcherEvent`.
+  private nextSeq = new Map<string, Map<string, number>>();
   private housekeepingTimer: NodeJS.Timeout | null = null;
   // threadId -> the last-known contact identity for that thread, learned
   // from any inbound message seen there. An outbound (own) message carries
@@ -95,19 +121,48 @@ export class DmWatcher {
    * login/challenge instead of waiting for the next housekeeping tick. */
   async attachTenant(tenantId: string): Promise<void> {
     if (this.observedTenants.has(tenantId)) return;
-    const page = await this.sessions.getActivePage(tenantId);
-    if (!page) return;
-
+    // Reserved *before* the first await, not after — `getActivePage` below
+    // can take a while (launching a browser), and a second caller for the
+    // same tenant (the startup housekeeping pass racing a fresh `/login`
+    // call, say) would otherwise pass this same `has()` check while the
+    // first call is still mid-flight, then both go on to navigate and
+    // install an observer on the same page: two `MutationObserver`s firing
+    // on every mutation, reporting every change twice over. Confirmed live
+    // by a flood of paired-duplicate webhook events.
     this.observedTenants.add(tenantId);
+
+    const page = await this.sessions.getActivePage(tenantId);
+    if (!page) {
+      this.observedTenants.delete(tenantId); // nothing attached — a later real attempt should still be allowed to try
+      return;
+    }
+
     if (!this.knownThreadIds.has(tenantId)) this.knownThreadIds.set(tenantId, new Map());
     if (!this.lastSignatures.has(tenantId)) this.lastSignatures.set(tenantId, new Map());
+    if (!this.lastMessageList.has(tenantId)) await this.loadAnchors(tenantId);
 
-    await gotoInbox(page);
-    await installInboxObserver(page, (threads) => {
-      void this.handleInboxChange(tenantId, threads).catch((err) =>
-        this.log.warn({ err, tenantId }, 'ig-bridge: failed handling an inbox change'));
-    });
-    this.log.info({ tenantId }, 'ig-bridge: inbox observer attached');
+    // `gotoInbox` throws `SessionExpiredError` when the session it just
+    // resumed turns out to be dead — confirmed live, left uncaught here
+    // this permanently stuck `observedTenants` on this tenant: every retry
+    // after that (a fresh login included) saw it already marked attached
+    // by the *failed* attempt above and silently did nothing, forever,
+    // until the whole process was restarted. A tenant that fails to
+    // attach must be allowed to try again on the very next call.
+    try {
+      await gotoInbox(page);
+      await installInboxObserver(page, (threads) => {
+        void this.handleInboxChange(tenantId, threads).catch((err) =>
+          this.log.warn({ err, tenantId }, 'ig-bridge: failed handling an inbox change'));
+      });
+      this.log.info({ tenantId }, 'ig-bridge: inbox observer attached');
+    } catch (err) {
+      this.observedTenants.delete(tenantId);
+      if (isSessionExpiredError(err)) {
+        this.sessions.forgetSession(tenantId);
+        this.onEvent({ event: 'session_error', tenantId, error: (err as Error).message });
+      }
+      throw err;
+    }
   }
 
   private async handleInboxChange(tenantId: string, threads: InboxThread[]): Promise<void> {
@@ -171,6 +226,106 @@ export class DmWatcher {
     return true;
   }
 
+  private anchorsFile(tenantId: string): string {
+    return path.join(this.sessions.getProfileDir(tenantId), '.thread-anchors.json');
+  }
+
+  /** Loaded once per tenant, right before the observer starts scanning —
+   * without this, every `ig-bridge` restart (routine under `tsx watch`,
+   * which fires on every save) would forget every thread's anchor and
+   * `diffNewMessages` would treat the whole visible history as new again,
+   * re-ingesting it. Best-effort: a missing or unreadable file just means
+   * the very first scan after this attach reports everything once, same
+   * as a thread this tenant has genuinely never had attached before. */
+  private async loadAnchors(tenantId: string): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.anchorsFile(tenantId), 'utf8');
+      const parsed = JSON.parse(raw) as Record<string, { senderUsername: string; text: string }[]>;
+      this.lastMessageList.set(tenantId, new Map(Object.entries(parsed)));
+    } catch {
+      // No persisted anchors yet.
+    }
+  }
+
+  private persistAnchors(tenantId: string): void {
+    const byThread = this.lastMessageList.get(tenantId);
+    if (!byThread) return;
+    void fs.writeFile(this.anchorsFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8').catch(() => {});
+  }
+
+  /**
+   * Diffs this scrape's full message list against the last one read for
+   * this thread, returning only what's genuinely new since — anchored on
+   * the previously-last-known message rather than on raw position, so a
+   * shift in which range of history Instagram happens to have rendered
+   * this time doesn't make old messages look new again. If that anchor
+   * message isn't found at all (it scrolled out of the loaded range, or
+   * this is the first read of the thread), falls back to treating only
+   * the single newest message as new — under-reporting by a message or
+   * two in that rare case beats flooding the thread with its entire
+   * visible history again.
+   */
+  private diffNewMessages(
+    tenantId: string, threadId: string, current: { senderUsername: string; text: string }[],
+  ): { senderUsername: string; text: string }[] {
+    const byThread = this.lastMessageList.get(tenantId) ?? new Map<string, { senderUsername: string; text: string }[]>();
+    this.lastMessageList.set(tenantId, byThread);
+    const prev = byThread.get(threadId);
+
+    // Confirmed live: `readThreadMessages` occasionally comes back empty on
+    // a transient scrape failure (the thread page caught mid-render, most
+    // often right after this same thread was just navigated to for a
+    // send). Recording that as the new anchor wiped out a real, populated
+    // one — the very next successful scrape then found no anchor at all
+    // and reported the thread's entire visible history as new. An empty
+    // scrape is far more likely a hiccup than a thread that just lost all
+    // its messages, so it leaves the last good anchor alone rather than
+    // overwriting it, and is treated as "nothing new" either way.
+    if (current.length === 0) {
+      if (prev && prev.length > 0) {
+        this.log.warn({ threadId }, 'ig-bridge: empty scrape of a known thread — keeping the last good anchor');
+      }
+      return [];
+    }
+
+    byThread.set(threadId, current);
+    this.persistAnchors(tenantId);
+
+    // No prior anchor at all — genuinely the first time this thread has
+    // ever been read (or `loadAnchors` found nothing persisted for it
+    // either). Reporting the full visible history once here is correct,
+    // not noise: it's how a conversation that already existed before this
+    // tenant was first attached ever reaches the CRM at all.
+    if (!prev) {
+      this.log.warn({ threadId, currentLen: current.length }, 'ig-bridge DEBUG: diffNewMessages — no prior anchor, reporting everything');
+      return current;
+    }
+
+    const anchor = prev[prev.length - 1];
+    if (!anchor) {
+      this.log.warn({ threadId }, 'ig-bridge DEBUG: diffNewMessages — prev array empty');
+      return current;
+    }
+
+    for (let i = current.length - 1; i >= 0; i--) {
+      const m = current[i]!;
+      if (m.senderUsername === anchor.senderUsername && m.text === anchor.text) return current.slice(i + 1);
+    }
+    this.log.warn(
+      { threadId, anchor, currentTail: current.slice(-3) },
+      'ig-bridge DEBUG: diffNewMessages — anchor not found in current scrape',
+    );
+    return current.length > 0 ? [current[current.length - 1]!] : [];
+  }
+
+  private nextSequenceFor(tenantId: string, threadId: string): number {
+    const byThread = this.nextSeq.get(tenantId) ?? new Map<string, number>();
+    this.nextSeq.set(tenantId, byThread);
+    const seq = byThread.get(threadId) ?? 0;
+    byThread.set(threadId, seq + 1);
+    return seq;
+  }
+
   private async readChangedThread(tenantId: string, key: string): Promise<void> {
     const threadId = await this.resolveThreadId(tenantId, key);
     if (!threadId) return;
@@ -183,22 +338,23 @@ export class DmWatcher {
       const contactMap = this.contactByThread.get(tenantId) ?? new Map<string, string>();
       this.contactByThread.set(tenantId, contactMap);
 
-      // Learn (or refresh) this thread's contact identity from any inbound
-      // message in this same batch before reporting anything, so an
-      // outbound message later in the same batch can already use it.
+      // Learn (or refresh) this thread's contact identity from every
+      // currently-visible inbound message, not just the new ones — keeps
+      // this correct even on a pass where only an outbound message is new.
       for (const message of messages) {
         const isOwn = ownUsername && message.senderUsername.toLowerCase() === ownUsername.toLowerCase();
         if (!isOwn) contactMap.set(threadId, message.senderUsername);
       }
 
-      for (const message of messages) {
+      const freshMessages = this.diffNewMessages(tenantId, threadId, messages);
+      for (const message of freshMessages) {
         const isOwn = ownUsername && message.senderUsername.toLowerCase() === ownUsername.toLowerCase();
         if (!isOwn) {
           this.onEvent({
             event: 'message', tenantId,
             message: {
               threadId, participantUsername: message.senderUsername, senderUsername: message.senderUsername,
-              text: message.text, direction: 'inbound',
+              text: message.text, direction: 'inbound', index: this.nextSequenceFor(tenantId, threadId),
             },
           });
           continue;
@@ -214,7 +370,7 @@ export class DmWatcher {
           event: 'message', tenantId,
           message: {
             threadId, participantUsername, senderUsername: message.senderUsername,
-            text: message.text, direction: 'outbound',
+            text: message.text, direction: 'outbound', index: this.nextSequenceFor(tenantId, threadId),
           },
         });
       }

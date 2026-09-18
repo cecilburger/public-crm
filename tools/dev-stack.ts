@@ -63,6 +63,25 @@ const existingTenant = await withoutTenant(db, 'checking for an existing dev-sta
 
 let tenantId: string;
 
+// The same choice the worker makes: a real model when a key is configured,
+// a deterministic stand-in otherwise, through the identical guardrail path.
+// Declared here, ahead of the seed/reuse branch below, so both the demo
+// seeding pass (which drafts replies for the conversations it creates) and
+// the server's own inbound-message dispatch handler (wired up much further
+// down, well after this branch has closed) can reach it — it used to live
+// inside the seed branch's own `else` block, which left `runAutopilot`
+// genuinely out of scope for every dispatch on a *reused* workspace, since
+// that path skips the branch it was declared in entirely.
+const autopilot: AutopilotModel = process.env.ANTHROPIC_API_KEY
+  ? new ClaudeAutopilot({ model: e.AUTOPILOT_MODEL, effort: e.AUTOPILOT_EFFORT })
+  : new ScriptedAutopilot();
+
+const runAutopilot = (payload: unknown) =>
+  processAutopilotDraft(
+    { db, kek, model: autopilot, dispatch: async () => {}, publicBaseUrl: e.PUBLIC_BASE_URL },
+    payload as { tenantId: string; conversationId: string; messageId?: string },
+  );
+
 if (existingTenant[0]) {
   tenantId = existingTenant[0].id;
   console.log(`[dev-stack] reusing existing workspace ${tenantId} from ${dataDir} — skipping demo seed`);
@@ -578,18 +597,6 @@ await withTenant(db, tenantId, async (tx) => {
     });
   }
 });
-
-// The same choice the worker makes: a real model when a key is configured,
-// a deterministic stand-in otherwise, through the identical guardrail path.
-const autopilot: AutopilotModel = process.env.ANTHROPIC_API_KEY
-  ? new ClaudeAutopilot({ model: e.AUTOPILOT_MODEL, effort: e.AUTOPILOT_EFFORT })
-  : new ScriptedAutopilot();
-
-const runAutopilot = (payload: unknown) =>
-  processAutopilotDraft(
-    { db, kek, model: autopilot, dispatch: async () => {}, publicBaseUrl: e.PUBLIC_BASE_URL },
-    payload as { tenantId: string; conversationId: string; messageId?: string },
-  );
 
 // Draft replies for the seeded conversations, so the inbox opens with real
 // suggestions waiting rather than an empty demo.

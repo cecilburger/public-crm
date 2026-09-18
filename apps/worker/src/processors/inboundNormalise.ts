@@ -308,7 +308,7 @@ export type IgBridgeDmEventPayload =
       tenantId: string; event: 'message';
       message: {
         threadId: string; participantUsername: string; senderUsername: string; text: string;
-        direction: 'inbound' | 'outbound';
+        direction: 'inbound' | 'outbound'; index: number;
       };
     }
   | { tenantId: string; event: 'session_error'; error: string };
@@ -350,12 +350,14 @@ async function processIgBridgeDmEvent(
     return await fail(deps, webhookEventId, `no ig-bridge channel for tenant ${payload.tenantId}`);
   }
 
-  // Keyed on the actual sender, not the contact — an inbound and an
-  // outbound message with identical text on the same thread must not
-  // collide on the same idempotency row (mirrors the hash the webhook
-  // route itself already commits to spooling under).
+  // Keyed on the sender and the message's position in the thread, not just
+  // its text (mirrors the hash the webhook route already committed the
+  // spool row under) — scraping gives no real per-message id, so a
+  // repeated word sent at two different times would otherwise hash
+  // identically to its own earlier occurrence and vanish as a false
+  // duplicate every time after the first.
   const externalId = crypto.createHash('sha256')
-    .update(`ig_dm:${payload.tenantId}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.text}`)
+    .update(`ig_dm:${payload.tenantId}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.index}:${payload.message.text}`)
     .digest('hex');
 
   const result = payload.message.direction === 'outbound'

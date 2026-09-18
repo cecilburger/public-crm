@@ -152,13 +152,30 @@ export async function installInboxObserver(
       window.__igObserverInstalled = true;
       ${FIRST_LEAF_TEXT_JS}
 
+      // A row's visible text carries relative-time stamps ("4m", "16h",
+      // "Active now", their Indonesian equivalents) that tick over on their
+      // own as the clock advances, with no message ever having changed.
+      // Confirmed live: left unstripped, this reads as "the row changed"
+      // every time one of those ticks, re-triggering a full re-read of the
+      // thread forever — a self-sustaining loop, not a one-off. Stripping
+      // these known-volatile substrings before comparing is what makes the
+      // signature track actual content instead of the clock.
+      function normaliseSignature(text) {
+        return text
+          .replace(/\\bActive\\s+(now|\\d+\\s*[a-z]+\\s+ago)\\b/gi, '')
+          .replace(/\\bAktif\\s+(sekarang|\\d+\\s*[a-z]+\\s+(yang\\s+)?lalu)\\b/gi, '')
+          .replace(/\\b\\d+\\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|w|mnt|jam|hr|hari|mgg|minggu)\\b/gi, '')
+          .replace(/\\s+/g, ' ')
+          .trim();
+      }
+
       var debounceTimer = null;
       function scan() {
         var list = document.querySelector('div[aria-label="Thread list"]');
         var rows = list ? Array.prototype.slice.call(list.querySelectorAll('div[role="button"]')) : [];
         var threads = rows.map(function (el) {
           var key = firstLeafText(el);
-          return { key: key, signature: (el.innerText || '').slice(0, 300) };
+          return { key: key, signature: normaliseSignature((el.innerText || '').slice(0, 300)) };
         // A row with no readable name at all (an icon-only control like the
         // compose button, occasionally caught by the broad role="button"
         // query) has nothing to key or re-find it by later — skip it.
