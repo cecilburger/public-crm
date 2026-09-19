@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid, notFound, generateDocumentDocx, type RichTextNode } from '@kirana/core';
+import { invalid, notFound, type RichTextNode } from '@kirana/core';
+import { generateDocumentDocx } from '../documents/docxRenderer.ts';
 import {
   listDocuments, getDocument, createDocument, updateDocument, updateDocumentLayout, deleteDocument,
 } from '@kirana/db';

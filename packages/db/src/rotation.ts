@@ -12,8 +12,26 @@ import { audit } from './audit.ts';
  * readable only by a key we are about to throw away, so the list is checked
  * against the schema by a test rather than trusted.
  */
-export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
-  { table: 'contacts', columns: ['phone_enc', 'email_enc', 'fb_user_id_enc', 'fb_thread_id_enc'] },
+export interface EncryptedTable {
+  table: string;
+  columns: string[];
+  /**
+   * The column this table is paged by, unique within a tenant. Defaults to
+   * `id`.
+   *
+   * Not every table that holds encrypted data has an `id`: the per-tenant
+   * connection and settings tables are keyed on `tenant_id` alone, and
+   * `google_calendar_connections` on `(tenant_id, user_id)`. They were left out
+   * of this list entirely rather than named with the wrong key, which meant a
+   * rotation silently skipped them and left their secrets readable only by the
+   * key it was about to destroy. Naming the real key is what lets them be
+   * walked like anything else.
+   */
+  key?: string;
+}
+
+export const ENCRYPTED_COLUMNS: EncryptedTable[] = [
+  { table: 'contacts', columns: ['phone_enc', 'email_enc', 'ig_psid_enc', 'ig_username_enc', 'ig_thread_id_enc', 'fb_user_id_enc', 'fb_thread_id_enc'] },
   { table: 'brands', columns: ['phone_enc', 'email_enc'] },
   { table: 'messages', columns: ['body_enc'] },
   { table: 'message_drafts', columns: ['body_enc'] },
@@ -21,6 +39,14 @@ export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
   { table: 'users', columns: ['mfa_secret_enc'] },
   { table: 'orders', columns: ['recipient_enc', 'address_enc'] },
   { table: 'facebook_comments', columns: ['author_external_id_enc', 'author_name_enc', 'body_enc'] },
+  // One row per tenant: `tenant_id` is the primary key and therefore the key
+  // to page by.
+  { table: 'ig_bridge_connections', columns: ['username_enc'], key: 'tenant_id' },
+  { table: 'ig_meta_connections', columns: ['access_token_enc'], key: 'tenant_id' },
+  { table: 'tenant_email_settings', columns: ['smtp_url_enc'], key: 'tenant_id' },
+  // One row per user per tenant — primary key `(tenant_id, user_id)`, so
+  // `user_id` is unique inside the tenant scope every query here already has.
+  { table: 'google_calendar_connections', columns: ['access_token_enc', 'refresh_token_enc'], key: 'user_id' },
 ];
 
 export interface RotationProgress {
@@ -94,11 +120,12 @@ export async function rotateBatch(
       }
 
       const cursor = state[0]?.last_id ?? null;
+      const key = target.key ?? 'id';
       const anyEncrypted = target.columns.map((c) => `${c} is not null`).join(' or ');
       const rows = await tx.query<Record<string, string | null>>(
-        `select id, ${target.columns.join(', ')} from ${target.table}
-          where tenant_id = $1 and ($2::uuid is null or id > $2) and (${anyEncrypted})
-          order by id asc limit $3`,
+        `select ${key}, ${target.columns.join(', ')} from ${target.table}
+          where tenant_id = $1 and ($2::uuid is null or ${key} > $2) and (${anyEncrypted})
+          order by ${key} asc limit $3`,
         [tenantId, cursor, batchSize],
       );
 
@@ -117,7 +144,7 @@ export async function rotateBatch(
 
       for (const row of rows) {
         const updates: string[] = [];
-        const values: unknown[] = [tenantId, row.id as string];
+        const values: unknown[] = [tenantId, row[key] as string];
 
         for (const column of target.columns) {
           const current = row[column];
@@ -129,11 +156,11 @@ export async function rotateBatch(
         }
         if (updates.length > 0) {
           await tx.query(
-            `update ${target.table} set ${updates.join(', ')} where tenant_id = $1 and id = $2`,
+            `update ${target.table} set ${updates.join(', ')} where tenant_id = $1 and ${key} = $2`,
             values,
           );
         }
-        lastId = row.id as string;
+        lastId = row[key] as string;
       }
 
       const rowsDone = Number(state[0]?.rows_done ?? 0) + rows.length;
