@@ -665,6 +665,7 @@ export const t = {
 
   channels: {
     whatsapp: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger',
+    messenger_bridge: 'Facebook',
     tiktok: 'TikTok', telegram: 'Telegram', tokopedia: 'Tokopedia',
     shopee: 'Shopee', email: 'Email', webchat: 'Chat web', whatsapp_web: 'WhatsApp (manual)',
     instagram_bridge: 'Instagram (tidak resmi)',

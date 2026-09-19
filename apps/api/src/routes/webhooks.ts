@@ -240,4 +240,121 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     return reply.status(200).send({ received: true });
   });
+
+  /**
+   * The Facebook bridge (`apps/fb-bridge`) — Messenger DMs and Page comments
+   * read off the real facebook.com UI. Same shape of trust as the other two
+   * bridges: an internal service on loopback authenticating with a shared
+   * secret, not a provider signing its own payloads.
+   *
+   * INBOUND ONLY. There is no outbound counterpart to this route and no
+   * `messenger_bridge` branch in the outbound sender, so nothing this accepts
+   * can turn into a reply.
+   *
+   * The external id is chosen carefully, because it is the idempotency barrier
+   * for the whole channel:
+   *   - a message with a real Facebook `mid.*` keys on that directly;
+   *   - a message without one keys on a hash of
+   *     (tenant, thread, sender, seq, text) — `seq` being a counter the bridge
+   *     hands out once per genuinely new message, never a DOM position. Text
+   *     alone would collapse a customer's second "halo" into their first;
+   *   - a comment keys on Facebook's own comment id, which the bridge refuses
+   *     to synthesise a substitute for.
+   * `apps/worker` recomputes the identical string when it writes the row, so
+   * the two dedupe layers cannot disagree. Change one and you must change both;
+   * `tests/facebook-bridge.test.ts` asserts they still match.
+   */
+  app.post('/v1/webhooks/fb-bridge', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'fb-bridge webhook rejected: bad secret');
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'bad_signature' });
+      return reply.status(401).send();
+    }
+
+    const body = req.body as {
+      tenantId?: string; event?: string; at?: string; error?: string;
+      message?: {
+        threadId?: string; externalMessageId?: string | null; senderId?: string; senderName?: string;
+        text?: string; sentAt?: string | null; direction?: string; seq?: number;
+      };
+      comment?: {
+        commentId?: string; postId?: string; authorId?: string | null; authorName?: string;
+        text?: string; commentedAt?: string | null; pageId?: string; pageName?: string | null;
+      };
+    };
+    if (!body.tenantId || !body.event) {
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // Validated here rather than trusted, so a bridge that half-broke sends a
+    // 400 it can log instead of writing a row with an empty sender into the
+    // customer's inbox.
+    const m = (body.event === 'message' ? body.message : null) ?? null;
+    if (body.event === 'message') {
+      const ok = m?.threadId && m.senderId && m.senderName && m.text
+        && m.direction === 'inbound' && typeof m.seq === 'number';
+      if (!ok) {
+        webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+        return reply.status(400).send();
+      }
+    }
+
+    const c = (body.event === 'comment' ? body.comment : null) ?? null;
+    if (body.event === 'comment' && !(c?.commentId && c.postId && c.pageId && c.text)) {
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    const externalId = facebookExternalId(body.tenantId, body.event, m, c);
+
+    const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
+      tx.query<{ id: string }>(
+        `insert into webhook_events (provider, external_id, signature_ok, payload)
+         values ('fb_bridge', $1, true, $2)
+         on conflict (provider, external_id) do nothing
+         returning id`,
+        [externalId, JSON.stringify(body)],
+      ));
+
+    webhookEvents.inc({ provider: 'fb_bridge', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    req.log.info(
+      { tenantId: body.tenantId, event: body.event, outcome: inserted[0] ? 'accepted' : 'duplicate' },
+      'fb-bridge webhook received',
+    );
+    if (inserted[0]) {
+      await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
+    }
+
+    return reply.status(200).send({ received: true });
+  });
+}
+
+/**
+ * The spool key for one `fb-bridge` event.
+ *
+ * Kept as a named function rather than inlined so the worker's copy can be
+ * compared against it directly — the two must produce byte-identical strings or
+ * a redelivered event passes the spool barrier and inserts a second message.
+ */
+export function facebookExternalId(
+  tenantId: string,
+  event: string,
+  message: { threadId?: string; externalMessageId?: string | null; senderId?: string; seq?: number; text?: string } | null,
+  comment: { commentId?: string } | null,
+): string {
+  if (message) {
+    // Facebook's own id when it exists — an identity it assigned beats one we
+    // derived, and it stays stable even if the text is edited afterwards.
+    if (message.externalMessageId) return `fb_dm:${tenantId}:${message.externalMessageId}`;
+    return crypto.createHash('sha256')
+      .update(`fb_dm:${tenantId}:${message.threadId}:${message.senderId}:${message.seq}:${message.text}`)
+      .digest('hex');
+  }
+  if (comment) return `fb_comment:${tenantId}:${comment.commentId}`;
+  // Session-state events are status transitions, not customer data that must
+  // never duplicate, so the clock stands in for an id the same way the
+  // wa-bridge route already does for its lifecycle events.
+  return `fb_bridge:${tenantId}:${event}:${Date.now()}`;
 }

@@ -1,0 +1,164 @@
+/**
+ * Every piece of knowledge about Facebook's own markup, in one file.
+ *
+ * WHY THIS FILE EXISTS AT ALL: Facebook ships UI changes without notice, and a
+ * scraper's selectors going stale is routine maintenance, not an incident. When
+ * that happens the fix has to be one file to open and a handful of constants to
+ * correct — `apps/ig-bridge` spread its selectors as string literals across six
+ * functions in two files, and re-finding them all is the expensive part of every
+ * repair. Nothing outside this file may contain a Facebook selector, a
+ * facebook.com URL, or an assumption about attribute names.
+ *
+ * HOW TO REPAIR IT: open the relevant surface in a normal browser, inspect the
+ * element, and correct the constant. Every list below is tried in order and the
+ * first that matches wins, so adding a new variant in front of the old one is
+ * safe and does not break anyone still on the previous UI.
+ *
+ * STATUS OF THESE VALUES — read this before trusting them. They are written to
+ * the structures Facebook's accessibility tree has used for its Messenger and
+ * Page surfaces (roles, aria-labels, and the `/t/<id>` link shape), which are
+ * the most durable handles available: they are driven by accessibility
+ * requirements rather than by styling, so they survive visual redesigns that
+ * shatter class-name selectors. They have NOT been verified against a live
+ * logged-in Facebook session from this workspace, because doing so would mean
+ * logging a real account in. Treat the first live run as the verification step:
+ * the parsers log loudly and the bridge emits `session_error` when a selector
+ * matches nothing, precisely so a stale selector is visible within one cycle
+ * instead of looking like "no new messages".
+ */
+
+/* -------------------------------------------------------------------- URLs */
+
+export const URLS = {
+  base: 'https://www.facebook.com',
+  login: 'https://www.facebook.com/login',
+  /** The Messenger inbox the long-lived observer page sits on. */
+  inbox: 'https://www.facebook.com/messages/t/',
+  thread: (threadId: string) => `https://www.facebook.com/messages/t/${threadId}/`,
+  /** A Page's own posts, where the comment watcher reads from. */
+  pagePosts: (pageId: string) => `https://www.facebook.com/${pageId}/posts`,
+  post: (postId: string) => `https://www.facebook.com/${postId}`,
+} as const;
+
+/** Any URL whose path says we are looking at a login wall rather than content —
+ * the single signal that a persisted session has expired. */
+export const LOGGED_OUT_URL_MARKERS = ['/login', '/checkpoint', '/recover', '/two_step_verification'] as const;
+
+/** A URL that means Facebook wants a human: a checkpoint, a 2FA prompt, or an
+ * account review. Distinguished from a plain logged-out state because the
+ * operator has to solve it interactively and no amount of retrying helps. */
+export const CHECKPOINT_URL_MARKERS = ['/checkpoint', '/two_step_verification', '/confirmemail'] as const;
+
+/** Pulls the thread id out of any Messenger URL or link href. */
+export const THREAD_ID_RE = /\/(?:messages\/)?t\/([^/?#]+)/;
+
+/** Facebook's own message id, wherever it happens to be exposed — an
+ * attribute value, a data-* payload, occasionally an element id. Matched
+ * loosely on purpose: which attribute carries it changes, the shape does not. */
+export const MESSAGE_ID_RE = /\bmid\.\$?[A-Za-z0-9_$-]{6,}/;
+
+/** Facebook comment ids are long digit strings; they show up in `id`,
+ * `data-*` and in permalink hrefs as `comment_id=<digits>`. */
+export const COMMENT_ID_RE = /(?:comment_id=|comment_fbid=)(\d{6,})/;
+export const COMMENT_ID_ATTR_RE = /^(?:comment-)?(\d{10,})$/;
+
+/** `story_fbid=<id>` / `/posts/<id>` / `/videos/<id>` — the post a comment sits on. */
+export const POST_ID_RE = /(?:story_fbid=(\d{6,})|\/posts\/(?:pfbid[A-Za-z0-9]+|(\d{6,}))|\/videos\/(\d{6,}))/;
+
+/** A profile link's numeric id, the commenter's identity when it is there. */
+export const PROFILE_ID_RE = /(?:profile\.php\?id=(\d{6,})|facebook\.com\/(\d{10,})(?:[/?]|$))/;
+
+/* --------------------------------------------------------- inbox / threads */
+
+export const INBOX = {
+  /** The scrollable conversation list. First match wins. */
+  list: ['div[aria-label="Chats"]', 'div[role="grid"]', 'div[role="navigation"] div[role="list"]'],
+  /** One conversation per row. Each carries an `href` to its own thread, which
+   * is the single biggest difference from Instagram's inbox (whose rows carry
+   * no id at all and had to be clicked to discover one). */
+  rowLink: 'a[href*="/t/"]',
+  /** The accessible name of a row, when the link's own text is not enough. */
+  rowNameAttrs: ['aria-label', 'title'],
+} as const;
+
+export const THREAD = {
+  /** The message scrollback. The observer reads this container's `outerHTML`
+   * and hands it to a pure parser — nothing interprets the DOM in the page. */
+  messageList: ['div[role="main"] div[role="grid"]', 'div[aria-label^="Messages"]', 'div[role="main"]'],
+  /** One rendered message. */
+  row: ['div[role="row"]', 'div[role="gridcell"]', 'div[data-testid="message-container"]'],
+  /** Where a row's visible text lives, in preference order. */
+  textNode: ['div[dir="auto"]', 'span[dir="auto"]'],
+  /**
+   * Attributes that carry a per-message timestamp. `data-utime` is unix
+   * seconds; the tooltip/title variants are human-formatted strings that only
+   * parse on a good day — `sentAt` is allowed to come back null rather than
+   * guessed at, and the CRM falls back to arrival time when it does.
+   */
+  timeAttrs: ['data-utime', 'data-tooltip-content', 'title', 'datetime'] as const,
+  /**
+   * How a row says "this one is ours". Matched against a row's aria-label.
+   * An inbound-only bridge must never mistake the operator's own reply for a
+   * customer message, so anything matching here is dropped, and so is anything
+   * whose sender cannot be established at all — see `parsers/messengerThread.ts`.
+   */
+  selfLabelRe: /^(you sent|you replied|anda mengirim|your message)\b/i,
+  /** Row aria-labels of the form "Message from <name>" / "Pesan dari <name>",
+   * which is where a sender name is exposed when the bubble itself has none. */
+  senderLabelRe: /^(?:message|messages|pesan)\s+(?:from|dari)\s+(.+?)\s*$/i,
+  /** The other label shape Facebook uses: "<name> sent a message" /
+   * "<name> mengirim ...". Tried after `senderLabelRe` so the more specific
+   * pattern wins when both could match. */
+  senderSentLabelRe: /^(.+?)\s+(?:sent|replied|mengirim|membalas)\b/i,
+  /** Last resort: the avatar beside a bubble is labelled with its sender. */
+  avatarAlt: 'img[alt]',
+} as const;
+
+/* ------------------------------------------------------------------ Page comments */
+
+export const COMMENTS = {
+  /** The feed of posts on a Page. */
+  feed: ['div[role="feed"]', 'div[role="main"]'],
+  /** One post within that feed. */
+  post: ['div[role="article"]', 'div[data-pagelet^="FeedUnit"]'],
+  /** One comment within a post. Facebook labels these in the accessibility
+   * tree as "Comment by <name>", which is also where the author name comes
+   * from when no profile link is rendered. */
+  comment: ['div[role="article"][aria-label*="omment"]', 'div[data-testid="UFI2Comment/root_depth_0"]'],
+  commentLabelRe: /^(?:comment|komentar)\s+(?:by|oleh)\s+(.+?)(?:\s*,.*)?$/i,
+  /** The commenter's profile link — the only place their id appears. */
+  authorLink: 'a[href*="/profile.php"], a[href^="https://www.facebook.com/"], a[role="link"][tabindex="0"]',
+  /** The comment's own permalink, which carries `comment_id=`. */
+  permalink: 'a[href*="comment_id="]',
+  textNode: ['div[dir="auto"]', 'span[dir="auto"]'],
+  timeAttrs: ['data-utime', 'data-tooltip-content', 'title'] as const,
+} as const;
+
+/* ------------------------------------------------------------------ signals */
+
+/**
+ * Text that means "you are not logged in", checked against the page body when
+ * the URL alone is inconclusive. Facebook geo-localises its UI, so the
+ * Indonesian wording is here alongside the English — an Indonesian-language
+ * login wall that only matched English would read as a perfectly healthy page
+ * with no messages in it, which is the worst possible failure mode: silent.
+ */
+export const LOGGED_OUT_TEXT_RE =
+  /\b(log in to facebook|log into facebook|masuk ke facebook|create new account|buat akun baru)\b/i;
+
+/** Text that means Facebook is asking a human to do something. */
+export const CHECKPOINT_TEXT_RE =
+  /\b(confirm your identity|security check|pemeriksaan keamanan|konfirmasi identitas|enter the code|masukkan kode|two-factor)\b/i;
+
+/**
+ * Relative timestamps ("4m", "2 jam", "Active now") tick over on their own with
+ * no message having changed. `apps/ig-bridge` confirmed live that leaving these
+ * in a row's change-signature makes the watcher re-read the thread forever, a
+ * self-sustaining loop rather than a one-off. Stripped before comparing.
+ */
+export const VOLATILE_TEXT_RES: readonly RegExp[] = [
+  /\bactive\s+(now|\d+\s*[a-z]+\s+ago)\b/gi,
+  /\baktif\s+(sekarang|\d+\s*[a-z]+\s+(yang\s+)?lalu)\b/gi,
+  /\b\d+\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|w|y|mnt|jam|hari|mgg|minggu|thn)\b/gi,
+  /\b(just now|baru saja|kemarin|yesterday)\b/gi,
+];

@@ -14,4 +14,7 @@ apps/wa-bridge/data/
 apps/ig-bridge/.ig_bridge_state/
 apps/ig-bridge/.ig_bridge_auth/
 apps/ig-bridge/.ig_bridge_auth_pptr/
+# A live logged-in Facebook session: Chromium profile, cookies, and the
+# bridge's own markers. Anyone who can read it can act as that account.
+apps/fb-bridge/.fb_bridge_auth/
 .dev-stack-data/

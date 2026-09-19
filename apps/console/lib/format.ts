@@ -72,6 +72,7 @@ export function initials(name: string | null | undefined): string {
 
 export const CHANNEL_LABEL: Record<string, string> = {
   whatsapp: 'WhatsApp', whatsapp_web: 'WhatsApp Web', instagram: 'Instagram', messenger: 'Messenger',
+  messenger_bridge: 'Facebook',
   tiktok: 'TikTok', telegram: 'Telegram', tokopedia: 'Tokopedia', shopee: 'Shopee', email: 'Email', webchat: 'Web',
 };
 

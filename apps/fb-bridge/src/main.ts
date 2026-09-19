@@ -1,0 +1,146 @@
+import path from 'node:path';
+import Fastify from 'fastify';
+import { SessionManager } from './sessionManager.ts';
+import { MessengerWatcher } from './messengerWatcher.ts';
+import { CommentWatcher } from './commentWatcher.ts';
+import type { FbBridgeEvent } from './events.ts';
+
+const PORT = Number(process.env.PORT ?? 8092);
+const FB_BRIDGE_SECRET = process.env.FB_BRIDGE_SECRET ?? 'dev-fb-bridge-secret-change-me';
+const KIRANA_API_URL = process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080';
+const authDir = path.join(import.meta.dirname, '..', '.fb_bridge_auth');
+
+const app = Fastify({ logger: true });
+
+/**
+ * Everything this service knows how to tell the CRM goes through one endpoint,
+ * authenticated by a shared secret — the same arrangement `apps/wa-bridge` and
+ * `apps/ig-bridge` use. It is an internal service on loopback, not a public
+ * provider, so there is no per-payload signature to verify.
+ *
+ * A failure here is logged and dropped rather than retried. The CRM's own spool
+ * is the retry mechanism for anything that got through, and the watcher's
+ * reconciliation pass re-reads whatever did not — a retry loop in here would
+ * only queue events in memory that a restart throws away anyway.
+ */
+async function postEvent(ev: FbBridgeEvent): Promise<void> {
+  try {
+    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
+      body: JSON.stringify(ev),
+    });
+    if (!res.ok) {
+      app.log.warn({ status: res.status, event: ev.event, tenantId: ev.tenantId },
+        'kirana api rejected an fb-bridge event');
+      return;
+    }
+    app.log.info({ event: ev.event, tenantId: ev.tenantId }, 'fb-bridge event posted to kirana api');
+  } catch (err) {
+    app.log.error({ err, event: ev.event }, 'could not reach kirana api');
+  }
+}
+
+const sessions = new SessionManager(authDir);
+const messenger = new MessengerWatcher(sessions, (ev) => void postEvent(ev), app.log);
+const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
+
+// Both watchers' own first pass resumes every tenant with a persisted profile.
+// `tsx watch` restarts on every code change and in production a redeploy or a
+// crash does the same, so resuming cannot be a one-time thing done only after a
+// login. A second startup loop beside this would race it — two launches against
+// one `userDataDir`, which Chrome's single-instance lock rejects outright.
+messenger.start();
+comments.start();
+
+// One tenant's browser dying must not take the service down with every other
+// tenant's live session. Puppeteer's page handlers run detached from any call
+// this service made, so an error in one has nothing left to catch it.
+process.on('uncaughtException', (err) => {
+  app.log.error({ err }, 'uncaught exception in fb-bridge — continuing');
+});
+process.on('unhandledRejection', (err) => {
+  app.log.error({ err }, 'unhandled rejection in fb-bridge — continuing');
+});
+
+// A tenant's browser legitimately keeps several tabs open at once (the
+// long-lived inbox observer plus short-lived reader tabs). Killed rather than
+// closed, Chrome's own session restore tries to reopen all of them on the next
+// launch, which headless mode refuses outright. `tsx watch` restarts via
+// SIGTERM on every save, so this is the common case, not an edge case.
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, 'fb-bridge shutting down — closing browsers');
+  messenger.stop();
+  comments.stop();
+  await sessions.closeAll().catch((err) => app.log.warn({ err }, 'fb-bridge: error closing browsers on shutdown'));
+  await app.close().catch(() => {});
+  process.exit(0);
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+// Internal service only. Bound to loopback below and never exposed publicly.
+app.addHook('onRequest', async (req, reply) => {
+  if (req.url === '/healthz') return;
+  if (req.headers.authorization !== `Bearer ${FB_BRIDGE_SECRET}`) {
+    return reply.status(401).send({ error: 'unauthorized' });
+  }
+});
+
+/** Unauthenticated on purpose: a container health probe has no secret, and this
+ * reveals nothing but whether the process is alive. */
+app.get('/healthz', async () => ({ status: 'ok' }));
+
+/**
+ * Opens a real browser window for the operator to log in by hand.
+ *
+ * Returns straight away with `awaiting_login` rather than holding the request
+ * open — logging in can mean a password, a 2FA code from a phone, and a
+ * checkpoint, which is minutes of human work. The CRM polls `/status`.
+ *
+ * There is no username or password parameter, and there will not be one: the
+ * whole point is that no Facebook credential ever passes through this service
+ * or the CRM.
+ */
+app.post<{ Params: { tenantId: string }; Body: { pageId?: string; pageName?: string } }>(
+  '/internal/sessions/:tenantId/login-window', async (req, reply) => {
+    const { pageId, pageName } = req.body ?? {};
+    if (!pageId || !pageName) {
+      return reply.status(400).send({ error: 'pageId and pageName are required' });
+    }
+    const state = await sessions.openLoginWindow(req.params.tenantId, { pageId, pageName }, (settled) => {
+      if (settled.status !== 'ready') return;
+      void messenger.loadAnchors(req.params.tenantId)
+        .then(() => messenger.attachTenant(req.params.tenantId))
+        .catch((err) => app.log.warn({ err }, 'fb-bridge: failed to attach after login'));
+    });
+    return reply.send(state);
+  });
+
+app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status', async (req, reply) =>
+  reply.send(await sessions.status(req.params.tenantId)));
+
+/** Forces a comment sweep now instead of waiting for the next interval — for an
+ * operator who just posted something and wants to see it wired up, and for
+ * manual verification during setup. */
+app.post<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/sweep-comments', async (req, reply) => {
+  try {
+    await comments.sweep(req.params.tenantId);
+    return reply.send({ swept: true });
+  } catch (err) {
+    return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
+  }
+});
+
+/** Deletes the stored Chromium profile. This is what makes "disconnect" in the
+ * CRM actually revoke the session rather than just hide it. */
+app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', async (req, reply) => {
+  await sessions.logout(req.params.tenantId);
+  return reply.status(204).send();
+});
+
+await app.listen({ port: PORT, host: '127.0.0.1' });
+app.log.info(`fb-bridge listening on 127.0.0.1:${PORT}`);

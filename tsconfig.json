@@ -40,6 +40,7 @@
     "apps/worker/**/*.ts",
     "apps/wa-bridge/**/*.ts",
     "apps/ig-bridge/**/*.ts",
+    "apps/fb-bridge/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": [

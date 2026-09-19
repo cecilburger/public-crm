@@ -59,6 +59,19 @@ const schema = z.object({
   IG_BRIDGE_URL: z.string().default('http://127.0.0.1:8091'),
   IG_BRIDGE_SECRET: z.string().default('dev-ig-bridge-secret-change-me'),
 
+  /**
+   * Facebook bridge (`apps/fb-bridge`) — a real Chromium profile on the real
+   * facebook.com UI, inbound only, with no Graph API anywhere in the path.
+   *
+   * Unlike the Instagram bridge there is no credential to configure here and
+   * never will be: the operator logs in by hand in a browser window the bridge
+   * opens, and the session lives only as a Chromium profile on that service's
+   * own disk. These two values are just where to find the service and the
+   * shared secret it authenticates with.
+   */
+  FB_BRIDGE_URL: z.string().default('http://127.0.0.1:8092'),
+  FB_BRIDGE_SECRET: z.string().default('dev-fb-bridge-secret-change-me'),
+
   /** Autopilot. With no ANTHROPIC_API_KEY the worker runs offline (see main.ts). */
   AUTOPILOT_MODEL: z.string().default('claude-opus-5'),
   AUTOPILOT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
@@ -108,7 +121,7 @@ export function env(): Env {
   }
   if (parsed.data.NODE_ENV === 'production') {
     const weak = ['dev-only-jwt-secret-change-me-000000', 'dev-meta-app-secret', 'dev-verify-token',
-                  'dev-wa-bridge-secret-change-me'];
+                  'dev-wa-bridge-secret-change-me', 'dev-fb-bridge-secret-change-me'];
     for (const [k, v] of Object.entries(parsed.data)) {
       if (typeof v === 'string' && weak.includes(v)) throw new Error(`${k} still holds its development default`);
     }

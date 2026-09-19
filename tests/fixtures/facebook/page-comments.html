@@ -1,0 +1,44 @@
+<!--
+  A Page feed with one post and its comments.
+
+  Includes the two cases that must NOT become rows: a comment with no readable
+  id (nothing to dedupe on, so re-reading the post would insert it again on
+  every sweep) and a sticker reply with no text.
+-->
+<div role="feed">
+  <div role="article" aria-label="Post by Toko Demo">
+    <a href="/tokodemo/posts/998877665544">Toko Demo</a>
+    <div dir="auto">Batik parang restock hari ini</div>
+
+    <div role="article" aria-label="Comment by Budi Santoso">
+      <a href="https://www.facebook.com/profile.php?id=100000000000001">Budi Santoso</a>
+      <div dir="auto">Ada size M kak?</div>
+      <a href="/tokodemo/posts/998877665544?comment_id=112233445566">
+        <span data-utime="1789000300" dir="auto">2 jam</span>
+      </a>
+      <div dir="auto">Suka · Balas · 2 jam</div>
+    </div>
+
+    <div role="article" aria-label="Comment by Siti Aminah">
+      <a href="https://www.facebook.com/profile.php?id=100000000000002">Siti Aminah</a>
+      <div dir="auto">Harganya berapa ya</div>
+      <a href="/tokodemo/posts/998877665544?comment_id=112233445567">
+        <span data-utime="1789000400" dir="auto">1 jam</span>
+      </a>
+    </div>
+
+    <!-- No permalink and no id attribute: must be dropped and counted. -->
+    <div role="article" aria-label="Comment by Anonim">
+      <a href="https://www.facebook.com/profile.php?id=100000000000003">Anonim</a>
+      <div dir="auto">Mantap</div>
+    </div>
+
+    <!-- A sticker reply: has an id, but no text to store. -->
+    <div role="article" aria-label="Comment by Rina">
+      <a href="https://www.facebook.com/profile.php?id=100000000000004">Rina</a>
+      <a href="/tokodemo/posts/998877665544?comment_id=112233445568">
+        <span data-utime="1789000500" dir="auto">30 mnt</span>
+      </a>
+    </div>
+  </div>
+</div>

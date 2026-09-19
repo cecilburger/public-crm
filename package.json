@@ -8,7 +8,8 @@
     "apps/worker",
     "apps/console",
     "apps/wa-bridge",
-    "apps/ig-bridge"
+    "apps/ig-bridge",
+    "apps/fb-bridge"
   ],
   "engines": {
     "node": ">=22"
@@ -24,6 +25,7 @@
     "start:api": "node --experimental-strip-types apps/api/src/server.ts",
     "dev:console": "npm run dev -w @kirana/console",
     "dev:ig-bridge": "npm run dev -w @kirana/ig-bridge",
+    "dev:fb-bridge": "npm run dev -w @kirana/fb-bridge",
     "dev:stack": "tsx --env-file=.env tools/dev-stack.ts",
     "rotate": "tsx packages/db/src/cli-rotate.ts"
   },

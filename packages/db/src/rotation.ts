@@ -13,13 +13,14 @@ import { audit } from './audit.ts';
  * against the schema by a test rather than trusted.
  */
 export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
-  { table: 'contacts', columns: ['phone_enc', 'email_enc'] },
+  { table: 'contacts', columns: ['phone_enc', 'email_enc', 'fb_user_id_enc', 'fb_thread_id_enc'] },
   { table: 'brands', columns: ['phone_enc', 'email_enc'] },
   { table: 'messages', columns: ['body_enc'] },
   { table: 'message_drafts', columns: ['body_enc'] },
   { table: 'channels', columns: ['credentials_enc'] },
   { table: 'users', columns: ['mfa_secret_enc'] },
   { table: 'orders', columns: ['recipient_enc', 'address_enc'] },
+  { table: 'facebook_comments', columns: ['author_external_id_enc', 'author_name_enc', 'body_enc'] },
 ];
 
 export interface RotationProgress {
