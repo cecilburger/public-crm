@@ -19,7 +19,10 @@ export function ClientAddDrawer({ open, onClose }: { open: boolean; onClose: () 
   useEffect(() => {
     if (state?.ok) {
       formRef.current?.reset();
-      onClose();
+      // A notice (e.g. "saved, but Google Calendar isn't connected") is
+      // worth reading before the drawer disappears — only a plain success
+      // closes it right away.
+      if (!state.notice) onClose();
     }
     // Only react to a fresh successful submit, not to `onClose` identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -67,6 +70,20 @@ export function ClientAddDrawer({ open, onClose }: { open: boolean; onClose: () 
               </div>
 
               <div className="record-field">
+                <label htmlFor="cad-igUsername">{t.client.igUsername}</label>
+                <input className="line-input" id="cad-igUsername" name="igUsername" placeholder="username" />
+              </div>
+
+              <div className="record-field">
+                <label htmlFor="cad-clientStatus">{t.client.clientStatus}</label>
+                <select className="line-input" id="cad-clientStatus" name="clientStatus" defaultValue="on_progress">
+                  {Object.entries(t.client.clientStatusLabel).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="record-field">
                 <label htmlFor="cad-address">{t.client.address}</label>
                 <input className="line-input" id="cad-address" name="address" placeholder={t.client.addressPlaceholder} />
               </div>
@@ -99,6 +116,7 @@ export function ClientAddDrawer({ open, onClose }: { open: boolean; onClose: () 
               </div>
             </div>
             {state?.error ? <p className="error" style={{ marginTop: 14 }}>{state.error}</p> : null}
+            {state?.notice ? <p className="dim" style={{ marginTop: 14 }}>{state.notice}</p> : null}
           </div>
 
           <div className="drawer-foot">

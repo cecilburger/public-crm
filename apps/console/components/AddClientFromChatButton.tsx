@@ -7,10 +7,14 @@ import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 
 /**
- * "Tambah Client" on a Chat WA thread — this contact already exists (they
- * messaged in), so the form just tags them `customer` and asks for a
- * meeting date, the field that puts a client into Client On Proses. Hidden
- * by the caller once the contact already carries the `customer` tag.
+ * "Tambah Client" on a Chat WA/Chat IG thread — this contact already exists
+ * (they messaged in), so the form just tags them `customer`, which alone is
+ * enough to land them on Client On Proses (see `prosesContacts`). The
+ * meeting date is optional and purely additional: filling it in also
+ * creates a real meeting task (see `addClientFromChat`) so it shows in the
+ * "Jadwal Meeting" column — a client added without one just shows there with
+ * no date yet, since it might only get scheduled later. Hidden by the caller
+ * once the contact already carries the `customer` tag.
  */
 export function AddClientFromChatButton({
   contactId, contactName,
@@ -19,7 +23,9 @@ export function AddClientFromChatButton({
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(addClientFromChat, null);
 
   useEffect(() => {
-    if (state?.ok) dialogRef.current?.close();
+    // A notice (e.g. "saved, but Google Calendar isn't connected") is worth
+    // reading before the dialog disappears — only a plain success closes it.
+    if (state?.ok && !state.notice) dialogRef.current?.close();
   }, [state]);
 
   return (
@@ -47,12 +53,12 @@ export function AddClientFromChatButton({
           </div>
 
           <div className="record-field">
-            <label htmlFor="acfc-scheduleMeeting">{t.client.scheduleMeeting}</label>
-            <input className="line-input" id="acfc-scheduleMeeting" name="scheduleMeeting"
-                   type="datetime-local" required />
+            <label htmlFor="acfc-scheduleMeeting">{t.client.scheduleMeeting} (opsional)</label>
+            <input className="line-input" id="acfc-scheduleMeeting" name="scheduleMeeting" type="datetime-local" />
           </div>
 
           {state?.error ? <p className="error" style={{ fontSize: 12.5 }}>{state.error}</p> : null}
+          {state?.notice ? <p className="dim" style={{ fontSize: 12.5 }}>{state.notice}</p> : null}
 
           <div className="modal-actions">
             <button type="button" className="btn ghost" onClick={() => dialogRef.current?.close()}>

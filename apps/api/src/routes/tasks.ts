@@ -1,8 +1,75 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { actorCan, maskPhone, invalid, notFound, meetingInviteEmail, resolveTenantSender } from '@kirana/core';
-import { listTasks, createTask, updateTask, setTaskStatus, getTask, getDecryptedSmtpUrl, audit } from '@kirana/db';
+import {
+  listTasks, createTask, updateTask, setTaskStatus, getTask, setTaskCalendarEvent,
+  getDecryptedSmtpUrl, getGoogleCalendarConnection, audit, type TaskRow,
+} from '@kirana/db';
 import type { AppCtx } from '../app.ts';
+import { getValidAccessToken } from './googleCalendar.ts';
+import {
+  insertGoogleEvent, updateGoogleEvent, deleteGoogleEvent, GoogleInsufficientScopeError, GoogleAuthError,
+} from '../googleCalendarClient.ts';
+
+/** A meeting task's due date carries no explicit end time anywhere in the
+ * UI — every drawer that creates one asks for a single "Kapan" moment, not
+ * a range. An hour is the same assumption `meetingInviteEmail` already
+ * makes implicitly (it never states a duration at all), just made
+ * explicit here since Google Calendar's event model requires one. */
+const DEFAULT_MEETING_DURATION_MS = 60 * 60_000;
+
+export type CalendarStatus = 'created' | 'not_connected' | 'reconnect_required' | 'failed';
+
+/**
+ * Best-effort: a meeting task is a real, saved CRM record whether or not
+ * this succeeds, so every failure here is caught and turned into a status
+ * string rather than allowed to fail the request that created/edited it.
+ * Reused by create and (for a task that already has a linked event) update.
+ */
+async function syncMeetingCalendarEvent(
+  ctx: AppCtx, req: FastifyRequest, actor: { tenantId: string; userId: string },
+  task: TaskRow, mode: 'create' | 'update',
+): Promise<{ status: CalendarStatus; eventLink: string | null }> {
+  try {
+    const connection = await ctx.asTenant(req, (tx) =>
+      getGoogleCalendarConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { userId: actor.userId }));
+    if (!connection) return { status: 'not_connected', eventLink: null };
+
+    const accessToken = await ctx.asTenant(req, (tx) => getValidAccessToken(ctx, tx, actor, connection));
+    const attendeeEmail = task.contactEmail ?? task.brandEmail;
+    const endsAt = new Date(task.dueAt.getTime() + DEFAULT_MEETING_DURATION_MS);
+
+    if (mode === 'update' && task.calendarEventId) {
+      const updated = await updateGoogleEvent({
+        accessToken, eventId: task.calendarEventId, title: task.title, startsAt: task.dueAt, endsAt,
+        meetingLink: task.meetingLink,
+      });
+      if (updated.meetingLink && !task.meetingLink) {
+        await ctx.asTenant(req, (tx) =>
+          setTaskCalendarEvent({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+            taskId: task.id, calendarEventId: task.calendarEventId, calendarEventLink: task.calendarEventLink,
+            meetingLink: updated.meetingLink,
+          }));
+      }
+      return { status: 'created', eventLink: task.calendarEventLink };
+    }
+
+    const event = await insertGoogleEvent({
+      accessToken, title: task.title, description: task.notes, startsAt: task.dueAt, endsAt, attendeeEmail,
+      meetingLink: task.meetingLink,
+    });
+    await ctx.asTenant(req, (tx) =>
+      setTaskCalendarEvent({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+        taskId: task.id, calendarEventId: event.id, calendarEventLink: event.htmlLink,
+        meetingLink: task.meetingLink ? null : event.meetingLink,
+      }));
+    return { status: 'created', eventLink: event.htmlLink };
+  } catch (err) {
+    if (err instanceof GoogleInsufficientScopeError) return { status: 'reconnect_required', eventLink: null };
+    if (err instanceof GoogleAuthError) return { status: 'failed', eventLink: null };
+    throw err;
+  }
+}
 
 /**
  * The Tugas page: follow-ups and reminders against a Contact or, now that
@@ -63,7 +130,18 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
         kind: body.data.kind, meetingLink: body.data.meetingLink ?? null, priority: body.data.priority,
         repeatUnit: body.data.repeatUnit, repeatInterval: body.data.repeatInterval, repeatUntil,
       }));
-    return reply.status(201).send(task);
+
+    let calendarStatus: CalendarStatus | null = null;
+    let calendarEventLink: string | null = null;
+    if (body.data.kind === 'meeting') {
+      const full = await ctx.asTenant(req, (tx) => getTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, task.id));
+      if (full) {
+        const result = await syncMeetingCalendarEvent(ctx, req, actor, full, 'create');
+        calendarStatus = result.status;
+        calendarEventLink = result.eventLink;
+      }
+    }
+    return reply.status(201).send({ ...task, calendarStatus, calendarEventLink });
   });
 
   app.patch('/v1/tasks/:id', async (req) => {
@@ -92,6 +170,8 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
       if (Number.isNaN(repeatUntil.getTime())) throw invalid('Check the repeat-until date');
     }
 
+    const before = await ctx.asTenant(req, (tx) => getTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, id));
+
     const ok = await ctx.asTenant(req, (tx) =>
       updateTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         taskId: id, title: body.data.title, dueAt, notes: body.data.notes ?? null,
@@ -101,7 +181,23 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
         repeatInterval: body.data.repeatInterval, repeatUntil, actorId: actor.userId,
       }));
     if (!ok) throw notFound('Task');
-    return { ok: true };
+
+    // `syncMeetingCalendarEvent` itself decides create-vs-update from
+    // whether `after.calendarEventId` is already set — covers both "this
+    // meeting never had an event yet" (not connected at creation time, say)
+    // and "it already does, just move it" with the one call, best-effort
+    // either way like every other Calendar write here.
+    let calendarStatus: CalendarStatus | null = null;
+    let calendarEventLink: string | null = null;
+    if (body.data.kind === 'meeting') {
+      const after = await ctx.asTenant(req, (tx) => getTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, id));
+      if (after) {
+        const result = await syncMeetingCalendarEvent(ctx, req, actor, after, before?.calendarEventId ? 'update' : 'create');
+        calendarStatus = result.status;
+        calendarEventLink = result.eventLink;
+      }
+    }
+    return { ok: true, calendarStatus, calendarEventLink };
   });
 
   app.post('/v1/tasks/:id/done', async (req) => {
@@ -118,9 +214,27 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppCtx): void {
     const actor = ctx.guard(req, 'contact:write');
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
+    const before = await ctx.asTenant(req, (tx) => getTask({ tx, tenantId: actor.tenantId, kek: ctx.kek }, id));
+
     const ok = await ctx.asTenant(req, (tx) =>
       setTaskStatus({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { taskId: id, status: 'cancelled', actorId: actor.userId }));
     if (!ok) throw notFound('Task');
+
+    if (before?.calendarEventId) {
+      try {
+        const connection = await ctx.asTenant(req, (tx) =>
+          getGoogleCalendarConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { userId: actor.userId }));
+        if (connection) {
+          const accessToken = await ctx.asTenant(req, (tx) => getValidAccessToken(ctx, tx, actor, connection));
+          await deleteGoogleEvent({ accessToken, eventId: before.calendarEventId });
+        }
+      } catch (err) {
+        // Cancelling the task itself already succeeded above — a Calendar
+        // cleanup failure here is logged-and-moved-on, not a reason to
+        // report the cancel itself as failed.
+        if (!(err instanceof GoogleAuthError)) throw err;
+      }
+    }
     return { ok: true };
   });
 

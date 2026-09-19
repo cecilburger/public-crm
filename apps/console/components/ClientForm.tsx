@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { createClient, updateClient, deleteClient, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import { initials } from '@/lib/format';
+import { initials, toDatetimeLocal } from '@/lib/format';
 import { ContactTimeline } from '@/components/ContactTimeline';
 import { ClientPurchases } from '@/components/ClientPurchases';
 import { ClientActivities } from '@/components/ClientActivities';
@@ -29,6 +29,17 @@ export function ClientForm({
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+
+  // The real "Jadwal Meeting" the rest of the app means (see
+  // `nextMeetingByContact` on Client On Proses) — the nearest still-open
+  // meeting task, not `contact.scheduleMeeting`, which nothing else reads
+  // anymore. Prefilling from that (and carrying it along as `meetingTask`
+  // below) is what lets `updateClient` tell "nothing changed" apart from
+  // "reschedule this" apart from "book a new one", so saving the form
+  // doesn't spawn a duplicate meeting every time.
+  const nextMeeting = tasks
+    .filter((tk) => tk.kind === 'meeting' && tk.status === 'open')
+    .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())[0] ?? null;
 
   // Preview only — nothing here is submitted with the form yet, there is
   // nowhere on the backend to put it. The `name`-less file input below is
@@ -118,6 +129,20 @@ export function ClientForm({
                 <input className="line-input" id="email" name="email" type="email"
                       defaultValue={contact?.email ?? ''} placeholder="nama@email.com" />
               </div>
+              <div className="record-field">
+                <label htmlFor="igUsername">{t.client.igUsername}</label>
+                <input className="line-input" id="igUsername" name="igUsername"
+                      defaultValue={contact?.igUsername ?? ''} placeholder="username" />
+              </div>
+              <div className="record-field">
+                <label htmlFor="clientStatus">{t.client.clientStatus}</label>
+                <select className="line-input" id="clientStatus" name="clientStatus"
+                        defaultValue={contact?.clientStatus ?? 'on_progress'}>
+                  {Object.entries(t.client.clientStatusLabel).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
                 <label htmlFor="address">{t.client.address}</label>
                 <input className="line-input" id="address" name="address"
@@ -157,8 +182,13 @@ export function ClientForm({
               <div className="record-field">
                 <label htmlFor="scheduleMeeting">{t.client.scheduleMeeting}</label>
                 <input className="line-input" id="scheduleMeeting" name="scheduleMeeting" type="datetime-local"
-                      defaultValue={contact?.scheduleMeeting ?? ''} />
+                      defaultValue={nextMeeting ? toDatetimeLocal(nextMeeting.dueAt) : ''} />
+                <p className="record-hint">{t.client.scheduleMeetingHint}</p>
               </div>
+              {/* What `updateClient` compares the field above against to tell a
+                  real reschedule apart from an unrelated field on this same
+                  form just being saved — see the comment on `nextMeeting`. */}
+              <input type="hidden" name="meetingTask" value={nextMeeting ? JSON.stringify(nextMeeting) : ''} />
               <div className="record-field" style={{ gridColumn: '1 / -1' }}>
                 <label htmlFor="notes">{t.client.notes}</label>
                 <textarea className="line-input" id="notes" name="notes" rows={3}
@@ -176,6 +206,7 @@ export function ClientForm({
             ) : null}
 
             {state?.error ? <p className="error" style={{ marginTop: 18 }}>{state.error}</p> : null}
+            {state?.notice ? <p className="dim" style={{ marginTop: 18 }}>{state.notice}</p> : null}
           </div>
 
           {contact ? (

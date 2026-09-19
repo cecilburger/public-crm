@@ -20,6 +20,17 @@ export function sealEmail(keys: TenantKeys, tenantId: string, raw: string | null
   return { enc: sealField(keys, tenantId, normalised), bidx: fieldIndex(keys.indexKey, normalised) };
 }
 
+/** Same normalisation `upsertContactByIgUsername` uses, so a handle entered
+ * by hand here and one scraped off a real DM land on the same blind index —
+ * a leading "@" is stripped too, since that's how people are used to typing
+ * a handle but not how `ig-bridge` ever reports one. */
+export function sealIgUsername(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
+  if (!raw) return { enc: null, bidx: null };
+  const normalised = raw.trim().toLowerCase().replace(/^@/, '');
+  if (!normalised) return { enc: null, bidx: null };
+  return { enc: sealField(keys, tenantId, normalised), bidx: fieldIndex(keys.indexKey, normalised) };
+}
+
 /* ---------------------------------------------------------------- contacts */
 
 /**
@@ -81,14 +92,16 @@ export async function upsertContactByIgPsid(
 /** Everyone who has ever messaged in, optionally narrowed to one tag — the Pelanggan page asks for `tag: 'customer'`. */
 export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: number } = {}) {
   return ctx.tx.query<{
-    id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null; tags: string[];
+    id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null;
+    ig_username_enc: string | null; tags: string[];
     first_seen_at: Date; last_seen_at: Date;
     attributes: {
       address?: string | null; notes?: string | null;
       storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+      clientStatus?: string | null;
     } | null;
   }>(
-    `select id, display_name, phone_enc, email_enc, tags, first_seen_at, last_seen_at, attributes
+    `select id, display_name, phone_enc, email_enc, ig_username_enc, tags, first_seen_at, last_seen_at, attributes
        from contacts
       where tenant_id = $1 and deleted_at is null
         and ($3::text is null or $3 = any(tags))
@@ -101,14 +114,22 @@ export async function listContacts(ctx: Ctx, args: { tag?: string; limit?: numbe
 /**
  * No schema of their own yet — address, notes and the store/meeting fields
  * live in the general-purpose `attributes` bag.
+ *
+ * `clientStatus` defaults to `'on_progress'` right here rather than at each
+ * call site — it's what Client On Proses vs Client Deal actually key off of
+ * (see `prosesContacts`/`dealContacts` in the console), so a contact with no
+ * explicit value must still resolve to a real default instead of showing up
+ * on neither page.
  */
 function packAttributes(args: {
   address: string | null; notes: string | null;
   storeName: string | null; storeStatus: string | null; scheduleMeeting: string | null;
+  clientStatus?: string | null;
 }): string {
   return JSON.stringify({
     address: args.address, notes: args.notes,
     storeName: args.storeName, storeStatus: args.storeStatus, scheduleMeeting: args.scheduleMeeting,
+    clientStatus: args.clientStatus ?? 'on_progress',
   });
 }
 
@@ -116,9 +137,11 @@ function packAttributes(args: {
 export async function createContact(
   ctx: Ctx,
   args: {
-    displayName: string | null; phone: string | null; email: string | null; tags: string[];
+    displayName: string | null; phone: string | null; email: string | null; igUsername?: string | null;
+    tags: string[];
     address: string | null; notes: string | null;
     storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+    clientStatus?: string | null;
     now?: Date;
   },
 ): Promise<{ id: string }> {
@@ -126,17 +149,20 @@ export async function createContact(
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const phone = sealPhone(keys, ctx.tenantId, args.phone);
   const email = sealEmail(keys, ctx.tenantId, args.email);
+  const igUsername = sealIgUsername(keys, ctx.tenantId, args.igUsername ?? null);
 
   const rows = await ctx.tx.query<{ id: string }>(
     `insert into contacts
-       (tenant_id, display_name, phone_enc, phone_bidx, email_enc, email_bidx, tags, attributes, first_seen_at, last_seen_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+       (tenant_id, display_name, phone_enc, phone_bidx, email_enc, email_bidx,
+        ig_username_enc, ig_username_bidx, tags, attributes, first_seen_at, last_seen_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
      returning id`,
-    [ctx.tenantId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx, args.tags,
+    [ctx.tenantId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx,
+     igUsername.enc, igUsername.bidx, args.tags,
      packAttributes({
        address: args.address, notes: args.notes,
        storeName: args.storeName ?? null, storeStatus: args.storeStatus ?? null,
-       scheduleMeeting: args.scheduleMeeting ?? null,
+       scheduleMeeting: args.scheduleMeeting ?? null, clientStatus: args.clientStatus ?? null,
      }), now],
   );
   return { id: rows[0]!.id };
@@ -146,13 +172,15 @@ export async function createContact(
 export async function getContact(ctx: Ctx, args: { contactId: string }) {
   const rows = await ctx.tx.query<{
     id: string; display_name: string | null; phone_enc: string | null; email_enc: string | null;
+    ig_username_enc: string | null;
     tags: string[];
     attributes: {
       address?: string | null; notes?: string | null;
       storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+      clientStatus?: string | null;
     } | null;
   }>(
-    `select id, display_name, phone_enc, email_enc, tags, attributes
+    `select id, display_name, phone_enc, email_enc, ig_username_enc, tags, attributes
        from contacts where tenant_id = $1 and id = $2 and deleted_at is null`,
     [ctx.tenantId, args.contactId],
   );
@@ -171,25 +199,30 @@ export async function updateContact(
   ctx: Ctx,
   args: {
     contactId: string; displayName: string | null; phone?: string | null; email: string | null;
+    igUsername?: string | null;
     tags: string[]; address: string | null; notes: string | null;
     storeName?: string | null; storeStatus?: string | null; scheduleMeeting?: string | null;
+    clientStatus?: string | null;
   },
 ): Promise<boolean> {
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const email = sealEmail(keys, ctx.tenantId, args.email);
+  const igUsername = sealIgUsername(keys, ctx.tenantId, args.igUsername ?? null);
   const attributes = packAttributes({
     address: args.address, notes: args.notes,
     storeName: args.storeName ?? null, storeStatus: args.storeStatus ?? null,
-    scheduleMeeting: args.scheduleMeeting ?? null,
+    scheduleMeeting: args.scheduleMeeting ?? null, clientStatus: args.clientStatus ?? null,
   });
 
   if (args.phone === undefined) {
     const rows = await ctx.tx.query<{ id: string }>(
       `update contacts
-          set display_name = $3, email_enc = $4, email_bidx = $5, tags = $6, attributes = $7
+          set display_name = $3, email_enc = $4, email_bidx = $5,
+              ig_username_enc = $6, ig_username_bidx = $7, tags = $8, attributes = $9
         where tenant_id = $1 and id = $2 and deleted_at is null
         returning id`,
-      [ctx.tenantId, args.contactId, args.displayName, email.enc, email.bidx, args.tags, attributes],
+      [ctx.tenantId, args.contactId, args.displayName, email.enc, email.bidx,
+       igUsername.enc, igUsername.bidx, args.tags, attributes],
     );
     return !!rows[0];
   }
@@ -197,12 +230,12 @@ export async function updateContact(
   const phone = sealPhone(keys, ctx.tenantId, args.phone);
   const rows = await ctx.tx.query<{ id: string }>(
     `update contacts
-        set display_name = $3, phone_enc = $4, phone_bidx = $5, email_enc = $6, email_bidx = $7, tags = $8,
-            attributes = $9
+        set display_name = $3, phone_enc = $4, phone_bidx = $5, email_enc = $6, email_bidx = $7,
+            ig_username_enc = $8, ig_username_bidx = $9, tags = $10, attributes = $11
       where tenant_id = $1 and id = $2 and deleted_at is null
       returning id`,
-    [ctx.tenantId, args.contactId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx, args.tags,
-     attributes],
+    [ctx.tenantId, args.contactId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx,
+     igUsername.enc, igUsername.bidx, args.tags, attributes],
   );
   return !!rows[0];
 }

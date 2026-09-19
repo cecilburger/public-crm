@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import {
   api, ApiError, type DocumentLayoutElement, type BroadcastPreview, type BroadcastDetail, type ContactDetail,
+  type Task,
 } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { assertCsrf, CsrfError } from '@/lib/csrf';
@@ -11,6 +12,67 @@ import { assertCsrf, CsrfError } from '@/lib/csrf';
 export interface ActionResult {
   ok: boolean;
   error?: string;
+  /** Non-blocking — the action itself succeeded, this just has something
+   * worth telling the user (e.g. a meeting saved fine but couldn't reach
+   * Google Calendar). Rendered differently from `error`, which means the
+   * action itself failed. */
+  notice?: string;
+}
+
+const CALENDAR_STATUS_NOTICE: Record<string, string> = {
+  not_connected: 'Meeting tersimpan. Hubungkan Google Calendar Anda di halaman Tugas supaya otomatis masuk kalender.',
+  reconnect_required: 'Meeting tersimpan, tapi koneksi Google Calendar Anda perlu disambungkan ulang.',
+  failed: 'Meeting tersimpan, tapi gagal membuat acara di Google Calendar.',
+};
+
+/**
+ * The "Jadwal Meeting" field on Client forms (`ClientForm`/`ClientDetailDrawer`/
+ * `ClientAddDrawer`) is really a shortcut onto the same real meeting task
+ * "Jadwal Meeting" (the button/drawer) creates — not a second, disconnected
+ * date to keep in sync. `existing` is the contact's current nearest open
+ * meeting task, carried over from the form as a hidden field (see
+ * `ClientForm`) so this can tell "the date on screen is unchanged" apart from
+ * "this is a reschedule" apart from "book a brand new one" — comparing
+ * against it, not against `contact.scheduleMeeting` (dead — see
+ * `ClientQuickAddTaskDrawer`), is what stops a save that didn't touch this
+ * field at all from spawning a duplicate meeting every time.
+ */
+async function syncScheduleMeetingTask(args: {
+  contactId: string; name: string | null; scheduleMeeting: string; existing: Task | null;
+}): Promise<{ notice?: string }> {
+  const changed = !args.existing
+    || new Date(args.scheduleMeeting).getTime() !== new Date(args.existing.dueAt).getTime();
+  if (!changed) return {};
+
+  try {
+    let calendarStatus: string | null | undefined;
+    if (args.existing) {
+      const res = await api<{ calendarStatus?: string | null }>(`/v1/tasks/${args.existing.id}`, {
+        method: 'PATCH',
+        body: {
+          title: args.existing.title, dueAt: args.scheduleMeeting,
+          notes: args.existing.notes ?? undefined, dealId: args.existing.dealId ?? undefined,
+          assigneeId: args.existing.assigneeId ?? undefined, kind: args.existing.kind,
+          meetingLink: args.existing.meetingLink ?? undefined, priority: args.existing.priority,
+          repeatUnit: args.existing.repeatUnit, repeatInterval: args.existing.repeatInterval,
+          repeatUntil: args.existing.repeatUntil,
+        },
+      });
+      calendarStatus = res.calendarStatus;
+    } else {
+      const res = await api<{ calendarStatus?: string | null }>('/v1/tasks', {
+        method: 'POST',
+        body: {
+          contactId: args.contactId, title: `Meeting dengan ${args.name ?? 'client'}`,
+          dueAt: args.scheduleMeeting, kind: 'meeting',
+        },
+      });
+      calendarStatus = res.calendarStatus;
+    }
+    return calendarStatus ? { notice: CALENDAR_STATUS_NOTICE[calendarStatus] } : {};
+  } catch (err) {
+    return { notice: err instanceof ApiError ? err.message : t.tasks.failed };
+  }
 }
 
 /**
@@ -107,8 +169,8 @@ function readTaskForm(form: FormData) {
  * a Brand directly — `/v1/tasks` accepts either. Exactly one of
  * contactId/brandId is expected; the form only ever shows one picker at a time.
  */
-async function submitTaskForm(fields: ReturnType<typeof readTaskForm>): Promise<void> {
-  await api('/v1/tasks', {
+async function submitTaskForm(fields: ReturnType<typeof readTaskForm>): Promise<{ notice?: string }> {
+  const res = await api<{ calendarStatus?: string | null }>('/v1/tasks', {
     method: 'POST',
     body: {
       contactId: fields.contactId || undefined, brandId: fields.brandId || undefined,
@@ -120,6 +182,8 @@ async function submitTaskForm(fields: ReturnType<typeof readTaskForm>): Promise<
       repeatUntil: fields.repeatUnit && fields.repeatUntil ? fields.repeatUntil : undefined,
     },
   });
+  const notice = res.calendarStatus ? CALENDAR_STATUS_NOTICE[res.calendarStatus] : undefined;
+  return notice ? { notice } : {};
 }
 
 export async function createTask(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
@@ -152,11 +216,11 @@ export async function createTaskInline(_prev: ActionResult | null, form: FormDat
   }
 
   try {
-    await submitTaskForm(fields);
+    const { notice } = await submitTaskForm(fields);
     revalidatePath('/tugas');
     if (fields.brandId) revalidatePath(`/brand/${fields.brandId}`);
     if (fields.contactId) { revalidatePath('/client/deal'); revalidatePath('/client/proses'); }
-    return { ok: true };
+    return notice ? { ok: true, notice } : { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.failed };
   }
@@ -260,40 +324,67 @@ function readClientForm(form: FormData) {
   const displayName = String(form.get('displayName') ?? '').trim();
   const phone = String(form.get('phone') ?? '').trim();
   const email = String(form.get('email') ?? '').trim();
+  const igUsername = String(form.get('igUsername') ?? '').trim();
   const tags = String(form.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const address = String(form.get('address') ?? '').trim();
   const notes = String(form.get('notes') ?? '').trim();
   const storeName = String(form.get('storeName') ?? '').trim();
   const storeStatus = String(form.get('storeStatus') ?? '').trim();
   const scheduleMeeting = String(form.get('scheduleMeeting') ?? '').trim();
-  return { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting };
+  const clientStatus = String(form.get('clientStatus') ?? '').trim();
+  // The contact's current nearest open meeting task, round-tripped through a
+  // hidden field by `ClientForm`/`ClientDetailDrawer` — see
+  // `syncScheduleMeetingTask`. Malformed/tampered JSON is treated the same
+  // as "no existing meeting", not a form error: worst case that creates one
+  // extra meeting task rather than failing the whole save.
+  const meetingTaskRaw = String(form.get('meetingTask') ?? '').trim();
+  let meetingTask: Task | null = null;
+  if (meetingTaskRaw) {
+    try { meetingTask = JSON.parse(meetingTaskRaw) as Task; } catch { meetingTask = null; }
+  }
+  return {
+    displayName, phone, email, igUsername, tags, address, notes, storeName, storeStatus, scheduleMeeting,
+    clientStatus, meetingTask,
+  };
 }
 
 export async function createClient(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
-    readClientForm(form);
+  const {
+    displayName, phone, email, igUsername, tags, address, notes, storeName, storeStatus, scheduleMeeting,
+    clientStatus,
+  } = readClientForm(form);
 
   try {
-    await api('/v1/contacts', {
+    const created = await api<{ id: string }>('/v1/contacts', {
       method: 'POST',
       body: {
         ...(displayName ? { displayName } : {}),
         ...(phone ? { phone } : {}),
         ...(email ? { email } : {}),
+        ...(igUsername ? { igUsername } : {}),
         ...(address ? { address } : {}),
         ...(notes ? { notes } : {}),
         ...(storeName ? { storeName } : {}),
         ...(storeStatus ? { storeStatus } : {}),
         ...(scheduleMeeting ? { scheduleMeeting } : {}),
+        ...(clientStatus ? { clientStatus } : {}),
         tags,
       },
     });
+    // Best-effort, notice or not — this redirects right after, so there's
+    // nowhere left on screen to show one even if Calendar isn't connected.
+    if (scheduleMeeting) {
+      await syncScheduleMeetingTask({
+        contactId: created.id, name: displayName || null, scheduleMeeting, existing: null,
+      }).catch(() => {});
+    }
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
   revalidatePath('/client/deal');
   revalidatePath('/client/proses');
+  revalidatePath('/tugas');
   redirect('/client/proses');
 }
 
@@ -306,27 +397,40 @@ export async function createClient(_prev: ActionResult | null, form: FormData): 
  */
 export async function createClientInline(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
-  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
-    readClientForm(form);
+  const {
+    displayName, phone, email, igUsername, tags, address, notes, storeName, storeStatus, scheduleMeeting,
+    clientStatus,
+  } = readClientForm(form);
 
   try {
-    await api('/v1/contacts', {
+    const created = await api<{ id: string }>('/v1/contacts', {
       method: 'POST',
       body: {
         ...(displayName ? { displayName } : {}),
         ...(phone ? { phone } : {}),
         ...(email ? { email } : {}),
+        ...(igUsername ? { igUsername } : {}),
         ...(address ? { address } : {}),
         ...(notes ? { notes } : {}),
         ...(storeName ? { storeName } : {}),
         ...(storeStatus ? { storeStatus } : {}),
         ...(scheduleMeeting ? { scheduleMeeting } : {}),
+        ...(clientStatus ? { clientStatus } : {}),
         tags,
       },
     });
+
+    let notice: string | undefined;
+    if (scheduleMeeting) {
+      notice = (await syncScheduleMeetingTask({
+        contactId: created.id, name: displayName || null, scheduleMeeting, existing: null,
+      })).notice;
+    }
+
     revalidatePath('/client/deal');
     revalidatePath('/client/proses');
-    return { ok: true };
+    revalidatePath('/tugas');
+    return notice ? { ok: true, notice } : { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
@@ -335,23 +439,36 @@ export async function createClientInline(_prev: ActionResult | null, form: FormD
 export async function updateClient(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const id = String(form.get('id') ?? '');
-  const { displayName, phone, email, tags, address, notes, storeName, storeStatus, scheduleMeeting } =
-    readClientForm(form);
+  const {
+    displayName, phone, email, igUsername, tags, address, notes, storeName, storeStatus, scheduleMeeting,
+    clientStatus, meetingTask,
+  } = readClientForm(form);
 
   try {
     await api(`/v1/contacts/${id}`, {
       method: 'PATCH',
       body: {
         displayName: displayName || null, phone: phone || null, email: email || null,
+        igUsername: igUsername || null,
         address: address || null, notes: notes || null, tags,
         storeName: storeName || null, storeStatus: storeStatus || null,
         scheduleMeeting: scheduleMeeting || null,
+        clientStatus: clientStatus || 'on_progress',
       },
     });
+
+    let notice: string | undefined;
+    if (scheduleMeeting) {
+      notice = (await syncScheduleMeetingTask({
+        contactId: id, name: displayName || null, scheduleMeeting, existing: meetingTask,
+      })).notice;
+    }
+
     revalidatePath('/client/deal');
     revalidatePath('/client/proses');
+    revalidatePath('/tugas');
     revalidatePath(`/client/${id}`);
-    return { ok: true };
+    return notice ? { ok: true, notice } : { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.client.failed };
   }
@@ -813,12 +930,16 @@ export async function addClientFromChat(_prev: ActionResult | null, form: FormDa
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const contactId = String(form.get('contactId') ?? '');
   const displayName = String(form.get('displayName') ?? '').trim();
+  // The meeting date is optional here — filling it in is what additionally
+  // lands this contact on Client On Proses (see below), but adding someone
+  // as a client shouldn't require scheduling a meeting with them yet.
   const scheduleMeeting = String(form.get('scheduleMeeting') ?? '').trim();
-  if (!contactId || !scheduleMeeting) return { ok: false, error: t.chats.addClientFailed };
+  if (!contactId) return { ok: false, error: t.chats.addClientFailed };
 
   try {
     const current = await api<ContactDetail>(`/v1/contacts/${contactId}`);
     const tags = current.tags.includes('customer') ? current.tags : [...current.tags, 'customer'];
+    const name = displayName || current.displayName;
     await api(`/v1/contacts/${contactId}`, {
       method: 'PATCH',
       body: {
@@ -826,15 +947,44 @@ export async function addClientFromChat(_prev: ActionResult | null, form: FormDa
         // actor's own `contact:export` permission — sending it straight back
         // is safe either way, since the PATCH route itself drops it when the
         // actor can't reveal numbers, the same rule `updateClient` follows.
-        displayName: displayName || current.displayName, phone: current.phone, email: current.email,
+        // Every other field here is likewise just carried over unchanged —
+        // this form only ever means to touch `displayName`/`tags` (and,
+        // below, `scheduleMeeting`) — but the PATCH route always writes the
+        // whole record, so every field it requires has to be sent regardless.
+        displayName: name, phone: current.phone, email: current.email, igUsername: current.igUsername,
         address: current.address, notes: current.notes, tags,
-        storeName: current.storeName, storeStatus: current.storeStatus, scheduleMeeting,
+        storeName: current.storeName, storeStatus: current.storeStatus,
+        scheduleMeeting: scheduleMeeting || null, clientStatus: current.clientStatus,
       },
     });
+
+    // The `customer` tag above already puts this contact on Client On
+    // Proses on its own — a meeting date here is optional, purely for the
+    // "Jadwal Meeting" column, which reads real meeting tasks, not the
+    // `scheduleMeeting` attribute just patched (kept only because a couple
+    // of older forms still display it). Without a real task, a filled-in
+    // date would save something that then shows up nowhere.
+    let notice: string | undefined;
+    if (scheduleMeeting) {
+      try {
+        const res = await api<{ calendarStatus?: string | null }>('/v1/tasks', {
+          method: 'POST',
+          body: {
+            contactId, title: `Meeting dengan ${name ?? 'client'}`, dueAt: scheduleMeeting, kind: 'meeting',
+          },
+        });
+        notice = res.calendarStatus ? CALENDAR_STATUS_NOTICE[res.calendarStatus] : undefined;
+      } catch (err) {
+        notice = err instanceof ApiError ? err.message : t.chats.addClientFailed;
+      }
+    }
+
     revalidatePath('/client/proses');
     revalidatePath('/client/deal');
+    revalidatePath('/tugas');
     revalidatePath('/chat-wa', 'layout');
-    return { ok: true };
+    revalidatePath('/chat-ig', 'layout');
+    return notice ? { ok: true, notice } : { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.chats.addClientFailed };
   }

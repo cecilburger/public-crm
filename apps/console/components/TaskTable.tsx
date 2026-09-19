@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import type { Task, Member, Deal, TaskKind, Brand, GoogleCalendarStatus, GoogleCalendarEvent } from '@/lib/api';
 import { initials } from '@/lib/format';
@@ -44,6 +45,7 @@ export function TaskTable({
   tasks: Task[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[]; brands: Brand[];
   googleStatus: GoogleCalendarStatus; title?: string; defaultView?: ViewMode;
 }) {
+  const pathname = usePathname();
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'due' | Task['status']>('due');
   const [view, setView] = useState<ViewMode>(defaultView);
@@ -144,7 +146,9 @@ export function TaskTable({
                 </button>
               </form>
             ) : (
-              <a href="/api/google-calendar/connect" className="btn ghost sm">{t.tasks.googleConnect}</a>
+              <a href={`/api/google-calendar/connect?from=${encodeURIComponent(pathname)}`} className="btn ghost sm">
+                {t.tasks.googleConnect}
+              </a>
             )}
           </div>
           <div className="odoo-cp-right">
@@ -265,6 +269,15 @@ export function TaskTable({
                           <a href={row.task.meetingLink} target="_blank" rel="noreferrer"
                              style={{ fontSize: 11.5, marginTop: 3, display: 'inline-block' }}>
                             {t.tasks.joinMeeting}
+                          </a>
+                        </>
+                      ) : null}
+                      {row.task.kind === 'meeting' && row.task.calendarEventLink ? (
+                        <>
+                          <br />
+                          <a href={row.task.calendarEventLink} target="_blank" rel="noreferrer"
+                             className="dim" style={{ fontSize: 11.5, marginTop: 3, display: 'inline-block' }}>
+                            {t.tasks.viewInGoogleCalendar}
                           </a>
                         </>
                       ) : null}

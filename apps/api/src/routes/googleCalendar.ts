@@ -4,6 +4,7 @@ import { invalid, notFound, meetingInviteEmail, resolveTenantSender } from '@kir
 import {
   audit, getGoogleCalendarConnection, saveGoogleCalendarConnection,
   updateGoogleCalendarAccessToken, deleteGoogleCalendarConnection, getDecryptedSmtpUrl,
+  type GoogleCalendarConnection, type Sql,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import {
@@ -12,13 +13,39 @@ import {
 } from '../googleCalendarClient.ts';
 
 /**
- * Read-only: pulls a user's own primary Google Calendar into the Tugas
- * calendar view. One connection per user (not per tenant) — it's whoever's
- * account granted access, so only that person's events show up for them.
- * Reuses `contact:read`/`contact:write` the same way Tugas itself does, since
- * this lives entirely inside that page.
+ * Originally read-only (pulls a user's own primary Google Calendar into the
+ * Tugas calendar view); now also used to create/update/cancel a meeting
+ * task's own event on that same calendar — see `tasks.ts`. One connection
+ * per user (not per tenant) either way — it's whoever's account granted
+ * access, so only that person's events show up, and only their calendar
+ * gets written to. Reuses `contact:read`/`contact:write` the same way Tugas
+ * itself does, since this lives entirely inside that page.
  */
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+
+/**
+ * A little slack before the real expiry so a request never races a token
+ * that is about to die mid-flight. Shared by every caller that needs a
+ * live access token for this user — the read-only events fetch here, and
+ * the meeting-task Calendar writes in `tasks.ts` — so the refresh-and-
+ * persist dance is written once.
+ */
+export async function getValidAccessToken(
+  ctx: AppCtx, tx: Sql, actor: { tenantId: string; userId: string }, connection: GoogleCalendarConnection,
+): Promise<string> {
+  if (connection.expiresAt.getTime() >= Date.now() + 60_000) return connection.accessToken;
+  if (!ctx.env.GOOGLE_CLIENT_ID || !ctx.env.GOOGLE_CLIENT_SECRET) {
+    throw new GoogleAuthError('Google Calendar is not configured on this server yet');
+  }
+  const refreshed = await refreshAccessToken({
+    clientId: ctx.env.GOOGLE_CLIENT_ID, clientSecret: ctx.env.GOOGLE_CLIENT_SECRET,
+    refreshToken: connection.refreshToken,
+  });
+  await updateGoogleCalendarAccessToken({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+    userId: actor.userId, accessToken: refreshed.accessToken, expiresAt: refreshed.expiresAt,
+  });
+  return refreshed.accessToken;
+}
 
 export function registerGoogleCalendarRoutes(app: FastifyInstance, ctx: AppCtx): void {
   // The console never holds the Google client id itself — it just asks for
@@ -32,7 +59,12 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, ctx: AppCtx):
 
     const url = `${AUTH_URL}?${new URLSearchParams({
       client_id: ctx.env.GOOGLE_CLIENT_ID, redirect_uri: query.data.redirectUri, response_type: 'code',
-      scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email',
+      // `calendar.events` (read+write on events, not the broader `calendar`
+      // scope) — needed since a connection here now also creates/updates/
+      // cancels a meeting task's own event, not just displays the user's
+      // existing ones. A connection made before this scope changed doesn't
+      // retroactively gain it; that user has to reconnect once.
+      scope: 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email',
       access_type: 'offline', prompt: 'consent',
     })}`;
     return { url };
@@ -106,20 +138,7 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, ctx: AppCtx):
       throw invalid('Google Calendar is not configured on this server yet');
     }
 
-    // A little slack before the real expiry so a request never races a token
-    // that is about to die mid-flight.
-    let accessToken = connection.accessToken;
-    if (connection.expiresAt.getTime() < Date.now() + 60_000) {
-      const refreshed = await refreshAccessToken({
-        clientId: ctx.env.GOOGLE_CLIENT_ID, clientSecret: ctx.env.GOOGLE_CLIENT_SECRET,
-        refreshToken: connection.refreshToken,
-      });
-      accessToken = refreshed.accessToken;
-      await ctx.asTenant(req, (tx) =>
-        updateGoogleCalendarAccessToken({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
-          userId: actor.userId, accessToken: refreshed.accessToken, expiresAt: refreshed.expiresAt,
-        }));
-    }
+    const accessToken = await ctx.asTenant(req, (tx) => getValidAccessToken(ctx, tx, actor, connection));
 
     try {
       const events = await fetchGoogleEvents({ accessToken, timeMin: query.data.from, timeMax: query.data.to });

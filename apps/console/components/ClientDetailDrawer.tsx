@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { updateClient, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import type { Contact } from '@/lib/api';
+import { toDatetimeLocal } from '@/lib/format';
+import type { Contact, Task } from '@/lib/api';
 
 /**
  * The "Detail" / "Edit" quick-access panel on the Client Deal/On Proses
@@ -17,12 +18,14 @@ import type { Contact } from '@/lib/api';
  * faster path for the fields that matter day to day, not a replacement.
  */
 export function ClientDetailDrawer({
-  contact, open, onClose,
-}: { contact: Contact | null; open: boolean; onClose: () => void }) {
+  contact, nextMeeting = null, open, onClose,
+}: { contact: Contact | null; nextMeeting?: Task | null; open: boolean; onClose: () => void }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(updateClient, null);
 
   useEffect(() => {
-    if (state?.ok) onClose();
+    // A notice (e.g. "saved, but Google Calendar isn't connected") is worth
+    // reading before the drawer disappears — only a plain success closes it.
+    if (state?.ok && !state.notice) onClose();
     // Only react to a fresh successful submit, not to `onClose` identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
@@ -77,6 +80,22 @@ export function ClientDetailDrawer({
                 </div>
 
                 <div className="record-field">
+                  <label htmlFor="cdd-igUsername">{t.client.igUsername}</label>
+                  <input className="line-input" id="cdd-igUsername" name="igUsername"
+                         defaultValue={contact.igUsername ?? ''} placeholder="username" />
+                </div>
+
+                <div className="record-field">
+                  <label htmlFor="cdd-clientStatus">{t.client.clientStatus}</label>
+                  <select className="line-input" id="cdd-clientStatus" name="clientStatus"
+                          defaultValue={contact.clientStatus ?? 'on_progress'}>
+                    {Object.entries(t.client.clientStatusLabel).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="record-field">
                   <label htmlFor="cdd-address">{t.client.address}</label>
                   <input className="line-input" id="cdd-address" name="address"
                          defaultValue={contact.address ?? ''} placeholder={t.client.addressPlaceholder} />
@@ -102,8 +121,11 @@ export function ClientDetailDrawer({
                 <div className="record-field">
                   <label htmlFor="cdd-scheduleMeeting">{t.client.scheduleMeeting}</label>
                   <input className="line-input" id="cdd-scheduleMeeting" name="scheduleMeeting" type="datetime-local"
-                         defaultValue={contact.scheduleMeeting ?? ''} />
+                         defaultValue={nextMeeting ? toDatetimeLocal(nextMeeting.dueAt) : ''} />
+                  <p className="record-hint">{t.client.scheduleMeetingHint}</p>
                 </div>
+                {/* See `ClientForm`'s own copy of this field for why. */}
+                <input type="hidden" name="meetingTask" value={nextMeeting ? JSON.stringify(nextMeeting) : ''} />
 
                 <div className="record-field">
                   <label htmlFor="cdd-notes">{t.client.notes}</label>
@@ -113,6 +135,7 @@ export function ClientDetailDrawer({
               </div>
 
               {state?.error ? <p className="error" style={{ marginTop: 14 }}>{state.error}</p> : null}
+              {state?.notice ? <p className="dim" style={{ marginTop: 14 }}>{state.notice}</p> : null}
 
               <Link href={`/client/${contact.id}`} className="btn ghost sm" style={{ marginTop: 14 }}>
                 {t.client.openFullPage}

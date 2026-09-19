@@ -360,16 +360,25 @@ async function processIgBridgeDmEvent(
     .update(`ig_dm:${payload.tenantId}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.index}:${payload.message.text}`)
     .digest('hex');
 
+  // Scraping never sees a contact's real display name, only their @handle —
+  // both repo calls default a new contact's `display_name` to null when
+  // nothing is passed here, which is what left every ig-bridge contact
+  // showing "—" in the console instead of anything at all. The @handle is
+  // the only identity this bridge ever has, so it's what gets used; it only
+  // applies on first creation (`upsertContactByIgUsername` coalesces against
+  // whatever's already there), so a name filled in by hand later stays put.
   const result = payload.message.direction === 'outbound'
     ? await withTenant(deps.db, payload.tenantId, (tx) =>
         recordIgBridgeAgentReply({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
           channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
           body: payload.message.text, providerMessageId: externalId,
+          displayName: payload.message.participantUsername,
         }))
     : await withTenant(deps.db, payload.tenantId, (tx) =>
         ingestInboundInstagramDmMessage({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
           channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
           body: payload.message.text, providerMessageId: externalId,
+          displayName: payload.message.participantUsername,
         }));
 
   console.log(`[ig-bridge-dm] ${result.duplicate ? 'duplicate, skipped' : 'ingested'} (${payload.message.direction}): ${payload.message.participantUsername} in thread ${payload.message.threadId}`);

@@ -1,11 +1,10 @@
 'use client';
 
-import { useActionState, useEffect, useRef, useState } from 'react';
+import { useActionState, useEffect, useRef } from 'react';
 import { createTaskInline, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
-import { TaskKindField } from '@/components/TaskKindField';
-import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
+import type { Contact } from '@/lib/api';
 
 /**
  * The "Jadwal Meeting" button in the Client toolbar, next to "Tambah Client" —
@@ -13,38 +12,38 @@ import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
  * and refresh) as the Tugas page's own quick-add `TaskDrawer`, but the picker
  * here is a Client (contact), not a Brand — this button lives on the Client
  * list, so that is the party it makes sense to pick from. The generic
- * "Tambah Tugas" entry point is gone from this page, so kind always starts
- * on `meeting` — this drawer's only job here now is scheduling a meeting
- * (the kind field stays editable for the rare exception).
+ * "Tambah Tugas" entry point is gone from this page, and this drawer only
+ * ever creates a Meeting (kind is fixed, not a field), so it's a calendar
+ * booking form, not a general task form — priority/repeat/assignee/deal are
+ * Tugas-page concerns, not this one.
  *
  * `presetContact` is how the per-row "Jadwal Meeting" action opens this same
  * drawer already aimed at one client: the picker is replaced with a fixed
  * name (same pattern as `BrandTaskDrawer`). Saving goes through the same
  * `createTaskInline`, so the result is a real task on Tugas/Kalender, not
- * the old dead `scheduleMeeting` text field on Contact.
+ * the old dead `scheduleMeeting` text field on Contact. A contact that
+ * already has an open meeting doesn't reach this drawer at all — `ClientTable`
+ * routes the "Meeting" action to `TaskDetailDrawer` instead once one exists,
+ * so this one only ever creates.
  */
 export function ClientQuickAddTaskDrawer({
-  open, onClose, contacts, members, deals, taskKinds, presetContact = null,
+  open, onClose, contacts, presetContact = null,
 }: {
   open: boolean;
   onClose: () => void;
   contacts: Contact[];
-  members: Member[];
-  deals: Deal[];
-  taskKinds: TaskKind[];
   presetContact?: { id: string; name: string } | null;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTaskInline, null);
   const formRef = useRef<HTMLFormElement>(null);
-  const [kind, setKind] = useState('meeting');
-  const [repeatUnit, setRepeatUnit] = useState('');
 
   useEffect(() => {
     if (state?.ok) {
       formRef.current?.reset();
-      setKind('meeting');
-      setRepeatUnit('');
-      onClose();
+      // A notice (e.g. "saved, but Google Calendar isn't connected") is
+      // worth reading before the drawer disappears — only a plain success
+      // closes it right away.
+      if (!state.notice) onClose();
     }
     // Only react to a fresh successful submit, not to `onClose` identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -62,8 +61,6 @@ export function ClientQuickAddTaskDrawer({
   useEffect(() => {
     if (!open) return;
     formRef.current?.reset();
-    setKind('meeting');
-    setRepeatUnit('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, presetContact?.id]);
 
@@ -71,9 +68,9 @@ export function ClientQuickAddTaskDrawer({
     <>
       <div className={`drawer-backdrop ${open ? 'open' : ''}`} onClick={onClose} aria-hidden="true" />
       <div className={`drawer-panel ${open ? 'open' : ''}`} role="dialog" aria-modal="true"
-           aria-label={t.tasks.newTitle} aria-hidden={!open}>
+           aria-label={t.client.scheduleMeetingFormTitle} aria-hidden={!open}>
         <div className="drawer-head">
-          <h2>{t.tasks.newTitle}</h2>
+          <h2>{t.client.scheduleMeetingFormTitle}</h2>
           <button type="button" className="drawer-close" onClick={onClose} aria-label={t.tasks.close}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -113,71 +110,16 @@ export function ClientQuickAddTaskDrawer({
                 </div>
 
                 <div className="record-field">
-                  <label htmlFor="qc-dueAt">{t.tasks.formDueAt}</label>
+                  <label htmlFor="qc-dueAt">{t.client.scheduleMeetingDateLabel}</label>
                   <input className="line-input" id="qc-dueAt" name="dueAt" type="datetime-local" required />
                 </div>
 
-                <TaskKindField id="qc-kind" name="kind" value={kind} onChange={setKind} initialCustomKinds={taskKinds} />
-
-                {kind === 'meeting' ? (
-                  <div className="record-field">
-                    <label htmlFor="qc-meetingLink">{t.tasks.formMeetingLink}</label>
-                    <input className="line-input" id="qc-meetingLink" name="meetingLink" type="url"
-                           placeholder={t.tasks.meetingLinkPlaceholder} />
-                  </div>
-                ) : null}
+                <input type="hidden" name="kind" value="meeting" />
 
                 <div className="record-field">
-                  <label htmlFor="qc-priority">{t.tasks.formPriority}</label>
-                  <select className="line-input" id="qc-priority" name="priority" defaultValue="medium">
-                    {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
-                      <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="record-field">
-                  <label htmlFor="qc-repeatUnit">{t.tasks.repeat}</label>
-                  <select className="line-input" id="qc-repeatUnit" name="repeatUnit" value={repeatUnit}
-                          onChange={(e) => setRepeatUnit(e.target.value)}>
-                    <option value="">{t.tasks.repeatNone}</option>
-                    {(['day', 'week', 'month', 'year'] as const).map((u) => (
-                      <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {repeatUnit ? (
-                  <>
-                    <div className="record-field">
-                      <label htmlFor="qc-repeatInterval">{t.tasks.repeatEvery}</label>
-                      <input className="line-input" id="qc-repeatInterval" name="repeatInterval" type="number"
-                             min={1} max={365} defaultValue={1} />
-                    </div>
-                    <div className="record-field">
-                      <label htmlFor="qc-repeatUntil">{t.tasks.repeatUntil}</label>
-                      <input className="line-input" id="qc-repeatUntil" name="repeatUntil" type="date" />
-                      <p className="record-hint">{t.tasks.repeatUntilHint}</p>
-                    </div>
-                  </>
-                ) : null}
-
-                <div className="record-field">
-                  <label htmlFor="qc-assigneeId">{t.tasks.formAssignee}</label>
-                  <select className="line-input" id="qc-assigneeId" name="assigneeId" defaultValue="">
-                    <option value="">{t.tasks.unassigned}</option>
-                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                </div>
-
-                <div className="record-field">
-                  <label htmlFor="qc-dealId">{t.tasks.formDeal}</label>
-                  <select className="line-input" id="qc-dealId" name="dealId" defaultValue="">
-                    <option value="">{t.tasks.noDeal}</option>
-                    {deals.map((d) => (
-                      <option key={d.id} value={d.id}>{d.title}{d.contact_name ? ` — ${d.contact_name}` : ''}</option>
-                    ))}
-                  </select>
+                  <label htmlFor="qc-meetingLink">{t.tasks.formMeetingLink}</label>
+                  <input className="line-input" id="qc-meetingLink" name="meetingLink" type="url"
+                         placeholder={t.tasks.meetingLinkPlaceholder} />
                 </div>
 
                 <div className="record-field">
@@ -188,6 +130,7 @@ export function ClientQuickAddTaskDrawer({
               </div>
             )}
             {state?.error ? <p className="error" style={{ marginTop: 14 }}>{state.error}</p> : null}
+            {state?.notice ? <p className="dim" style={{ marginTop: 14 }}>{state.notice}</p> : null}
           </div>
 
           <div className="drawer-foot">

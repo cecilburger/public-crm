@@ -6,10 +6,11 @@ export interface TaskRow {
   id: string; title: string; notes: string | null; dueAt: Date; status: string;
   kind: string; meetingLink: string | null; priority: string;
   repeatUnit: string | null; repeatInterval: number; repeatUntil: Date | null;
-  contactId: string | null; contactName: string | null; contactPhone: string | null;
-  brandId: string | null; brandName: string | null; brandPhone: string | null;
+  contactId: string | null; contactName: string | null; contactPhone: string | null; contactEmail: string | null;
+  brandId: string | null; brandName: string | null; brandPhone: string | null; brandEmail: string | null;
   dealId: string | null; dealTitle: string | null;
   assigneeId: string | null; createdBy: string | null; createdAt: Date; completedAt: Date | null;
+  calendarEventId: string | null; calendarEventLink: string | null;
 }
 
 /** Every open-shop follow-up, newest due date first — for a Contact or (since a task no longer needs one) a Brand directly. */
@@ -19,17 +20,19 @@ export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promis
     id: string; title: string; notes: string | null; due_at: Date; status: string;
     kind: string; meeting_link: string | null; priority: string;
     repeat_unit: string | null; repeat_interval: number; repeat_until: Date | null;
-    contact_id: string | null; display_name: string | null; phone_enc: string | null;
-    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null;
+    contact_id: string | null; display_name: string | null; phone_enc: string | null; contact_email_enc: string | null;
+    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null; brand_email_enc: string | null;
     deal_id: string | null; deal_title: string | null;
     assignee_id: string | null; created_by: string | null; created_at: Date; completed_at: Date | null;
+    calendar_event_id: string | null; calendar_event_link: string | null;
   }>(
     `select tk.id, tk.title, tk.notes, tk.due_at, tk.status, tk.kind, tk.meeting_link, tk.priority,
             tk.repeat_unit, tk.repeat_interval, tk.repeat_until,
-            tk.contact_id, ct.display_name, ct.phone_enc,
-            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc,
+            tk.contact_id, ct.display_name, ct.phone_enc, ct.email_enc as contact_email_enc,
+            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc, br.email_enc as brand_email_enc,
             tk.deal_id, d.title as deal_title,
-            tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at
+            tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at,
+            tk.calendar_event_id, tk.calendar_event_link
        from tasks tk
        left join contacts ct on ct.id = tk.contact_id and ct.tenant_id = tk.tenant_id
        left join brands br on br.id = tk.brand_id and br.tenant_id = tk.tenant_id
@@ -45,31 +48,37 @@ export async function listTasks(ctx: Ctx, args: { limit?: number } = {}): Promis
     repeatUnit: r.repeat_unit, repeatInterval: r.repeat_interval, repeatUntil: r.repeat_until,
     contactId: r.contact_id, contactName: r.display_name,
     contactPhone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
+    contactEmail: r.contact_email_enc ? openField(keys, ctx.tenantId, r.contact_email_enc) : null,
     brandId: r.brand_id, brandName: r.brand_name,
     brandPhone: r.brand_phone_enc ? openField(keys, ctx.tenantId, r.brand_phone_enc) : null,
+    brandEmail: r.brand_email_enc ? openField(keys, ctx.tenantId, r.brand_email_enc) : null,
     dealId: r.deal_id, dealTitle: r.deal_title,
     assigneeId: r.assignee_id, createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
+    calendarEventId: r.calendar_event_id, calendarEventLink: r.calendar_event_link,
   }));
 }
 
-/** One task, for the send-meeting-email action — same joins as `listTasks`, scoped to a single row. */
+/** One task, for the send-meeting-email action and the Google Calendar
+ * write hooks — same joins as `listTasks`, scoped to a single row. */
 export async function getTask(ctx: Ctx, taskId: string): Promise<TaskRow | null> {
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   const rows = await ctx.tx.query<{
     id: string; title: string; notes: string | null; due_at: Date; status: string;
     kind: string; meeting_link: string | null; priority: string;
     repeat_unit: string | null; repeat_interval: number; repeat_until: Date | null;
-    contact_id: string | null; display_name: string | null; phone_enc: string | null;
-    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null;
+    contact_id: string | null; display_name: string | null; phone_enc: string | null; contact_email_enc: string | null;
+    brand_id: string | null; brand_name: string | null; brand_phone_enc: string | null; brand_email_enc: string | null;
     deal_id: string | null; deal_title: string | null;
     assignee_id: string | null; created_by: string | null; created_at: Date; completed_at: Date | null;
+    calendar_event_id: string | null; calendar_event_link: string | null;
   }>(
     `select tk.id, tk.title, tk.notes, tk.due_at, tk.status, tk.kind, tk.meeting_link, tk.priority,
             tk.repeat_unit, tk.repeat_interval, tk.repeat_until,
-            tk.contact_id, ct.display_name, ct.phone_enc,
-            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc,
+            tk.contact_id, ct.display_name, ct.phone_enc, ct.email_enc as contact_email_enc,
+            tk.brand_id, br.name as brand_name, br.phone_enc as brand_phone_enc, br.email_enc as brand_email_enc,
             tk.deal_id, d.title as deal_title,
-            tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at
+            tk.assignee_id, tk.created_by, tk.created_at, tk.completed_at,
+            tk.calendar_event_id, tk.calendar_event_link
        from tasks tk
        left join contacts ct on ct.id = tk.contact_id and ct.tenant_id = tk.tenant_id
        left join brands br on br.id = tk.brand_id and br.tenant_id = tk.tenant_id
@@ -85,10 +94,13 @@ export async function getTask(ctx: Ctx, taskId: string): Promise<TaskRow | null>
     repeatUnit: r.repeat_unit, repeatInterval: r.repeat_interval, repeatUntil: r.repeat_until,
     contactId: r.contact_id, contactName: r.display_name,
     contactPhone: r.phone_enc ? openField(keys, ctx.tenantId, r.phone_enc) : null,
+    contactEmail: r.contact_email_enc ? openField(keys, ctx.tenantId, r.contact_email_enc) : null,
     brandId: r.brand_id, brandName: r.brand_name,
     brandPhone: r.brand_phone_enc ? openField(keys, ctx.tenantId, r.brand_phone_enc) : null,
+    brandEmail: r.brand_email_enc ? openField(keys, ctx.tenantId, r.brand_email_enc) : null,
     dealId: r.deal_id, dealTitle: r.deal_title,
     assigneeId: r.assignee_id, createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
+    calendarEventId: r.calendar_event_id, calendarEventLink: r.calendar_event_link,
   };
 }
 
@@ -117,6 +129,26 @@ export async function createTask(
     meta: { contactId: args.contactId ?? null, brandId: args.brandId ?? null, dueAt: args.dueAt.toISOString() },
   });
   return { id };
+}
+
+/**
+ * Records which Google Calendar event a meeting task's write landed on (or
+ * clears it, on delete) — a narrow follow-up write after the Calendar API
+ * call succeeds, not part of `createTask`/`updateTask` itself, since those
+ * run before the Calendar write is even attempted. `meetingLink` is the
+ * Google Meet URL Calendar generated when the task didn't already have one
+ * of its own — `null`/omitted leaves the existing value alone (`coalesce`)
+ * rather than blanking out a link someone typed in by hand.
+ */
+export async function setTaskCalendarEvent(
+  ctx: Ctx,
+  args: { taskId: string; calendarEventId: string | null; calendarEventLink: string | null; meetingLink?: string | null },
+): Promise<void> {
+  await ctx.tx.query(
+    `update tasks set calendar_event_id = $3, calendar_event_link = $4, meeting_link = coalesce($5, meeting_link)
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, args.taskId, args.calendarEventId, args.calendarEventLink, args.meetingLink ?? null],
+  );
 }
 
 /**

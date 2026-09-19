@@ -15,7 +15,8 @@ export default async function TasksPage({
       {params.gcal === 'connected' ? <GcalNotice variant="connected" /> : null}
       {params.gcal === 'error' ? <GcalNotice variant="error" detail={params.detail} /> : null}
       <TaskTable tasks={tasks} members={members} deals={deals} taskKinds={taskKinds}
-                 brands={brands} googleStatus={googleStatus} />
+                 brands={brands} googleStatus={googleStatus}
+                 defaultView={params.gcal === 'connected' ? 'calendar' : 'table'} />
     </div>
   );
 }

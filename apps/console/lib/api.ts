@@ -199,6 +199,7 @@ export interface Contact {
   displayName: string | null;
   phone: string | null;
   email: string | null;
+  igUsername: string | null;
   tags: string[];
   firstSeenAt: string;
   lastSeenAt: string;
@@ -207,6 +208,7 @@ export interface Contact {
   storeName: string | null;
   storeStatus: 'prospek' | 'aktif' | 'nonaktif' | null;
   scheduleMeeting: string | null;
+  clientStatus: 'on_progress' | 'deal';
 }
 
 export interface ContactDetail {
@@ -214,12 +216,14 @@ export interface ContactDetail {
   displayName: string | null;
   phone: string | null;
   email: string | null;
+  igUsername: string | null;
   tags: string[];
   address: string | null;
   notes: string | null;
   storeName: string | null;
   storeStatus: 'prospek' | 'aktif' | 'nonaktif' | null;
   scheduleMeeting: string | null;
+  clientStatus: 'on_progress' | 'deal';
 }
 
 export interface ContactOrder {
@@ -267,6 +271,7 @@ export interface Task {
   createdBy: string | null;
   createdAt: string;
   completedAt: string | null;
+  calendarEventLink: string | null;
 }
 
 /** A custom "Jenis" a tenant added from the task form's "+ Tambah Jenis" option. */

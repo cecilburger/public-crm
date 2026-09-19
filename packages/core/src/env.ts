@@ -82,10 +82,11 @@ const schema = z.object({
   EMAIL_FROM: z.string().default('MCNASIA <halo@kirana.id>'),
 
   /**
-   * Google Calendar (read-only display on Tugas) — one OAuth client shared by
-   * every tenant, same as any other "Sign in with Google" integration; what's
-   * per-tenant is the token each user grants when they connect their own
-   * calendar, not the app registration itself.
+   * Google Calendar — displays a user's own calendar on Tugas, and creates/
+   * updates/cancels the event behind a meeting task on that same calendar.
+   * One OAuth client shared by every tenant, same as any other "Sign in with
+   * Google" integration; what's per-tenant is the token each user grants
+   * when they connect their own calendar, not the app registration itself.
    */
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),

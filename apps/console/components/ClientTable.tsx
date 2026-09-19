@@ -3,13 +3,16 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { Contact, Member, Deal, TaskKind } from '@/lib/api';
+import type { Contact, Task } from '@/lib/api';
 import { ago, initials } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { ClientRowActions } from '@/components/ClientRowActions';
 import { ClientQuickAddTaskDrawer } from '@/components/ClientQuickAddTaskDrawer';
+import { ClientMeetingDetailDrawer } from '@/components/ClientMeetingDetailDrawer';
 import { ClientAddDrawer } from '@/components/ClientAddDrawer';
 import { ClientDetailDrawer } from '@/components/ClientDetailDrawer';
+import { useCsrfToken } from '@/components/Csrf';
+import { updateClient } from '@/app/(app)/actions';
 
 type Group = { label: string | null; rows: Contact[] };
 
@@ -51,14 +54,15 @@ function useSingleOpenDropdown() {
 }
 
 export function ClientTable({
-  contacts, conversationByContact = {}, members = [], deals = [], taskKinds = [],
+  contacts, conversationByContact = {}, meetingByContact = {},
   title = t.client.title, emptyMessage = t.client.noClients,
 }: {
   contacts: Contact[]; conversationByContact?: Record<string, string>;
-  members?: Member[]; deals?: Deal[]; taskKinds?: TaskKind[];
+  meetingByContact?: Record<string, Task>;
   title?: string; emptyMessage?: string;
 }) {
   const router = useRouter();
+  const csrf = useCsrfToken();
   const [query, setQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [groupBy, setGroupBy] = useState<'none' | 'tag'>('none');
@@ -67,11 +71,53 @@ export function ClientTable({
   const [presetContact, setPresetContact] = useState<{ id: string; name: string } | null>(null);
   const [addClientOpen, setAddClientOpen] = useState(false);
   const [detailContact, setDetailContact] = useState<Contact | null>(null);
+  const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const { filterRef, groupRef, closeOthers } = useSingleOpenDropdown();
 
+  // A contact with an open meeting already on the books gets that meeting's
+  // own detail/edit view instead of another create form — the "Meeting"
+  // action either books the first one or manages the one that exists, never
+  // both at once.
   const openScheduleMeeting = (contact: { id: string; name: string }) => {
+    const existing = meetingByContact[contact.id];
+    if (existing) { setDetailTask(existing); return; }
     setPresetContact(contact);
     setTaskDrawerOpen(true);
+  };
+
+  // Inline table edit, no drawer — reuses `updateClient` (a full PATCH) with
+  // every other field carried over unchanged from the row's own data, since
+  // the route always writes the whole record. Changing status here can move
+  // a contact off the page it's currently on (Proses -> Deal or back), which
+  // is exactly what `updateClient`'s own `revalidatePath` on both already
+  // triggers — `router.refresh()` just makes this component pick that up
+  // without a full navigation.
+  const changeClientStatus = async (c: Contact, clientStatus: 'on_progress' | 'deal') => {
+    setSavingStatusId(c.id);
+    setStatusError(null);
+    try {
+      const fd = new FormData();
+      fd.set('csrf', csrf);
+      fd.set('id', c.id);
+      fd.set('displayName', c.displayName ?? '');
+      fd.set('phone', c.phone ?? '');
+      fd.set('email', c.email ?? '');
+      fd.set('igUsername', c.igUsername ?? '');
+      fd.set('tags', c.tags.join(', '));
+      fd.set('address', c.address ?? '');
+      fd.set('notes', c.notes ?? '');
+      fd.set('storeName', c.storeName ?? '');
+      fd.set('storeStatus', c.storeStatus ?? '');
+      fd.set('scheduleMeeting', c.scheduleMeeting ?? '');
+      fd.set('clientStatus', clientStatus);
+      const res = await updateClient(null, fd);
+      if (!res.ok) { setStatusError(res.error ?? t.client.failed); return; }
+      router.refresh();
+    } finally {
+      setSavingStatusId(null);
+    }
   };
 
   const availableTags = useMemo(() => {
@@ -182,6 +228,15 @@ export function ClientTable({
             <b>{c.displayName ?? c.phone ?? '—'}</b>
           </button>
         </td>
+        <td>
+          <select className="line-input sm" value={c.clientStatus} disabled={savingStatusId === c.id}
+                  aria-label={t.client.clientStatus}
+                  onChange={(e) => void changeClientStatus(c, e.target.value as 'on_progress' | 'deal')}>
+            {Object.entries(t.client.clientStatusLabel).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </td>
         <td className="mono">{c.phone ?? '—'}</td>
         <td>{c.storeName || <span className="dim">—</span>}</td>
         <td>
@@ -191,7 +246,7 @@ export function ClientTable({
             </span>
           ) : <span className="dim">—</span>}
         </td>
-        <td>{formatMeeting(c.scheduleMeeting)}</td>
+        <td>{formatMeeting(meetingByContact[c.id]?.dueAt ?? null)}</td>
         <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             title={c.notes ?? undefined}>
           {c.notes || <span className="dim">—</span>}
@@ -298,6 +353,7 @@ export function ClientTable({
       </div>
 
       <div className="main-content-area">
+        {statusError ? <p className="error" style={{ marginBottom: 10 }}>{statusError}</p> : null}
         {filtered.length === 0 ? (
           <div className="panel" style={{ marginTop: 14 }}>
             <p className="empty" style={{ padding: '24px 0' }}>
@@ -320,6 +376,7 @@ export function ClientTable({
                       <tr>
                         <th style={{ width: 44 }} aria-label="checkbox"></th>
                         <th>{t.client.name}</th>
+                        <th>{t.client.clientStatus}</th>
                         <th>{t.client.phone}</th>
                         <th>{t.client.storeName}</th>
                         <th>{t.client.storeStatus}</th>
@@ -340,10 +397,11 @@ export function ClientTable({
       </div>
 
       <ClientQuickAddTaskDrawer open={taskDrawerOpen} onClose={() => { setTaskDrawerOpen(false); setPresetContact(null); }}
-                                contacts={contacts} members={members} deals={deals} taskKinds={taskKinds}
-                                presetContact={presetContact} />
+                                contacts={contacts} presetContact={presetContact} />
+      <ClientMeetingDetailDrawer task={detailTask} open={detailTask !== null} onClose={() => setDetailTask(null)} />
       <ClientAddDrawer open={addClientOpen} onClose={() => setAddClientOpen(false)} />
-      <ClientDetailDrawer contact={detailContact} open={detailContact !== null} onClose={() => setDetailContact(null)} />
+      <ClientDetailDrawer contact={detailContact} nextMeeting={detailContact ? meetingByContact[detailContact.id] ?? null : null}
+                          open={detailContact !== null} onClose={() => setDetailContact(null)} />
     </>
   );
 }
