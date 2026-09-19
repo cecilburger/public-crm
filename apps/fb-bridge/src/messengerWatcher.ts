@@ -148,6 +148,15 @@ export class MessengerWatcher {
     try {
       await page.goto(URLS.inbox, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.sessions.assertUsable(page);
+      // The conversation list renders after the page has text in it, so
+      // `assertUsable` passing is not the same as the list being there.
+      // Confirmed live: the first sweep ran against a page whose body was
+      // already full of Facebook chrome but whose thread grid had not appeared
+      // yet, logged "inbox container not found", and — because a
+      // `MutationObserver` only fires on *future* changes — nothing swept
+      // again until the next reconciliation ten minutes later. `readThread`
+      // already waits for its own marker this way.
+      await page.waitForSelector(INBOX.list.join(', '), { timeout: 15_000 }).catch(() => {});
       await installInboxObserver(page, () => this.enqueue(tenantId, () => this.sweepInbox(tenantId)));
       this.observerPages.set(tenantId, page);
       this.log.info({ tenantId }, 'fb-bridge: inbox observer attached');

@@ -316,9 +316,39 @@ export class SessionManager {
         return { ...base, status: ok ? 'ready' : 'disconnected', lastError };
       }
 
-      const url = page.url();
-      const stillOnLoginWall = LOGGED_OUT_URL_MARKERS.some((marker) => url.includes(marker));
-      if (!stillOnLoginWall && url.includes('facebook.com')) {
+      // A URL cannot answer this question. Facebook serves its logged-OUT home
+      // page at https://www.facebook.com/ and its logged-IN home page at the
+      // same address, so "the URL no longer says /login" is not evidence of a
+      // session. Confirmed live, twice: this returned 'ready' 42 seconds after
+      // the window opened — before anyone had typed a password — and the
+      // watcher then correctly found a login wall and tore the session down,
+      // deleting the Page marker and forcing the whole connect flow to start
+      // over. The operator never got a chance to log in at all.
+      //
+      // `assertUsable` is the check that does work, and it is the same one the
+      // watchers already trust: it reads the page text, where a login wall
+      // genuinely is distinguishable (confirmed live against the real site).
+      // A throw here is the *normal* state while someone is still logging in —
+      // a login form, a 2FA prompt, a checkpoint are all things it rejects — so
+      // it means "keep waiting", never "fail". Only the window closing or the
+      // deadline below ends this loop.
+      // POSITIVE PROOF, not the absence of a negative.
+      //
+      // Two earlier versions of this asked "does the page look logged out?" —
+      // first from the URL, then from the page text — and both declared success
+      // on the first screen they did not recognise. Facebook shows several:
+      // a loading spinner, "Save your login info?", a cookie dialog, the
+      // redirect between them. Each one passed as "logged in", so the bridge
+      // closed the operator's login window mid-typing, opened a fresh browser
+      // against a session that did not exist, and landed back on the login
+      // form. From the operator's side that looks exactly like the page
+      // refreshing and eating what they typed — confirmed live, five times.
+      //
+      // `c_user` is set only for an authenticated session, so its presence is
+      // the thing to wait for. Only the cookie's *existence* is read here;
+      // its value is a credential and is never logged, stored or sent anywhere.
+      const cookies = await page.cookies('https://www.facebook.com').catch(() => []);
+      if (cookies.some((cookie) => cookie.name === 'c_user' && cookie.value)) {
         this.lastErrors.delete(tenantId);
         return { ...base, status: 'ready', lastError: null };
       }
@@ -350,9 +380,38 @@ export class SessionManager {
       throw new SessionExpiredError('Sesi Facebook sudah tidak aktif — operator perlu login ulang');
     }
 
-    const body = await page.evaluate(
-      '(document.body && document.body.innerText ? document.body.innerText : "").slice(0, 1500)',
-    ).catch(() => '') as string;
+    // An unreadable page is not a healthy one. `evaluate` fails routinely right
+    // after a navigation ("Execution context was destroyed" while Facebook is
+    // mid-redirect), and swallowing that into an empty string made every check
+    // below vacuously pass — absence of evidence read as evidence of absence.
+    // Confirmed live: the login window was declared ready five seconds after
+    // opening, while it still showed the login form, because the body read
+    // happened mid-redirect and came back empty.
+    //
+    // This throws a plain Error on purpose, not SessionExpiredError: the page
+    // being unreadable says nothing about whether the session is dead. The
+    // login poller treats any throw as "keep waiting", and the watchers act
+    // only on the two specific error types, so a transient failure here is
+    // retried on the next pass instead of tearing down a working session.
+    // Callers navigate with `waitUntil: 'domcontentloaded'`, which fires long
+    // before Facebook's React app has painted anything — so an empty body right
+    // after a navigation is the ordinary case, not a failure. A first version
+    // of this check threw on it immediately and broke every read against the
+    // real site. Polling until there is text to judge is what makes the
+    // distinction meaningful: "no text yet" is a page still loading, while "no
+    // text after several seconds" is a page we genuinely cannot read.
+    let body: string | null = null;
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      body = await page.evaluate(
+        '(document.body && document.body.innerText ? document.body.innerText : "").slice(0, 1500)',
+      ).catch(() => null) as string | null;
+      if (body && body.trim() !== '') break;
+      await sleep(500);
+    }
+    if (!body || body.trim() === '') {
+      throw new Error('Halaman Facebook belum bisa dibaca — kemungkinan masih memuat atau sedang dialihkan');
+    }
     if (CHECKPOINT_TEXT_RE.test(body)) {
       throw new CheckpointRequiredError('Facebook meminta verifikasi manual (checkpoint/2FA) — selesaikan lewat jendela login');
     }

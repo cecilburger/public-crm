@@ -198,6 +198,69 @@ describe('the Messenger thread parser', () => {
   });
 });
 
+describe('the Messenger thread parser, on the shape the real site renders', () => {
+  // `messenger-thread.html` covers the older shape the parser still falls back
+  // to. This block covers what Facebook actually serves today, captured from a
+  // live session: a `role="log"` transcript whose messages carry their sender
+  // and body inside one aria-label.
+
+  it('reads sender and body out of the message label', async () => {
+    const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
+
+    expect(parsed.messages.map((m) => ({ sender: m.senderName, text: m.text }))).toEqual([
+      { sender: 'Budi Santoso', text: 'Sis, ini masih ready?' },
+      { sender: 'Budi Santoso', text: 'Yang warna hitam ada?' },
+    ]);
+  });
+
+  it('treats a reply written as "Anda" as ours, not the customer\'s', async () => {
+    // Facebook writes the first person for our own messages, never the Page
+    // name — so matching on the configured Page name alone would report the
+    // operator's own words back as an inbound customer message.
+    const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
+
+    expect(parsed.messages.map((m) => m.text)).not.toContain('Halo kak, masih ada ya');
+    expect(parsed.outboundRows).toBe(1);
+  });
+
+  it('does not mistake the thread header for a message', async () => {
+    // The header is marked `data-scope="messages_table"` like every message but
+    // carries no message label. Guessing a sender from its avatar and a body
+    // from its visible text reported the date stamp "19/09/26 14.26" as a
+    // customer message — confirmed against the real site.
+    const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
+
+    expect(parsed.messages.map((m) => m.text)).not.toContain('19/09/26 14.26');
+    expect(parsed.unknownSenderRows).toBe(0);
+  });
+
+  it('keeps the transcript chrome out of the messages', async () => {
+    const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
+
+    const joined = parsed.messages.map((m) => m.text).join(' | ');
+    expect(joined).not.toContain('Detail percakapan');
+    expect(joined).not.toContain('Tindakan pesan');
+    expect(joined).not.toContain('Terkirim');
+  });
+
+  it('reports one message per bubble, not one per labelled element', async () => {
+    // Each message renders as a labelled container wrapping a labelled button.
+    // Counting both would double every message, and each copy would take its
+    // own sequence number, so nothing downstream could collapse them again.
+    const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
+
+    expect(parsed.messages).toHaveLength(2);
+  });
+
+  it('falls back to the older shape when no message labels are present', async () => {
+    // The two fixtures describe different Facebook builds; the parser has to
+    // keep reading both rather than swapping one guess for another.
+    const legacy = parseMessengerThread(await fixture('messenger-thread.html'), { selfName: PAGE.name });
+
+    expect(legacy.messages.length).toBeGreaterThan(0);
+  });
+});
+
 describe('the Page comment parser', () => {
   it('keeps every field a comment has to carry', async () => {
     const { comments } = parseFacebookComments(await fixture('page-comments.html'));

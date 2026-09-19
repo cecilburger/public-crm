@@ -36,6 +36,12 @@ export interface ParsedThread {
   matchedRows: number;
 }
 
+/** Who a run of consecutive bubbles belongs to. */
+interface RunSender {
+  name: string;
+  isSelf: boolean;
+}
+
 export interface ParseThreadOptions {
   /** The connected Page's own name. Anything sent by it is outbound. */
   selfName?: string | null;
@@ -74,27 +80,48 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
   // this thread". That is a different and much weaker claim, and it was wrong:
   // it swallowed a date divider — a row with real text and no sender — and
   // reported "19 September 2026" to the CRM as a customer message.
-  let runSender: { name: string; isSelf: boolean } | null = null;
+  let runSender: RunSender | null = null;
 
-  for (const row of rows) {
+  // Which shape is this page using? On the real site every message carries its
+  // sender and body in one aria-label, and the rows *without* such a label are
+  // chrome: the thread header, a date break, a hover toolbar. Guessing at those
+  // with the avatar-and-visible-text fallback produced exactly that mistake —
+  // confirmed live, a date stamp was reported as a customer message reading
+  // "01/03/24 10.51". So when any row speaks the labelled shape, unlabelled
+  // rows are known to be chrome rather than messages we failed to read. The
+  // fallback strategies stay for a build that exposes no such labels at all.
+  const candidates = dropNestedRows(rows);
+  const labelled = candidates.some((row) => fromMessageLabel((row.getAttribute('aria-label') ?? '').trim()));
+
+  for (const row of candidates) {
     const label = (row.getAttribute('aria-label') ?? '').trim();
 
-    if (THREAD.selfLabelRe.test(label)) {
+    // Buttons and toolbars live inside the transcript alongside the messages.
+    // They carry labels too, so they have to be named and skipped rather than
+    // counted as messages whose sender could not be read.
+    if (THREAD.rowChromeRe.test(label)) continue;
+
+    // The real site encodes sender and body together in the label, with no
+    // separate node carrying either — see `THREAD.messageLabelRes`.
+    const encoded = fromMessageLabel(label);
+    if (labelled && !encoded) continue;
+
+    if (!encoded && THREAD.selfLabelRe.test(label)) {
       runSender = { name: opts.selfName ?? '', isSelf: true };
       outboundRows += 1;
       continue;
     }
 
-    const explicit = senderOf(row, label);
-    const sender = explicit
-      ? { name: explicit, isSelf: Boolean(selfName && explicit.toLowerCase() === selfName) }
+    const explicit = encoded?.sender ?? senderOf(row, label);
+    const sender: RunSender | null = explicit
+      ? { name: explicit, isSelf: isSelfSender(explicit, selfName) }
       : runSender;
 
     if (!sender) {
       // A row with no text at all is chrome (a typing indicator, a read
       // receipt), not a message whose sender we failed to read — counting it
       // as a failure would cry wolf on every healthy thread.
-      if (bodyOf(row, null)) unknownSenderRows += 1;
+      if (encoded?.text || bodyOf(row, null)) unknownSenderRows += 1;
       continue;
     }
     runSender = sender;
@@ -105,7 +132,7 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
     }
 
     const senderName = sender.name;
-    const text = bodyOf(row, senderName);
+    const text = encoded?.text.trim() || bodyOf(row, senderName);
     // A bubble that rendered as an attachment, a sticker or a reaction carries
     // no text. Ingesting an empty message would put a blank line in the
     // transcript and, worse, consume a `seq` — so it is skipped outright.
@@ -120,6 +147,58 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
   }
 
   return { messages, outboundRows, unknownSenderRows, matchedRows: rows.length };
+}
+
+/**
+ * Sender and body out of a single aria-label, or null when this label is not
+ * a message at all.
+ *
+ * This is how the real site exposes a message: not as text in a child node,
+ * but encoded in the label — "…pukul 1 Maret 2024 10.51 oleh Anda: <body>".
+ * Reading it here rather than guessing which `dir="auto"` node holds the body
+ * also avoids picking up the timestamp and the "Terkirim"/"Sent" receipt that
+ * sit beside it.
+ */
+function fromMessageLabel(label: string): { sender: string; text: string } | null {
+  if (!label) return null;
+  for (const re of THREAD.messageLabelRes) {
+    const m = re.exec(label);
+    const sender = m?.[1]?.trim();
+    const text = m?.[2]?.trim();
+    if (sender && text) return { sender, text };
+  }
+  return null;
+}
+
+/**
+ * Facebook writes the first person for our own messages ("Anda:", "You:")
+ * rather than the Page's name, so matching only against the configured Page
+ * name would never recognise our own replies — and an inbound-only bridge that
+ * misses them reports the operator's own words as the customer's.
+ */
+function isSelfSender(sender: string, selfName: string | null): boolean {
+  if (THREAD.selfSenderRe.test(sender.trim())) return true;
+  return Boolean(selfName && sender.trim().toLowerCase() === selfName);
+}
+
+/**
+ * Drops rows that sit inside another row.
+ *
+ * One message renders as a labelled container with a labelled button inside
+ * it, both describing the same message. Whichever selector matched, taking
+ * both would report the message twice — and each copy would consume its own
+ * `seq`, so downstream deduplication could not collapse them either.
+ */
+function dropNestedRows(rows: El[]): El[] {
+  const set = new Set(rows);
+  return rows.filter((row) => {
+    let parent = row.parentNode as El | null;
+    while (parent) {
+      if (set.has(parent)) return false;
+      parent = parent.parentNode as El | null;
+    }
+    return true;
+  });
 }
 
 /**

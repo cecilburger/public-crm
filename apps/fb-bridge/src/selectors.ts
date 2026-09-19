@@ -35,8 +35,20 @@ export const URLS = {
   /** The Messenger inbox the long-lived observer page sits on. */
   inbox: 'https://www.facebook.com/messages/t/',
   thread: (threadId: string) => `https://www.facebook.com/messages/t/${threadId}/`,
-  /** A Page's own posts, where the comment watcher reads from. */
-  pagePosts: (pageId: string) => `https://www.facebook.com/${pageId}/posts`,
+  /**
+   * A Page's own posts, where the comment watcher reads from.
+   *
+   * Two URL shapes, because Facebook has two kinds of Page id. A classic Page
+   * lives at `/<id>/posts`. The newer profile-style Pages — 15-digit ids
+   * beginning 61… — are not reachable that way at all: confirmed live,
+   * `/61594393176093/posts` renders "Konten Ini Tidak Tersedia Saat Ini",
+   * while `profile.php?id=61594393176093` loads the Page normally. Picking the
+   * wrong one costs a silent empty sweep, since a page with no posts on it and
+   * a page that does not exist look identical to a comment parser.
+   */
+  pagePosts: (pageId: string) => (/^\d{15,}$/.test(pageId)
+    ? `https://www.facebook.com/profile.php?id=${pageId}`
+    : `https://www.facebook.com/${pageId}/posts`),
   post: (postId: string) => `https://www.facebook.com/${postId}`,
 } as const;
 
@@ -82,11 +94,41 @@ export const INBOX = {
 } as const;
 
 export const THREAD = {
-  /** The message scrollback. The observer reads this container's `outerHTML`
-   * and hands it to a pure parser — nothing interprets the DOM in the page. */
-  messageList: ['div[role="main"] div[role="grid"]', 'div[aria-label^="Messages"]', 'div[role="main"]'],
-  /** One rendered message. */
-  row: ['div[role="row"]', 'div[role="gridcell"]', 'div[data-testid="message-container"]'],
+  /**
+   * The message scrollback. The observer reads this container's `outerHTML`
+   * and hands it to a pure parser — nothing interprets the DOM in the page.
+   *
+   * Confirmed live against the real site: Messenger renders the transcript as
+   * an ARIA live region, `div[role="log"]`, labelled "Messages in conversation
+   * with <name>". It is NOT a grid, and the `role="grid"` on the page belongs
+   * to the *conversation list* on the left — pointing at that one made the
+   * parser read inbox rows as if they were messages.
+   */
+  messageList: [
+    'div[role="log"]',
+    'div[aria-label^="Messages in conversation"]',
+    'div[aria-label^="Pesan dalam percakapan"]',
+  ],
+  /**
+   * One rendered message.
+   *
+   * There is no `role="row"` anywhere inside the transcript (confirmed live:
+   * zero matches). Facebook marks each message with `data-scope="messages_table"`,
+   * which is the one handle here that does not depend on the interface
+   * language, so it is tried first; the labelled-descendant fallback behind it
+   * catches a build where that attribute is absent, and the parser discards
+   * whatever does not carry a message-shaped label.
+   */
+  row: [
+    'div[role="log"] div[data-scope="messages_table"]',
+    'div[data-scope="messages_table"]',
+    'div[role="log"] div[aria-label]',
+    // Last resort, for the older build the parser still supports. Harmless on
+    // the current site: rows are only ever looked for *inside* the transcript
+    // container, and the live transcript contains no `role="row"` at all — the
+    // ones on the page belong to the conversation list, which is not searched.
+    'div[role="row"]',
+  ],
   /** Where a row's visible text lives, in preference order. */
   textNode: ['div[dir="auto"]', 'span[dir="auto"]'],
   /**
@@ -112,6 +154,39 @@ export const THREAD = {
   senderSentLabelRe: /^(.+?)\s+(?:sent|replied|mengirim|membalas)\b/i,
   /** Last resort: the avatar beside a bubble is labelled with its sender. */
   avatarAlt: 'img[alt]',
+
+  /**
+   * How a message actually arrives: sender and body encoded together in one
+   * aria-label, with no separate node carrying either.
+   *
+   * Confirmed live, both shapes on the same message:
+   *   "Pukul 1 Maret 2024 10.51, Anda: Kak masi ada ga kursi onex nya"
+   *   "Masukkan, Pesan dikirim pukul 1 Maret 2024 10.51 oleh Anda: Kak masi ..."
+   *
+   * Capture 1 is the sender, capture 2 is the body. The "oleh/by" shape is
+   * tried first because it is the more specific of the two — the other would
+   * happily match it and take "Pesan dikirim pukul ... oleh Anda" as a name.
+   *
+   * The English wordings are the expected counterparts of the Indonesian ones
+   * that were confirmed; they have not themselves been seen on a live
+   * English-language account.
+   */
+  messageLabelRes: [
+    /\b(?:oleh|by)\s+(.+?)\s*:\s*([\s\S]+)$/i,
+    /^(?:pukul|at)\s+[^,]*,\s*(.+?)\s*:\s*([\s\S]+)$/i,
+  ] as readonly RegExp[],
+
+  /**
+   * A sender name that means the connected account itself. Facebook writes the
+   * first person rather than the Page's name ("Anda:" / "You:"), so comparing
+   * against the configured Page name alone would never recognise our own
+   * replies — and an inbound-only bridge that fails to recognise them ingests
+   * the operator's own words as the customer's.
+   */
+  selfSenderRe: /^(?:anda|you|kamu|kau)$/i,
+
+  /** Labels on controls that sit inside the transcript and are not messages. */
+  rowChromeRe: /^(?:masukkan,\s*detail percakapan|enter,\s*conversation details|tindakan pesan|message actions)\b/i,
 } as const;
 
 /* ------------------------------------------------------------------ Page comments */
