@@ -15,3 +15,5 @@ apps/ig-bridge/.ig_bridge_state/
 apps/ig-bridge/.ig_bridge_auth/
 apps/ig-bridge/.ig_bridge_auth_pptr/
 .dev-stack-data/
+
+.dev-stack-data.*/
