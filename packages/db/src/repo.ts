@@ -561,6 +561,28 @@ export async function ingestInboundInstagramDmMessage(
 
   const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: inboundAt });
 
+  // Same unstable-id problem as `recordIgBridgeAgentReply`, on the way in:
+  // the scraper's message id is a hash over the message's position in the
+  // thread, and that position shifts on every re-read, so one "Halo kak"
+  // arrived three times in fifteen milliseconds — and the bot answered all
+  // three (confirmed live). The window is tight on purpose: a customer
+  // really can send the same short word twice, just not usually inside a
+  // minute, and a re-read storm always lands within seconds.
+  const echoes = await ctx.tx.query<{ body_enc: string | null }>(
+    `select body_enc from messages
+      where tenant_id = $1 and conversation_id = $2 and direction = 'inbound'
+        and created_at > $3
+      order by created_at desc limit 10`,
+    [ctx.tenantId, conversation.id, new Date(now.getTime() - 60_000)],
+  );
+  const wanted = normaliseForEcho(args.body);
+  if (echoes.some((r) => r.body_enc && normaliseForEcho(openField(keys, ctx.tenantId, r.body_enc)) === wanted)) {
+    return {
+      messageId: '', conversationId: conversation.id, contactId: contact.id,
+      duplicate: true, billed: false,
+    };
+  }
+
   const inserted = await ctx.tx.query<{ id: string }>(
     `insert into messages
        (tenant_id, conversation_id, channel_id, direction, sender_type, sender_id,
@@ -603,6 +625,22 @@ export async function ingestInboundInstagramDmMessage(
  * recognises its own recent sends before ever emitting them, so this only
  * fires for a message that genuinely originated on the phone.
  */
+/**
+ * What a message looks like once the difference between "what we sent" and
+ * "what the scraper read back off the page" is taken out of it.
+ *
+ * Those two are never byte-identical: confirmed live on one bot reply, the
+ * read-back had the emoji gone and a third newline where the sent copy had
+ * two (110 characters became 109). Comparing raw text therefore misses the
+ * echo it is supposed to catch, so this drops everything that is not a
+ * letter or a digit before comparing — enough to recognise our own words
+ * coming back, and still specific enough that two genuinely different
+ * messages never collapse into one.
+ */
+function normaliseForEcho(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
 export async function recordIgBridgeAgentReply(
   ctx: Ctx,
   args: {
@@ -638,6 +676,47 @@ export async function recordIgBridgeAgentReply(
   );
 
   const conversation = await ensureConversation(ctx, { contactId: contact.id, channelId: args.channelId, now: at });
+
+  // The `provider_message_id` check above cannot catch a re-report of a
+  // message we already have: the id is a hash over the message's *position*
+  // in the scraped window, and that position shifts every time the thread
+  // grows, so the same text comes back under a new id on every re-read
+  // (confirmed live — one bot reply recorded three times in ninety seconds).
+  // Comparing the text itself over a short window is what actually closes
+  // it. The tradeoff is deliberate: an agent who really does send the same
+  // words twice inside this window loses the second copy from the
+  // transcript, which is a far smaller wrong than a thread that fills up
+  // with phantom repeats of everything the bot says.
+  const recent = await ctx.tx.query<{ body_enc: string | null }>(
+    `select body_enc from messages
+      where tenant_id = $1 and conversation_id = $2 and direction = 'outbound'
+        and created_at > $3
+      order by created_at desc limit 20`,
+    [ctx.tenantId, conversation.id, new Date(now.getTime() - 15 * 60_000)],
+  );
+  const wanted = normaliseForEcho(args.body);
+  const alreadyThere = recent.some((r) => {
+    if (!r.body_enc) return false;
+    const sent = normaliseForEcho(openField(keys, ctx.tenantId, r.body_enc));
+    if (sent === wanted) return true;
+    // A reply does not come back the same length it went out. Measured on
+    // two live echoes: 349 characters sent came back as 356, and 420 as 427
+    // — the scrape picks up a few characters of surrounding bubble chrome
+    // along with the text, and drops the emoji that was in the original. It
+    // can cut the other way too when Instagram splits a long message into
+    // separate bubbles. Either string starting with the other therefore
+    // covers both, and the length floor is what stops a genuinely short
+    // human reply ("ok", "siap") from being swallowed for happening to
+    // begin like something the bot said.
+    const floor = 25;
+    return (wanted.length >= floor && sent.startsWith(wanted))
+      || (sent.length >= floor && wanted.startsWith(sent));
+  });
+  if (alreadyThere) {
+    return {
+      messageId: '', conversationId: conversation.id, contactId: contact.id, duplicate: true,
+    };
+  }
 
   const inserted = await ctx.tx.query<{ id: string }>(
     `insert into messages

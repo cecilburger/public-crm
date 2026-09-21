@@ -443,9 +443,24 @@ export class SendNotConfirmedError extends Error {}
  * using the identical `SCRAPE_MESSAGES_JS` walk so "sent" here means the
  * exact same thing "received" means when reading a thread.
  */
+/**
+ * What a message looks like with the difference between "what we typed" and
+ * "what the page renders it as" taken out.
+ *
+ * The two are not the same string. Confirmed live on a reply the bot really
+ * did deliver: the sent copy carried an emoji and two newlines, the scrape
+ * of that same bubble came back with the emoji gone and three — 110
+ * characters against 109. Compared raw, the confirmation below therefore
+ * never matched a message that was sitting right there on screen, so every
+ * successful send was reported as `SendNotConfirmedError`, the queue retried
+ * it, and the brand received the same paragraph three times.
+ */
+const sameMessage = (a: string, b: string): boolean =>
+  a.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsername: string | null): boolean => {
   const last = messages[messages.length - 1];
-  return !!last && last.text === wanted
+  return !!last && sameMessage(last.text, wanted)
     && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase());
 };
 
@@ -465,8 +480,18 @@ export async function sendThreadMessage(
   // re-pressing Enter in that case sends a real duplicate, not a retry.
   // Checking what's already there first is what makes a retry safe to
   // repeat as many times as the caller wants.
+  // Not just the very last bubble: a brand who replies between our send and
+  // the retry pushes our own message up the thread, and a check that only
+  // looked at the bottom would conclude we never sent it and send it again.
+  // The tail is far enough back to survive that without reaching so far
+  // that a deliberately repeated line, sent much earlier, suppresses a real
+  // one now.
   await page.waitForSelector('div[aria-label^="See more options for message from "]', { timeout: 8000 }).catch(() => {});
-  if (lastMessageMatches(await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[], wanted, ownUsername)) return;
+  const onScreen = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
+  const alreadySent = onScreen.slice(-5).some((m) =>
+    sameMessage(m.text, wanted)
+    && (!ownUsername || m.senderUsername.toLowerCase() === ownUsername.toLowerCase()));
+  if (alreadySent) return;
 
   const selector = [
     'div[contenteditable="true"][aria-label="Message"]',

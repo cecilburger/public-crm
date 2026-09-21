@@ -3,6 +3,7 @@ import {
   withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, ingestInboundInstagramDmMessage,
   recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken, type Database,
 } from '@kirana/db';
+import { isBdConversation } from './bdDraft.ts';
 
 const IG_GRAPH_URL = 'https://graph.instagram.com';
 
@@ -153,6 +154,20 @@ async function processWaBridgeEvent(
     const m = payload.message;
     if (!m) return { status: 'processed' };
 
+    // whatsapp-web.js occasionally hands back a message with no `id`
+    // (confirmed live: the first message on a session right after it
+    // connects) — `JSON.stringify` then drops the key entirely rather than
+    // sending it as null, so `m.id` here is `undefined`, and passing that
+    // straight through as `providerMessageId` fails the insert outright
+    // (Postgres rejects an undefined bind parameter) instead of just
+    // losing the dedupe guarantee. A content+timestamp hash, the same shape
+    // ig-bridge already uses for a provider that never has a real id, keeps
+    // the message from being dropped and still dedupes a genuine redelivery
+    // of the same event.
+    const providerMessageId = m.id || crypto.createHash('sha256')
+      .update(`wa_bridge:${payload.channelId}:${m.from}:${m.to}:${m.timestampSec}:${m.body}`)
+      .digest('hex');
+
     // A message the owner typed on their own phone, outside the console,
     // still reaches us as `fromMe` — recorded on the same conversation as an
     // outbound message so the transcript stays complete either way, deduped
@@ -161,7 +176,7 @@ async function processWaBridgeEvent(
       const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
         recordPhoneReply({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
           channelId: channel.id, to: m.to, body: m.body || `[${m.type} message]`,
-          displayName: m.displayName, providerMessageId: m.id, providerTs: new Date(m.timestampSec * 1000),
+          displayName: m.displayName, providerMessageId, providerTs: new Date(m.timestampSec * 1000),
         }));
       if (!result.duplicate) deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
       return { status: 'processed' };
@@ -170,15 +185,29 @@ async function processWaBridgeEvent(
     const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
       ingestInboundMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
         channelId: channel.id, from: m.from, body: m.body || `[${m.type} message]`,
-        displayName: m.displayName, providerMessageId: m.id, providerTs: new Date(m.timestampSec * 1000),
+        displayName: m.displayName, providerMessageId, providerTs: new Date(m.timestampSec * 1000),
       }));
 
     if (!result.duplicate) {
       deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
-      await deps.dispatch({
-        queue: 'autopilot.draft',
-        payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
-      });
+      // A brand is BD's to answer, not Autopilot's. Exactly one brain replies.
+      const bd = await withTenant(deps.db, channel.tenant_id, (tx) =>
+        isBdConversation(tx, channel.tenant_id, result.conversationId));
+      await deps.dispatch(bd
+        ? {
+            queue: 'bd.draft',
+            payload: {
+              tenantId: channel.tenant_id, conversationId: result.conversationId,
+              text: m.body || '',
+            },
+          }
+        : {
+            queue: 'autopilot.draft',
+            payload: {
+              tenantId: channel.tenant_id, conversationId: result.conversationId,
+              messageId: result.messageId,
+            },
+          });
     }
     return { status: 'processed' };
   }
@@ -395,10 +424,27 @@ async function processIgBridgeDmEvent(
     // their own phone — needs no autopilot draft; there is nothing new for
     // it to answer.
     if (payload.message.direction === 'inbound') {
-      await deps.dispatch({
-        queue: 'autopilot.draft',
-        payload: { tenantId: payload.tenantId, conversationId: result.conversationId, messageId: result.messageId },
-      });
+      // Same rule as the wa-bridge ingress: a brand writing in is BD's to
+      // answer. Instagram DMs are where the inbound SOP's own examples come
+      // from (an ad tap, a story reply), so routing them to a shop's product
+      // catalogue would be the wrong brain on the highest-intent channel.
+      const bd = await withTenant(deps.db, payload.tenantId, (tx) =>
+        isBdConversation(tx, payload.tenantId, result.conversationId));
+      await deps.dispatch(bd
+        ? {
+            queue: 'bd.draft',
+            payload: {
+              tenantId: payload.tenantId, conversationId: result.conversationId,
+              text: payload.message.text,
+            },
+          }
+        : {
+            queue: 'autopilot.draft',
+            payload: {
+              tenantId: payload.tenantId, conversationId: result.conversationId,
+              messageId: result.messageId,
+            },
+          });
     }
   }
   return { status: 'processed' };

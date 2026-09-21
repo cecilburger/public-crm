@@ -20,6 +20,7 @@ export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
   { table: 'channels', columns: ['credentials_enc'] },
   { table: 'users', columns: ['mfa_secret_enc'] },
   { table: 'orders', columns: ['recipient_enc', 'address_enc'] },
+  { table: 'bd_conversation_state', columns: ['email_enc'] },
 ];
 
 export interface RotationProgress {
