@@ -3,7 +3,9 @@ import path from 'node:path';
 import type { Page } from 'puppeteer';
 import { INBOX, THREAD, URLS } from './selectors.ts';
 import { parseMessengerInbox } from './parsers/messengerInbox.ts';
-import { parseMessengerThread, type ParsedMessage } from './parsers/messengerThread.ts';
+import {
+  parseMessengerThread, parseMessengerTranscript, selectBackfill, type ParsedMessage,
+} from './parsers/messengerThread.ts';
 import { CheckpointRequiredError, SessionExpiredError, type SessionManager } from './sessionManager.ts';
 import type { FbBridgeEvent } from './events.ts';
 
@@ -61,6 +63,14 @@ export class MessengerWatcher {
     private sessions: SessionManager,
     private onEvent: (ev: FbBridgeEvent) => void,
     private log: Logger,
+    /**
+     * Asks the CRM which message ids it already holds. Injected rather than
+     * built here so the bridge never reaches for a database of its own — the
+     * CRM is the source of truth for what has been stored, and a second opinion
+     * kept on this machine would drift the moment either side is restored.
+     */
+    private knownIds: (tenantId: string, externalIds: string[]) => Promise<Set<string>>,
+    private maxBackfill = Number(process.env.FB_BACKFILL_MAX_MESSAGES ?? 50),
   ) {}
 
   start(): void {
@@ -107,6 +117,10 @@ export class MessengerWatcher {
       // only fires on *future* mutations, so a thread that changed while the
       // browser was briefly wedged would otherwise never be noticed.
       this.enqueue(tenantId, () => this.sweepInbox(tenantId));
+      // And reconcile history, which the observer cannot do at all: it reports
+      // changes from now on, and says nothing about what happened while the
+      // bridge was down.
+      this.enqueue(tenantId, () => this.backfillTenant(tenantId));
     }
   }
 
@@ -226,6 +240,104 @@ export class MessengerWatcher {
       seen.set(row.threadId, row.signature);
       await this.readThread(tenantId, row.threadId).catch((err) =>
         this.log.warn({ err, tenantId, threadId: row.threadId }, 'fb-bridge: failed to read a changed thread'));
+    }
+  }
+
+  /**
+   * Brings every visible thread's history into the CRM.
+   *
+   * One thread failing must not take the others with it. A conversation can be
+   * unreadable for reasons that have nothing to do with the rest — it is a
+   * message request, it renders slowly, its markup changed — and stopping there
+   * would leave every thread behind it silently unreconciled, which is the
+   * failure mode this whole pass exists to prevent.
+   */
+  private async backfillTenant(tenantId: string): Promise<void> {
+    const page = this.observerPages.get(tenantId);
+    if (!page || page.isClosed()) return;
+
+    const html = await readContainerHtml(page, INBOX.list);
+    if (!html) {
+      this.log.warn({ tenantId }, 'fb-bridge: inbox container not found — cannot reconcile history');
+      return;
+    }
+
+    const { rows } = parseMessengerInbox(html);
+    let imported = 0;
+    for (const row of rows) {
+      try {
+        imported += await this.backfillThread(tenantId, row.threadId);
+      } catch (err) {
+        // Named, not swallowed: an operator has to be able to see which
+        // conversation is stuck and why.
+        this.log.warn(
+          { tenantId, threadId: row.threadId, err: (err as Error).message },
+          'fb-bridge: could not reconcile a thread — continuing with the rest',
+        );
+        this.reportFailure(tenantId, err);
+      }
+    }
+    if (imported > 0) this.log.info({ tenantId, imported }, 'fb-bridge: history reconciled');
+  }
+
+  /**
+   * Imports whatever of one thread's history the CRM is missing.
+   *
+   * Discovery runs newest to oldest and stops at the first message the CRM
+   * already holds — everything behind it is older and therefore already stored.
+   * The messages are then emitted oldest to newest, because a conversation has
+   * to arrive in the order it happened.
+   *
+   * Direction is carried through: our own past replies are reported as outbound
+   * so the thread does not read as a customer talking to nobody, and the CRM
+   * writes them straight in as sent rather than queueing them to be delivered
+   * to a real person a second time.
+   */
+  private async backfillThread(tenantId: string, threadId: string): Promise<number> {
+    const marker = await this.sessions.getPageMarker(tenantId);
+    const page = await this.sessions.newPage(tenantId);
+    if (!page) return 0;
+
+    try {
+      await page.goto(URLS.thread(threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await this.sessions.assertUsable(page);
+      await page.waitForSelector(THREAD.row.join(', '), { timeout: 15_000 }).catch(() => {});
+
+      const html = await readContainerHtml(page, THREAD.messageList);
+      if (!html) throw new Error('message container not found — THREAD.messageList may be stale');
+
+      const parsed = parseMessengerTranscript(html, { selfName: marker?.pageName ?? null });
+      const candidates = parsed.messages
+        .map((m) => m.externalMessageId)
+        .filter((id): id is string => Boolean(id))
+        .map((id) => `fb_dm:${tenantId}:${id}`);
+
+      const knownKeys = await this.knownIds(tenantId, candidates);
+      const missing = selectBackfill(parsed.messages, {
+        isKnown: (id) => knownKeys.has(`fb_dm:${tenantId}:${id}`),
+        maxMessages: this.maxBackfill,
+      });
+
+      for (const message of missing) {
+        this.onEvent({
+          event: 'message',
+          tenantId,
+          at: new Date().toISOString(),
+          message: {
+            threadId,
+            externalMessageId: message.externalMessageId,
+            senderId: threadId,
+            senderName: message.senderName,
+            text: message.text,
+            sentAt: message.sentAt,
+            direction: message.direction,
+            seq: this.takeSeq(tenantId, threadId),
+          },
+        });
+      }
+      return missing.length;
+    } finally {
+      await page.close().catch(() => {});
     }
   }
 

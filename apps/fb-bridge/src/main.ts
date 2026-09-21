@@ -1,6 +1,9 @@
 import path from 'node:path';
 import Fastify from 'fastify';
-import { NoActiveSessionError, SenderNotImplementedError, SessionManager } from './sessionManager.ts';
+import {
+  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError,
+  ThreadRequiresAcceptanceError, SessionManager,
+} from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
 import type { FbBridgeEvent } from './events.ts';
@@ -42,7 +45,37 @@ async function postEvent(ev: FbBridgeEvent): Promise<void> {
 }
 
 const sessions = new SessionManager(authDir);
-const messenger = new MessengerWatcher(sessions, (ev) => void postEvent(ev), app.log);
+/**
+ * What the CRM already holds, asked over the same internal channel everything
+ * else uses. The bridge keeps no ledger of its own: a file here would be a
+ * second opinion about what has been stored, and the two drift apart the moment
+ * either side is restored or redeployed.
+ *
+ * An unreachable CRM answers "nothing is known", which makes a backfill skip
+ * rather than re-import — the limit in `selectBackfill` bounds the damage, and
+ * the CRM's own unique indexes absorb whatever slips through.
+ */
+async function knownIds(tenantId: string, externalIds: string[]): Promise<Set<string>> {
+  if (externalIds.length === 0) return new Set();
+  try {
+    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge/known`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
+      body: JSON.stringify({ tenantId, externalIds }),
+    });
+    if (!res.ok) {
+      app.log.warn({ status: res.status, tenantId }, 'fb-bridge: could not read known message ids');
+      return new Set();
+    }
+    const body = await res.json() as { known?: string[] };
+    return new Set(body.known ?? []);
+  } catch (err) {
+    app.log.warn({ err, tenantId }, 'fb-bridge: could not reach kirana api for known message ids');
+    return new Set();
+  }
+}
+
+const messenger = new MessengerWatcher(sessions, (ev) => void postEvent(ev), app.log, knownIds);
 const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
 
 // Both watchers' own first pass resumes every tenant with a persisted profile.
@@ -155,8 +188,18 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string
       if (err instanceof SenderNotImplementedError) {
         return reply.status(501).send({ error: err.message, code: 'sender_not_implemented' });
       }
+      if (err instanceof ThreadRequiresAcceptanceError) {
+        // Permanent: no amount of retrying makes a message request accept a
+        // reply. The operator has to accept it in Facebook first.
+        return reply.status(409).send({ error: err.message, code: 'thread_requires_acceptance' });
+      }
       if (err instanceof NoActiveSessionError) {
         return reply.status(404).send({ error: err.message });
+      }
+      if (err instanceof SendNotConfirmedError) {
+        // Not permanent: the message may have been rate-limited, and the next
+        // attempt can legitimately succeed.
+        return reply.status(502).send({ error: err.message, code: 'send_not_confirmed' });
       }
       app.log.warn({ err, tenantId: req.params.tenantId }, 'fb-bridge send failed');
       return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal mengirim pesan Facebook' });

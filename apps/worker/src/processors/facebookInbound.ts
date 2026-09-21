@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import {
-  withTenant, findMessengerBridgeChannel, ingestInboundMessengerMessage, recordFacebookComment,
-  setFbBridgeConnection,
+  withTenant, findMessengerBridgeChannel, ingestInboundMessengerMessage, recordMessengerAgentReply,
+  recordFacebookComment, setFbBridgeConnection,
 } from '@kirana/db';
 import type { NormaliseDeps } from './inboundNormalise.ts';
 
@@ -26,7 +26,7 @@ export type FbBridgeEventPayload =
       tenantId: string; event: 'message'; at?: string;
       message: {
         threadId: string; externalMessageId: string | null; senderId: string; senderName: string;
-        text: string; sentAt: string | null; direction: 'inbound'; seq: number;
+        text: string; sentAt: string | null; direction: 'inbound' | 'outbound'; seq: number;
       };
     }
   | {
@@ -122,21 +122,29 @@ export async function processFbBridgeEvent(
     return await fail(`no messenger_bridge channel for tenant ${payload.tenantId}`);
   }
 
-  const result = await withTenant(deps.db, payload.tenantId, (tx) =>
-    ingestInboundMessengerMessage({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
-      channelId: channel.channelId,
-      // Identity is the id out of the thread URL. The display name is carried
-      // alongside for the inbox to show, and is only ever used to fill an empty
-      // contact name — never to match one.
-      fbUserId: m.senderId,
-      threadId: m.threadId,
-      body: m.text,
-      providerMessageId: facebookMessageKey(payload.tenantId, m),
-      displayName: m.senderName,
-      providerTs: parseAt(m.sentAt),
-    }));
+  // Identity is the id out of the thread URL either way. The display name is
+  // carried alongside for the inbox to show, and only ever fills an empty
+  // contact name — never matches one.
+  const common = {
+    channelId: channel.channelId,
+    fbUserId: m.senderId,
+    threadId: m.threadId,
+    body: m.text,
+    providerMessageId: facebookMessageKey(payload.tenantId, m),
+    displayName: m.senderName,
+    providerTs: parseAt(m.sentAt),
+  };
 
-  console.log(`[fb-bridge] message ${result.duplicate ? 'duplicate, skipped' : 'ingested'}: thread ${m.threadId}`);
+  // An 'outbound' event is history: a reply the Page already sent, found while
+  // reconciling a thread. It is written straight in as sent, with no outbox row
+  // — queueing it would deliver it to a real person a second time.
+  const result = m.direction === 'outbound'
+    ? await withTenant(deps.db, payload.tenantId, (tx) =>
+        recordMessengerAgentReply({ tx, tenantId: payload.tenantId, kek: deps.kek }, common))
+    : await withTenant(deps.db, payload.tenantId, (tx) =>
+        ingestInboundMessengerMessage({ tx, tenantId: payload.tenantId, kek: deps.kek }, common));
+
+  console.log(`[fb-bridge] ${m.direction} message ${result.duplicate ? 'duplicate, skipped' : 'ingested'}: thread ${m.threadId}`);
 
   if (!result.duplicate) {
     deps.publish?.(payload.tenantId, { type: 'message', conversationId: result.conversationId });

@@ -25,11 +25,14 @@ export class FbBridgeClient {
     // puts a readable reason on the failed message rather than a bare status.
     const detail = parseDetail(text) ?? `${res.status} ${text}`.trim();
     const err = new Error(`fb-bridge send failed: ${detail}`) as Error & { permanent?: boolean };
-    // 501: no sender yet. 400/404: a bad request, or no session and no thread.
-    // None of those improve by trying again. Anything else — the bridge briefly
-    // unreachable, or a send that failed for an unclear reason — gets the
-    // queue's normal backoff like any other transient failure.
-    err.permanent = res.status === 501 || res.status === 400 || res.status === 404;
+    // 409: the thread is a message request and has no composer at all, so no
+    // retry can ever deliver this. 501: no sender. 400/404: a bad request, or
+    // no session and no thread. None of those improve by trying again.
+    // Anything else — the bridge briefly unreachable, or a send that was typed
+    // but never confirmed (Facebook silently rate-limiting a thread does this)
+    // — gets the queue's normal backoff like any other transient failure.
+    err.permanent = res.status === 501 || res.status === 409
+      || res.status === 400 || res.status === 404;
     throw err;
   }
 }

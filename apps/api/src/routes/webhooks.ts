@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { verifyWebhookSignature, ipAllowed, parseAllowList } from '@kirana/core';
-import { withoutTenant } from '@kirana/db';
+import { withoutTenant, withTenant, findMessengerBridgeChannel, knownMessengerMessageIds } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { webhookEvents } from '../metrics.ts';
 
@@ -264,6 +264,41 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
    * the two dedupe layers cannot disagree. Change one and you must change both;
    * `tests/facebook-bridge.test.ts` asserts they still match.
    */
+  /**
+   * Which of these message ids the CRM already holds.
+   *
+   * This is what makes Postgres the source of truth for reconciliation. The
+   * bridge could keep its own file of what it has reported, and did — but a
+   * file on the bridge's disk is a second opinion, and the two drift the moment
+   * either side is restored, reset or redeployed. Asking here means a backfill
+   * stops at what the database actually contains.
+   *
+   * A read, so it opens the tenant's own context rather than the control pool:
+   * the bridge states the tenant, and row-level security applies from the first
+   * query to the last.
+   */
+  app.post('/v1/webhooks/fb-bridge/known', async (req, reply) => {
+    if (req.headers.authorization !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'fb-bridge known-ids rejected: bad secret');
+      return reply.status(401).send();
+    }
+    const body = req.body as { tenantId?: string; externalIds?: string[] };
+    if (!body.tenantId || !Array.isArray(body.externalIds)) return reply.status(400).send();
+    // Bounded: a backfill asks about one window of one thread, never a history.
+    const externalIds = body.externalIds.filter((id) => typeof id === 'string').slice(0, 500);
+
+    const known = await withTenant(ctx.db, body.tenantId, async (tx) => {
+      const channel = await findMessengerBridgeChannel({ tx, tenantId: body.tenantId!, kek: ctx.kek });
+      if (!channel) return [] as string[];
+      const found = await knownMessengerMessageIds({ tx, tenantId: body.tenantId!, kek: ctx.kek }, {
+        channelId: channel.channelId, providerMessageIds: externalIds,
+      });
+      return [...found];
+    });
+
+    return reply.send({ known });
+  });
+
   app.post('/v1/webhooks/fb-bridge', async (req, reply) => {
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
@@ -294,7 +329,8 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     const m = (body.event === 'message' ? body.message : null) ?? null;
     if (body.event === 'message') {
       const ok = m?.threadId && m.senderId && m.senderName && m.text
-        && m.direction === 'inbound' && typeof m.seq === 'number';
+        && (m.direction === 'inbound' || m.direction === 'outbound')
+        && typeof m.seq === 'number';
       if (!ok) {
         webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
         return reply.status(400).send();

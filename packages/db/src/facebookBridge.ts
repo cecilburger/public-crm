@@ -271,6 +271,106 @@ export async function ingestInboundMessengerMessage(
   };
 }
 
+/**
+ * A reply the Page already sent, found while reading a thread's history.
+ *
+ * The counterpart to `ingestInboundMessengerMessage` for the other direction,
+ * and it exists for one reason: a conversation that predates the bridge is half
+ * ours. Importing only the customer's side would leave the CRM showing somebody
+ * talking to nobody, and an agent reading that would have no idea the question
+ * had already been answered.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: create an outbox row. These messages were
+ * sent on Facebook long ago; queueing them would send them a second time to a
+ * real person. They are written straight in as `sent`.
+ *
+ * It does not meter either. `recordConversationActivity` opens a billable
+ * conversation window, and importing old history is not new activity — the same
+ * reasoning `recordIgBridgeAgentReply` already follows.
+ */
+export async function recordMessengerAgentReply(
+  ctx: Ctx,
+  args: {
+    channelId: string; fbUserId: string; threadId: string; body: string; providerMessageId: string;
+    displayName?: string | null; providerTs?: Date; now?: Date;
+  },
+): Promise<{ messageId: string; conversationId: string; contactId: string; duplicate: boolean }> {
+  const now = args.now ?? new Date();
+
+  const dup = await ctx.tx.query<{ id: string; conversation_id: string }>(
+    `select id, conversation_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (dup[0]) {
+    const c = await ctx.tx.query<{ contact_id: string }>(
+      'select contact_id from conversations where tenant_id = $1 and id = $2',
+      [ctx.tenantId, dup[0].conversation_id],
+    );
+    return {
+      messageId: dup[0].id, conversationId: dup[0].conversation_id,
+      contactId: c[0]?.contact_id ?? '', duplicate: true,
+    };
+  }
+
+  const at = args.providerTs ?? now;
+  const contact = await upsertContactByFbUserId(ctx, {
+    fbUserId: args.fbUserId, displayName: args.displayName, now,
+  });
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  await ctx.tx.query(
+    `update contacts set fb_thread_id_enc = $3 where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, contact.id, sealField(keys, ctx.tenantId, args.threadId)],
+  );
+
+  const conversation = await ensureConversation(ctx, {
+    contactId: contact.id, channelId: args.channelId, now: at,
+  });
+
+  const inserted = await ctx.tx.query<{ id: string }>(
+    `insert into messages
+       (tenant_id, conversation_id, channel_id, direction, sender_type,
+        body_enc, provider_message_id, status, provider_ts)
+     values ($1,$2,$3,'outbound','agent',$4,$5,'sent',$6)
+     returning id`,
+    [ctx.tenantId, conversation.id, args.channelId,
+     sealField(keys, ctx.tenantId, args.body), args.providerMessageId, at],
+  );
+
+  // `last_message_at` only ever moves forward, so importing old history cannot
+  // drag a live conversation backwards in the inbox ordering.
+  await ctx.tx.query(
+    `update conversations
+        set last_message_at = greatest(last_message_at, $3),
+            first_response_at = coalesce(first_response_at, $3)
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, conversation.id, at],
+  );
+
+  return { messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id, duplicate: false };
+}
+
+/**
+ * Which of these provider message ids the CRM already holds for a thread.
+ *
+ * This is what makes Postgres the source of truth for reconciliation rather
+ * than a file on the bridge's disk. A backfill walks a thread newest-first and
+ * stops at the first id named here: everything older is already stored, so
+ * there is nothing behind it worth reading.
+ */
+export async function knownMessengerMessageIds(
+  ctx: Ctx, args: { channelId: string; providerMessageIds: string[] },
+): Promise<Set<string>> {
+  if (args.providerMessageIds.length === 0) return new Set();
+  const rows = await ctx.tx.query<{ provider_message_id: string }>(
+    `select provider_message_id from messages
+      where tenant_id = $1 and channel_id = $2 and provider_message_id = any($3::text[])`,
+    [ctx.tenantId, args.channelId, args.providerMessageIds],
+  );
+  return new Set(rows.map((r) => r.provider_message_id));
+}
+
 /* --------------------------------------------------------------- comments */
 
 export interface CommentResult {
@@ -329,6 +429,176 @@ export async function recordFacebookComment(
   return { id: existing[0]!.id, duplicate: true };
 }
 
+/* ------------------------------------------------- comment processing state */
+
+export type CommentStatus =
+  | 'new' | 'public_reply_pending' | 'public_replied' | 'dm_pending' | 'dm_sent' | 'failed';
+
+export interface PendingComment {
+  id: string;
+  commentId: string;
+  postId: string;
+  pageId: string;
+  authorExternalId: string | null;
+  authorName: string | null;
+  body: string;
+  status: CommentStatus;
+  attempts: number;
+}
+
+/**
+ * Comments with work left to do, oldest first.
+ *
+ * `cooldownMs` is what keeps automated replies paced: a comment whose last
+ * attempt is inside the cooldown is not offered again yet. Measuring it from a
+ * column rather than an in-process timer is deliberate — a bridge that restarts
+ * every few minutes would otherwise reset its own pacing to zero and burst.
+ *
+ * Two exclusions carry real meaning:
+ *   - `dm_at is null and dm_error is null` — a comment whose private message
+ *     already landed, or already came back as unavailable, is finished. Facebook
+ *     offers a private reply to a commenter once; retrying it is either a
+ *     double-send or a guaranteed failure.
+ *   - `attempts < $3` — a comment that keeps failing stops being picked up
+ *     instead of consuming the cooldown budget forever.
+ */
+export async function listPendingComments(
+  ctx: Ctx,
+  args: { limit?: number; cooldownMs?: number; maxAttempts?: number; now?: Date },
+): Promise<PendingComment[]> {
+  const now = args.now ?? new Date();
+  const cooldownCutoff = new Date(now.getTime() - (args.cooldownMs ?? 0));
+
+  const rows = await ctx.tx.query<{
+    id: string; comment_id: string; post_id: string; page_id: string;
+    author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
+    status: CommentStatus; attempts: number;
+  }>(
+    `select id, comment_id, post_id, page_id,
+            author_external_id_enc, author_name_enc, body_enc, status, attempts
+       from facebook_comments
+      where tenant_id = $1
+        and status in ('new','public_reply_pending','public_replied','dm_pending')
+        and dm_at is null and dm_error is null
+        and attempts < $3
+        and (last_attempt_at is null or last_attempt_at <= $4)
+      order by coalesce(commented_at, created_at)
+      limit $2`,
+    [ctx.tenantId, Math.min(args.limit ?? 10, 100), args.maxAttempts ?? 3, cooldownCutoff],
+  );
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  return rows.map((r) => ({
+    id: r.id, commentId: r.comment_id, postId: r.post_id, pageId: r.page_id,
+    authorExternalId: r.author_external_id_enc ? openField(keys, ctx.tenantId, r.author_external_id_enc) : null,
+    authorName: r.author_name_enc ? openField(keys, ctx.tenantId, r.author_name_enc) : null,
+    body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
+    status: r.status, attempts: r.attempts,
+  }));
+}
+
+/**
+ * Takes a comment from one state to the next, and says whether it got it.
+ *
+ * Every transition is guarded on the state it is coming *from*, so the update
+ * either moves exactly one row or moves nothing. That is what makes a retry
+ * safe: a second worker, a restarted bridge or a re-read of the same comment
+ * finds the row already past that point and is told `false` rather than
+ * repeating a side effect someone else already performed on a real customer's
+ * timeline.
+ */
+async function transition(
+  ctx: Ctx,
+  args: { id: string; from: CommentStatus[]; to: CommentStatus; set?: string; values?: unknown[]; now: Date },
+): Promise<boolean> {
+  const extra = args.set ? `, ${args.set}` : '';
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments
+        set status = $3, last_attempt_at = $4${extra}
+      where tenant_id = $1 and id = $2 and status = any($5::text[])
+      returning id`,
+    [ctx.tenantId, args.id, args.to, args.now, args.from, ...(args.values ?? [])],
+  );
+  return rows.length > 0;
+}
+
+/** Claims a comment for a public reply. False means somebody already has it. */
+export async function claimCommentForPublicReply(
+  ctx: Ctx, args: { id: string; now?: Date },
+): Promise<boolean> {
+  const now = args.now ?? new Date();
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments
+        set status = 'public_reply_pending', attempts = attempts + 1, last_attempt_at = $3
+      where tenant_id = $1 and id = $2 and status = 'new'
+      returning id`,
+    [ctx.tenantId, args.id, now],
+  );
+  return rows.length > 0;
+}
+
+export async function markCommentPublicReplied(ctx: Ctx, args: { id: string; now?: Date }): Promise<boolean> {
+  const now = args.now ?? new Date();
+  return transition(ctx, {
+    id: args.id, from: ['public_reply_pending'], to: 'public_replied',
+    set: 'public_reply_at = $6, public_reply_error = null', values: [now], now,
+  });
+}
+
+/** The public reply itself failed, so there is nothing to follow up privately. */
+export async function markCommentPublicReplyFailed(
+  ctx: Ctx, args: { id: string; reason: string; now?: Date },
+): Promise<boolean> {
+  const now = args.now ?? new Date();
+  return transition(ctx, {
+    id: args.id, from: ['new', 'public_reply_pending'], to: 'failed',
+    set: 'public_reply_error = $6', values: [args.reason.slice(0, 500)], now,
+  });
+}
+
+/** Claims a comment for the private message that follows a public reply. */
+export async function claimCommentForDm(ctx: Ctx, args: { id: string; now?: Date }): Promise<boolean> {
+  const now = args.now ?? new Date();
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments
+        set status = 'dm_pending', attempts = attempts + 1, last_attempt_at = $3
+      where tenant_id = $1 and id = $2 and status = 'public_replied'
+        and dm_at is null and dm_error is null
+      returning id`,
+    [ctx.tenantId, args.id, now],
+  );
+  return rows.length > 0;
+}
+
+/** Only ever called after a real Messenger delivery has been confirmed. */
+export async function markCommentDmSent(ctx: Ctx, args: { id: string; now?: Date }): Promise<boolean> {
+  const now = args.now ?? new Date();
+  return transition(ctx, {
+    id: args.id, from: ['dm_pending'], to: 'dm_sent',
+    set: 'dm_at = $6, dm_error = null', values: [now], now,
+  });
+}
+
+/**
+ * The private message could not be sent.
+ *
+ * The comment goes back to `public_replied`, not to `failed`: the public reply
+ * did happen and saying otherwise would be a lie about what the customer can
+ * see. `dm_error` records why, and because `listPendingComments` skips any
+ * comment with a `dm_error`, this is terminal — Facebook offers a private reply
+ * to a commenter once, so retrying is either a double-send or a guaranteed
+ * second failure.
+ */
+export async function markCommentDmFailed(
+  ctx: Ctx, args: { id: string; reason: string; now?: Date },
+): Promise<boolean> {
+  const now = args.now ?? new Date();
+  return transition(ctx, {
+    id: args.id, from: ['dm_pending'], to: 'public_replied',
+    set: 'dm_error = $6', values: [args.reason.slice(0, 500)], now,
+  });
+}
+
 export interface FacebookCommentRow {
   id: string;
   pageId: string;
@@ -340,6 +610,15 @@ export interface FacebookCommentRow {
   body: string;
   commentedAt: Date | null;
   createdAt: Date;
+  /** Where this comment is in the reply-then-DM sequence, and why either step
+   * did not happen. The console shows all of it: an agent needs to know a
+   * public reply landed even when the private message did not. */
+  status: CommentStatus;
+  publicReplyAt: Date | null;
+  publicReplyError: string | null;
+  dmAt: Date | null;
+  dmError: string | null;
+  attempts: number;
 }
 
 /**
@@ -353,10 +632,13 @@ export async function listFacebookComments(
   const rows = await ctx.tx.query<{
     id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
     author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
-    commented_at: Date | null; created_at: Date;
+    commented_at: Date | null; created_at: Date; status: CommentStatus;
+    public_reply_at: Date | null; public_reply_error: string | null;
+    dm_at: Date | null; dm_error: string | null; attempts: number;
   }>(
     `select id, page_id, page_name, post_id, comment_id,
-            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at
+            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
+            status, public_reply_at, public_reply_error, dm_at, dm_error, attempts
        from facebook_comments
       where tenant_id = $1 and ($3::text is null or post_id = $3)
       order by coalesce(commented_at, created_at) desc
@@ -371,5 +653,8 @@ export async function listFacebookComments(
     authorName: r.author_name_enc ? openField(keys, ctx.tenantId, r.author_name_enc) : null,
     body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
     commentedAt: r.commented_at, createdAt: r.created_at,
+    status: r.status,
+    publicReplyAt: r.public_reply_at, publicReplyError: r.public_reply_error,
+    dmAt: r.dm_at, dmError: r.dm_error, attempts: r.attempts,
   }));
 }

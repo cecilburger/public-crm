@@ -72,6 +72,49 @@ const schema = z.object({
   FB_BRIDGE_URL: z.string().default('http://127.0.0.1:8092'),
   FB_BRIDGE_SECRET: z.string().default('dev-fb-bridge-secret-change-me'),
 
+  /**
+   * Whether a public reply to a Facebook comment is followed by an automatic
+   * private message to whoever wrote it.
+   *
+   * OFF BY DEFAULT, AND THAT DEFAULT IS THE SAFE ONE. An unsolicited direct
+   * message to somebody who just commented, sent from a browser-automation
+   * session, is the classic shape of spam as far as Meta's anti-abuse systems
+   * are concerned — a far higher risk than replying to someone who wrote to us
+   * first. Getting it wrong checkpoints the operator's account and takes the
+   * whole bridge down with it, inbound included.
+   *
+   * With this off the private message is not attempted at all; the comment
+   * keeps the state showing its public reply succeeded and an agent can send
+   * the message by hand from the console.
+   */
+  FB_COMMENT_AUTO_DM: z.coerce.boolean().default(false),
+
+  /**
+   * Minimum gap between automated actions on comments, in milliseconds.
+   *
+   * Paced from a column on the comment row rather than an in-process timer, so
+   * a bridge that restarts does not reset its own pacing to zero and burst.
+   */
+  FB_COMMENT_COOLDOWN_MS: z.coerce.number().int().default(60_000),
+
+  /** How many comments one sweep may act on. Small on purpose. */
+  FB_COMMENT_BATCH: z.coerce.number().int().default(5),
+
+  /** Attempts before a comment stops being picked up. */
+  FB_COMMENT_MAX_ATTEMPTS: z.coerce.number().int().default(3),
+
+  /**
+   * How far back a reconnecting bridge reads a Messenger thread before giving
+   * up on finding history it already has.
+   *
+   * Backfill stops early the moment it reaches a message the CRM already knows,
+   * which is the common case. This is the backstop for the other one: a thread
+   * whose known anchor has scrolled out of the rendered window entirely, where
+   * without a limit the bridge would keep scrolling a conversation that may run
+   * to years.
+   */
+  FB_BACKFILL_MAX_MESSAGES: z.coerce.number().int().default(50),
+
   /** Autopilot. With no ANTHROPIC_API_KEY the worker runs offline (see main.ts). */
   AUTOPILOT_MODEL: z.string().default('claude-opus-5'),
   AUTOPILOT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),

@@ -5,8 +5,11 @@ import type { Browser, Page } from 'puppeteer';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import {
-  CHECKPOINT_TEXT_RE, CHECKPOINT_URL_MARKERS, LOGGED_OUT_TEXT_RE, LOGGED_OUT_URL_MARKERS, URLS,
+  CHECKPOINT_TEXT_RE, CHECKPOINT_URL_MARKERS, COMPOSER, LOGGED_OUT_TEXT_RE, LOGGED_OUT_URL_MARKERS,
+  THREAD, URLS,
 } from './selectors.ts';
+import { countOwnMessages } from './parsers/messengerThread.ts';
+import { readContainerHtml } from './messengerWatcher.ts';
 
 // Same interop dance as `apps/ig-bridge/src/sessionManager.ts`, and for the
 // same reason: `puppeteer-extra`'s default export needs CJS/ESM interop this
@@ -50,6 +53,18 @@ export class NoActiveSessionError extends Error {}
  * be flipped by accident.
  */
 export class SenderNotImplementedError extends Error {}
+/**
+ * The thread has no composer, so it cannot be replied to at all.
+ *
+ * Confirmed live: a conversation still sitting as a message request renders its
+ * whole transcript and offers no message box — the same behaviour Instagram has,
+ * where the composer only appears once a request is accepted. Permanent by
+ * nature: waiting or retrying will never produce one. Accepting the request on
+ * the operator's behalf is deliberately not done here.
+ */
+export class ThreadRequiresAcceptanceError extends Error {}
+/** Typed into the composer, but never seen arriving in the transcript. */
+export class SendNotConfirmedError extends Error {}
 
 export type SessionStatus = 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
 
@@ -482,10 +497,63 @@ export class SessionManager {
    * when the server rejected the message.
    */
   async sendMessage(tenantId: string, threadId: string, text: string): Promise<void> {
-    void tenantId; void threadId; void text;
-    throw new SenderNotImplementedError(
-      'Balasan Facebook belum tersedia — selector composer belum diverifikasi ke DOM Messenger asli',
-    );
+    const page = await this.newPage(tenantId);
+    if (!page) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+
+    try {
+      await page.goto(URLS.thread(threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await this.assertUsable(page);
+      await page.waitForSelector(THREAD.row.join(', '), { timeout: 15_000 }).catch(() => {});
+
+      const composer = COMPOSER.box.join(', ');
+      const hasComposer = await page.waitForSelector(composer, { timeout: COMPOSER.waitMs })
+        .then(() => true).catch(() => false);
+      if (!hasComposer) {
+        throw new ThreadRequiresAcceptanceError(
+          'Percakapan ini belum bisa dibalas — Facebook tidak menampilkan kotak pesan '
+          + '(kemungkinan masih berupa permintaan pesan yang harus diterima manual)',
+        );
+      }
+
+      // Counted *before* sending, because a reply is often the same words as an
+      // earlier one ("baik kak", "siap"). Asking "is our text on screen?" would
+      // report success off a message from last week — including when nothing
+      // was sent at all.
+      const selfName = (await this.getPageMarker(tenantId))?.pageName ?? null;
+      const before = countOwnMessages(await readTranscript(page), { text, selfName });
+
+      await page.click(composer);
+      // `page.type()` would be the obvious call and it does not work here. The
+      // composer is a Lexical editor (`data-lexical-editor="true"`, confirmed
+      // live), and Lexical builds its own state from `beforeinput` events, so a
+      // per-character keydown/keypress loop lands in the visible DOM without
+      // Lexical ever registering it: the box looks typed into, Enter clears it,
+      // and nothing is ever sent. `sendCharacter` issues one CDP
+      // `Input.insertText` — the primitive a real paste uses — which Lexical
+      // does register. Despite the name it takes the whole string.
+      await page.keyboard.sendCharacter(text);
+      // There is no Send button to click. Beside the composer the live page
+      // offers only attachment, sticker, GIF, emoji and Like; the send control
+      // appears only once text is present. Enter is how the message goes.
+      await page.keyboard.press('Enter');
+
+      const deadline = Date.now() + COMPOSER.confirmMs;
+      while (Date.now() < deadline) {
+        if (countOwnMessages(await readTranscript(page), { text, selfName }) > before) return;
+        await sleep(500);
+      }
+      throw new SendNotConfirmedError(
+        'Pesan sudah diketik tapi tidak muncul sebagai pesan terkirim di percakapan — '
+        + 'kemungkinan ditolak diam-diam oleh Facebook',
+      );
+    } catch (err) {
+      if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
+        this.forgetSession(tenantId, (err as Error).message);
+      }
+      throw err;
+    } finally {
+      await page.close().catch(() => {});
+    }
   }
 
   async logout(tenantId: string): Promise<void> {
@@ -510,4 +578,9 @@ export class SessionManager {
     ]);
     this.loginWindows.clear();
   }
+}
+
+/** The transcript as markup, for the pure confirmation counter to read. */
+async function readTranscript(page: Page): Promise<string> {
+  return (await readContainerHtml(page, THREAD.messageList)) ?? '';
 }

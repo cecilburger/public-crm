@@ -13,6 +13,19 @@ export interface ParsedMessage {
   sentAt: string | null;
 }
 
+export type Direction = 'inbound' | 'outbound';
+
+export interface ParsedTranscriptMessage extends ParsedMessage {
+  direction: Direction;
+}
+
+export interface ParsedTranscript {
+  /** Every message the transcript showed, oldest first, with its direction. */
+  messages: ParsedTranscriptMessage[];
+  unknownSenderRows: number;
+  matchedRows: number;
+}
+
 export interface ParsedThread {
   /** Inbound messages, oldest first, in the order the DOM rendered them. */
   messages: ParsedMessage[];
@@ -61,14 +74,23 @@ export interface ParseThreadOptions {
  * sender matching the Page's own name, or a row with no attributable sender at
  * all — is excluded. See `unknownSenderRows`.
  */
-export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}): ParsedThread {
+/**
+ * Every message in the transcript, each labelled with its direction.
+ *
+ * `parseMessengerThread` reports only what the customer said, which is all the
+ * live watcher needs. History reconciliation needs more: a conversation that
+ * predates the bridge contains our own replies too, and importing it without
+ * them would leave the CRM showing a customer talking to nobody. Those replies
+ * are history, not work — they are written straight into the transcript, never
+ * queued to be sent a second time.
+ */
+export function parseMessengerTranscript(html: string, opts: ParseThreadOptions = {}): ParsedTranscript {
   const root = parseHtml(html);
   const container = queryFirst(root, THREAD.messageList) ?? root;
   const rows = queryAll(container, THREAD.row);
 
   const selfName = opts.selfName?.trim().toLowerCase() || null;
-  const messages: ParsedMessage[] = [];
-  let outboundRows = 0;
+  const messages: ParsedTranscriptMessage[] = [];
   let unknownSenderRows = 0;
 
   // Messenger groups a run of consecutive messages from one person, labelling
@@ -108,7 +130,14 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
 
     if (!encoded && THREAD.selfLabelRe.test(label)) {
       runSender = { name: opts.selfName ?? '', isSelf: true };
-      outboundRows += 1;
+      const ownText = bodyOf(row, null);
+      if (ownText) {
+        messages.push({
+          externalMessageId: messageIdOf(row),
+          senderName: opts.selfName ?? '', text: ownText,
+          sentAt: timestampFrom(row, THREAD.timeAttrs), direction: 'outbound',
+        });
+      }
       continue;
     }
 
@@ -126,11 +155,6 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
     }
     runSender = sender;
 
-    if (sender.isSelf) {
-      outboundRows += 1;
-      continue;
-    }
-
     const senderName = sender.name;
     const text = encoded?.text.trim() || bodyOf(row, senderName);
     // A bubble that rendered as an attachment, a sticker or a reaction carries
@@ -139,14 +163,104 @@ export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}
     if (!text) continue;
 
     messages.push({
-      externalMessageId: MESSAGE_ID_RE.exec(row.toString())?.[0] ?? null,
+      externalMessageId: messageIdOf(row),
       senderName,
       text,
       sentAt: timestampFrom(row, THREAD.timeAttrs),
+      direction: sender.isSelf ? 'outbound' : 'inbound',
     });
   }
 
-  return { messages, outboundRows, unknownSenderRows, matchedRows: rows.length };
+  return { messages, unknownSenderRows, matchedRows: candidates.length };
+}
+
+/**
+ * What the customer said, and nothing else — the view the live watcher acts on.
+ *
+ * Kept as its own function so the inbound-only guarantee is stated in one
+ * place: an inbound-only bridge that mistakes its own reply for a customer
+ * message reports the operator's words back to them as a new enquiry.
+ */
+export function parseMessengerThread(html: string, opts: ParseThreadOptions = {}): ParsedThread {
+  const parsed = parseMessengerTranscript(html, opts);
+  const inbound = parsed.messages.filter((m) => m.direction === 'inbound');
+  return {
+    messages: inbound.map((m) => ({
+      externalMessageId: m.externalMessageId, senderName: m.senderName, text: m.text, sentAt: m.sentAt,
+    })),
+    outboundRows: parsed.messages.length - inbound.length,
+    unknownSenderRows: parsed.unknownSenderRows,
+    matchedRows: parsed.matchedRows,
+  };
+}
+
+/**
+ * Facebook's own id for this message, or null.
+ *
+ * Read from the row itself first, then from a descendant of that row, and only
+ * then by regex over the row's own markup. Every step is scoped to one row, so
+ * a neighbouring message's id can never be attributed here — which matters,
+ * because that id is the dedup key: borrowing one would make two different
+ * messages collapse into a single CRM row and lose a customer's words.
+ */
+function messageIdOf(row: El): string | null {
+  for (const attr of THREAD.messageIdAttrs) {
+    const own = row.getAttribute(attr);
+    const match = own ? MESSAGE_ID_RE.exec(own) : null;
+    if (match) return match[0];
+  }
+  for (const attr of THREAD.messageIdAttrs) {
+    for (const node of queryAll(row, [`[${attr}]`])) {
+      const value = node.getAttribute(attr);
+      const match = value ? MESSAGE_ID_RE.exec(value) : null;
+      if (match) return match[0];
+    }
+  }
+  // Last resort. Still scoped: this is the row's own outerHTML, so a sibling's
+  // id is not in it. A nested row's would be, which is why `dropNestedRows`
+  // runs before any of this.
+  return MESSAGE_ID_RE.exec(row.toString())?.[0] ?? null;
+}
+
+/**
+ * How many messages in this transcript are ours *and* say exactly this.
+ *
+ * This is the whole proof that a send worked. An emptied composer is not:
+ * Facebook clears it optimistically, so a message the server rejected looks
+ * identical to one it accepted — `apps/ig-bridge` confirmed that live on a
+ * thread being silently rate-limited.
+ *
+ * It returns a count rather than a boolean because the caller compares before
+ * and after. A customer service reply is frequently the same words twice
+ * ("baik kak", "siap"), so "our text is present" would report success the
+ * instant an earlier identical message was already on screen — including when
+ * nothing was sent at all.
+ *
+ * Reads the same aria-label shape `parseMessengerThread` reads, so "sent" means
+ * exactly what "received" means, and the same fixtures cover both.
+ */
+export function countOwnMessages(
+  html: string, opts: { text: string; selfName?: string | null },
+): number {
+  const root = parseHtml(html);
+  const container = queryFirst(root, THREAD.messageList) ?? root;
+  const selfName = opts.selfName?.trim().toLowerCase() || null;
+  const wanted = opts.text.trim();
+
+  let count = 0;
+  for (const row of dropNestedRows(queryAll(container, THREAD.row))) {
+    const label = (row.getAttribute('aria-label') ?? '').trim();
+    if (THREAD.rowChromeRe.test(label)) continue;
+
+    const encoded = fromMessageLabel(label);
+    if (encoded) {
+      if (isSelfSender(encoded.sender, selfName) && encoded.text.trim() === wanted) count += 1;
+      continue;
+    }
+    // The older shape: a row marked as ours, with the body in its text nodes.
+    if (THREAD.selfLabelRe.test(label) && bodyOf(row, null).trim() === wanted) count += 1;
+  }
+  return count;
 }
 
 /**
@@ -238,4 +352,41 @@ function bodyOf(row: El, senderName: string | null): string {
     .filter((run) => run && run !== senderName && !isTimestampish(run))
     .join('\n')
     .trim();
+}
+
+/**
+ * Which messages from a rendered transcript still need to reach the CRM.
+ *
+ * Discovery walks newest to oldest and stops at the first message the CRM
+ * already holds: everything behind it is necessarily older and therefore
+ * already stored, so reading further is wasted work. The result is then
+ * reversed, because a conversation has to arrive in the order it happened.
+ *
+ * `maxMessages` is the backstop for the other case — a thread whose known
+ * anchor has scrolled out of the rendered window entirely, where without a
+ * limit a long conversation would be re-imported wholesale.
+ *
+ * ONLY MESSAGES CARRYING A STABLE FACEBOOK ID ARE CONSIDERED. The fallback key
+ * used elsewhere includes a per-thread sequence number that the bridge hands
+ * out when it first sees a message; that number cannot be reconstructed after a
+ * restart, so using it here would not deduplicate against what the CRM already
+ * has — it would manufacture a second copy of every message on every
+ * reconciliation. Messages without an id are left to the live watcher, which
+ * does have the sequence.
+ */
+export function selectBackfill(
+  messages: ParsedTranscriptMessage[],
+  opts: { isKnown: (externalMessageId: string) => boolean; maxMessages: number },
+): ParsedTranscriptMessage[] {
+  const missing: ParsedTranscriptMessage[] = [];
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    if (!message.externalMessageId) continue;
+    if (opts.isKnown(message.externalMessageId)) break;
+    if (missing.length >= opts.maxMessages) break;
+    missing.push(message);
+  }
+
+  return missing.reverse();
 }

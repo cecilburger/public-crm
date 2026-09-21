@@ -156,6 +156,17 @@ export const THREAD = {
   avatarAlt: 'img[alt]',
 
   /**
+   * Where a message carries Facebook's own id, in preference order.
+   *
+   * Confirmed live: the row holds it twice, as `data-message-id` and as `id`,
+   * both reading `mid.$cAAAB...`. Named attributes are read before falling back
+   * to a regex over the row's markup, because the attribute states which
+   * message the id belongs to while a regex only states that an id appears
+   * somewhere inside.
+   */
+  messageIdAttrs: ['data-message-id', 'id'] as readonly string[],
+
+  /**
    * How a message actually arrives: sender and body encoded together in one
    * aria-label, with no separate node carrying either.
    *
@@ -187,6 +198,44 @@ export const THREAD = {
 
   /** Labels on controls that sit inside the transcript and are not messages. */
   rowChromeRe: /^(?:masukkan,\s*detail percakapan|enter,\s*conversation details|tindakan pesan|message actions)\b/i,
+} as const;
+
+/* ----------------------------------------------------------------- composer */
+
+export const COMPOSER = {
+  /**
+   * The message box, confirmed live:
+   *   role="textbox", contenteditable="true", data-lexical-editor="true",
+   *   aria-label="Tulis ke <name>", aria-placeholder="Aa".
+   *
+   * Keyed structurally on purpose. The aria-label is localised *and* carries
+   * the other party's name, so it identifies one conversation rather than the
+   * composer. The fallback drops only `data-lexical-editor`, for a build that
+   * stops emitting it; it still requires both the role and contenteditable, so
+   * it cannot land on a search field (those are `<input>`, not an editable div).
+   */
+  box: [
+    'div[role="textbox"][contenteditable="true"][data-lexical-editor="true"]',
+    'div[role="textbox"][contenteditable="true"]',
+  ],
+
+  /**
+   * How long to wait for the composer before concluding the thread has none.
+   *
+   * Short by design. Confirmed live: a thread still sitting as a message
+   * request renders its transcript perfectly and simply has no composer at all,
+   * so waiting longer only delays a failure that is already certain.
+   */
+  waitMs: 8_000,
+
+  /**
+   * How long to wait for a sent message to appear in the transcript.
+   *
+   * There is no Send button to watch — the only controls beside the composer
+   * are attachment, sticker, GIF, emoji and Like — so the message goes with
+   * Enter and the transcript is the only evidence it left.
+   */
+  confirmMs: 12_000,
 } as const;
 
 /* ------------------------------------------------------------------ Page comments */

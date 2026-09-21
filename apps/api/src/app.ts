@@ -184,7 +184,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // webhook (which authenticates by signature) and the public price calculator.
   const PUBLIC = new Set(['/healthz', '/readyz', '/metrics', '/v1/auth/login', '/v1/auth/refresh',
                           '/v1/webhooks/meta', '/v1/webhooks/wa-bridge', '/v1/webhooks/ig-bridge',
-                          '/v1/webhooks/fb-bridge',
+                          '/v1/webhooks/fb-bridge', '/v1/webhooks/fb-bridge/known',
                           '/v1/billing/estimate', '/v1/billing/plans', '/v1/auth/mfa/verify']);
 
   app.addHook('onRequest', async (req) => {

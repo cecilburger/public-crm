@@ -14,11 +14,19 @@
  * rather than trusting the sender.
  */
 
-/** Inbound only. There is no 'outbound' member and that is deliberate — the
- * bridge has no send path to dedupe an echo against, so a reply the operator
- * types in the real Facebook app is left out of the CRM entirely rather than
- * ingested as if the customer had sent it. */
-export type Direction = 'inbound';
+/**
+ * Which way a message went.
+ *
+ * 'outbound' is reported only while reconciling a thread's history — replies
+ * the Page already sent, long ago, which the CRM needs so a conversation does
+ * not read as a customer talking to nobody. They are stored as history and
+ * never queued to be sent again.
+ *
+ * The live watcher still reports inbound only. Echoing back a reply the CRM
+ * itself just sent would double it, and one the operator typed in the Facebook
+ * app has no send record to dedupe against.
+ */
+export type Direction = 'inbound' | 'outbound';
 
 export interface FbMessageEvent {
   event: 'message';

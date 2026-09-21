@@ -6,7 +6,10 @@ import type { FastifyInstance } from 'fastify';
 import { env, type Env } from '@kirana/core';
 import {
   withTenant, ensureMessengerBridgeChannel, getFbBridgeConnection, listFacebookComments,
-  queueOutboundMessage, type Database,
+  queueOutboundMessage, recordFacebookComment, listPendingComments, knownMessengerMessageIds,
+  claimCommentForPublicReply, markCommentPublicReplied, markCommentPublicReplyFailed,
+  claimCommentForDm, markCommentDmSent, markCommentDmFailed,
+  type Database,
 } from '@kirana/db';
 import { buildApp } from '../apps/api/src/app.ts';
 import { facebookExternalId } from '../apps/api/src/routes/webhooks.ts';
@@ -14,7 +17,9 @@ import { processInboundWebhook } from '../apps/worker/src/processors/inboundNorm
 import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
 import { facebookMessageKey } from '../apps/worker/src/processors/facebookInbound.ts';
 import { parseMessengerInbox } from '../apps/fb-bridge/src/parsers/messengerInbox.ts';
-import { parseMessengerThread } from '../apps/fb-bridge/src/parsers/messengerThread.ts';
+import {
+  parseMessengerThread, parseMessengerTranscript, countOwnMessages, selectBackfill,
+} from '../apps/fb-bridge/src/parsers/messengerThread.ts';
 import { parseFacebookComments } from '../apps/fb-bridge/src/parsers/comments.ts';
 import { compositeMessageKey } from '../apps/fb-bridge/src/events.ts';
 import { freshDb, makeTenant, TEST_KEK, type TestTenant } from './helpers/db.ts';
@@ -211,6 +216,7 @@ describe('the Messenger thread parser, on the shape the real site renders', () =
     expect(parsed.messages.map((m) => ({ sender: m.senderName, text: m.text }))).toEqual([
       { sender: 'Budi Santoso', text: 'Sis, ini masih ready?' },
       { sender: 'Budi Santoso', text: 'Yang warna hitam ada?' },
+      { sender: 'Budi Santoso', text: 'oke sip' },
     ]);
   });
 
@@ -250,7 +256,7 @@ describe('the Messenger thread parser, on the shape the real site renders', () =
     // own sequence number, so nothing downstream could collapse them again.
     const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
 
-    expect(parsed.messages).toHaveLength(2);
+    expect(parsed.messages).toHaveLength(3);
   });
 
   it('falls back to the older shape when no message labels are present', async () => {
@@ -259,6 +265,214 @@ describe('the Messenger thread parser, on the shape the real site renders', () =
     const legacy = parseMessengerThread(await fixture('messenger-thread.html'), { selfName: PAGE.name });
 
     expect(legacy.messages.length).toBeGreaterThan(0);
+  });
+});
+
+describe('confirming a message really was sent', () => {
+  // An emptied composer proves nothing: Facebook clears it optimistically, so a
+  // message the server rejected looks identical to one it accepted. The only
+  // evidence is a new bubble from us in the transcript.
+
+  it('counts a message we sent', async () => {
+    const html = await fixture('messenger-thread-live.html');
+
+    expect(countOwnMessages(html, { text: 'Halo kak, masih ada ya' })).toBe(1);
+  });
+
+  it('does not count the customer\'s messages as ours', async () => {
+    const html = await fixture('messenger-thread-live.html');
+
+    expect(countOwnMessages(html, { text: 'Sis, ini masih ready?' })).toBe(0);
+  });
+
+  it('counts a repeated reply twice, so before and after can be compared', async () => {
+    // This is why the caller compares counts instead of asking "is it there?".
+    // Customer-service replies repeat constantly — "baik kak", "siap" — and a
+    // presence check would report success off a message from last week, or off
+    // nothing having been sent at all.
+    const once = await fixture('messenger-thread-live.html');
+    const secondBubble = `
+  <div data-scope="messages_table" aria-label="Pukul 19 September 2026 14.30, Anda: Halo kak, masih ada ya">
+    <div role="button" aria-label="Masukkan, Pesan dikirim pukul 19 September 2026 14.30 oleh Anda: Halo kak, masih ada ya">
+      <span dir="auto">Halo kak, masih ada ya</span>
+    </div>
+  </div>
+`;
+    // Inserted before the transcript's own closing tag, so every existing row
+    // stays closed — consuming one would nest the new bubble inside the last
+    // message, and a nested row is deliberately dropped as a duplicate.
+    const closeAt = once.lastIndexOf('</div>');
+    const twice = once.slice(0, closeAt) + secondBubble + once.slice(closeAt);
+
+    expect(twice).not.toBe(once);
+    expect(countOwnMessages(once, { text: 'Halo kak, masih ada ya' })).toBe(1);
+    expect(countOwnMessages(twice, { text: 'Halo kak, masih ada ya' })).toBe(2);
+  });
+
+  it('reports no increase when the message never arrived', async () => {
+    // The composer-cleared-but-nothing-sent case: the transcript is unchanged,
+    // so the count is unchanged, so the send is not confirmed.
+    const html = await fixture('messenger-thread-live.html');
+    const before = countOwnMessages(html, { text: 'pesan yang tidak pernah terkirim' });
+    const after = countOwnMessages(html, { text: 'pesan yang tidak pernah terkirim' });
+
+    expect(before).toBe(0);
+    expect(after).toBe(before);
+  });
+
+  it('recognises our own message when the Page name is used instead of "Anda"', async () => {
+    const html = (await fixture('messenger-thread-live.html'))
+      .replaceAll('oleh Anda:', 'oleh Red Panda Test:')
+      .replaceAll(', Anda:', ', Red Panda Test:');
+
+    expect(countOwnMessages(html, { text: 'Halo kak, masih ada ya', selfName: 'Red Panda Test' })).toBe(1);
+  });
+
+  it('answers zero, and does not throw, on markup it cannot read', () => {
+    expect(countOwnMessages('<div>not messenger at all</div>', { text: 'apa pun' })).toBe(0);
+  });
+});
+
+describe('choosing what history still needs importing', () => {
+  const msg = (n: number, direction: 'inbound' | 'outbound' = 'inbound') => ({
+    externalMessageId: `mid.$m${n}`, senderName: direction === 'inbound' ? 'Budi' : 'Anda',
+    text: `pesan ${n}`, sentAt: null, direction,
+  });
+  const transcript = [msg(1), msg(2, 'outbound'), msg(3), msg(4), msg(5)];
+
+  it('stops at the first message the CRM already has', async () => {
+    // Everything behind a known message is necessarily older and therefore
+    // already stored; reading further is wasted work.
+    const picked = selectBackfill(transcript, {
+      isKnown: (id) => id === 'mid.$m3', maxMessages: 50,
+    });
+
+    expect(picked.map((m) => m.externalMessageId)).toEqual(['mid.$m4', 'mid.$m5']);
+  });
+
+  it('returns them oldest first, however it discovered them', async () => {
+    // Discovery runs backwards; a conversation has to arrive forwards.
+    const picked = selectBackfill(transcript, { isKnown: () => false, maxMessages: 50 });
+
+    expect(picked.map((m) => m.text)).toEqual(['pesan 1', 'pesan 2', 'pesan 3', 'pesan 4', 'pesan 5']);
+  });
+
+  it('respects the backfill limit when nothing is known yet', async () => {
+    // The backstop for a thread whose known anchor scrolled out of view: without
+    // it, a years-long conversation would be re-imported wholesale.
+    const picked = selectBackfill(transcript, { isKnown: () => false, maxMessages: 2 });
+
+    expect(picked.map((m) => m.externalMessageId)).toEqual(['mid.$m4', 'mid.$m5']);
+  });
+
+  it('imports nothing when the CRM already has the newest message', async () => {
+    const picked = selectBackfill(transcript, { isKnown: (id) => id === 'mid.$m5', maxMessages: 50 });
+
+    expect(picked).toEqual([]);
+  });
+
+  it('keeps both directions, so a thread does not read as one-sided', async () => {
+    const picked = selectBackfill(transcript, { isKnown: () => false, maxMessages: 50 });
+
+    expect(picked.map((m) => m.direction)).toEqual(['inbound', 'outbound', 'inbound', 'inbound', 'inbound']);
+  });
+
+  it('leaves messages with no Facebook id to the live watcher', async () => {
+    // The fallback key contains a sequence number the bridge hands out when it
+    // first sees a message. It cannot be reconstructed after a restart, so
+    // backfilling on it would not deduplicate — it would manufacture a second
+    // copy of every message on every reconciliation.
+    const mixed = [{ ...msg(1), externalMessageId: null }, msg(2), { ...msg(3), externalMessageId: null }];
+    const picked = selectBackfill(mixed, { isKnown: () => false, maxMessages: 50 });
+
+    expect(picked.map((m) => m.externalMessageId)).toEqual(['mid.$m2']);
+  });
+
+  it('reads a real transcript into something it can select from', async () => {
+    // The two halves join up: what the parser produces is what the selector
+    // consumes, on the markup the live site actually serves.
+    const parsed = parseMessengerTranscript(await fixture('messenger-thread-live.html'), {
+      selfName: 'Red Panda Test',
+    });
+
+    expect(parsed.messages.map((m) => m.direction))
+      .toEqual(['inbound', 'inbound', 'inbound', 'outbound']);
+
+    // Three of the four carry a Facebook id, so backfill can reconcile them.
+    // The fourth has none and is left to the live watcher, which holds the
+    // sequence its fallback key needs.
+    const eligible = selectBackfill(parsed.messages, { isKnown: () => false, maxMessages: 50 });
+    expect(eligible.map((m) => m.externalMessageId)).toEqual([
+      'mid.$cAAABsynthetic001', 'mid.$cAAABsynthetic002', 'mid.$cAAABsynthetic003',
+    ]);
+  });
+});
+
+describe('reading a message\'s Facebook id', () => {
+  // The id is the dedup key. Borrowing a neighbouring message's would collapse
+  // two different messages into one CRM row and lose a customer's words, so
+  // every lookup is scoped to the row that owns it.
+
+  it('prefers data-message-id', async () => {
+    const parsed = parseMessengerTranscript(await fixture('messenger-thread-live.html'), {
+      selfName: 'Red Panda Test',
+    });
+
+    expect(parsed.messages[0]!.externalMessageId).toBe('mid.$cAAABsynthetic001');
+  });
+
+  it('falls back to the row\'s id attribute when data-message-id is absent', async () => {
+    // The second row in the fixture carries only `id`, as some rows do live.
+    const parsed = parseMessengerTranscript(await fixture('messenger-thread-live.html'), {
+      selfName: 'Red Panda Test',
+    });
+
+    expect(parsed.messages[1]!.externalMessageId).toBe('mid.$cAAABsynthetic002');
+  });
+
+  it('reports no id for a row that carries none', async () => {
+    const parsed = parseMessengerTranscript(await fixture('messenger-thread-live.html'), {
+      selfName: 'Red Panda Test',
+    });
+
+    expect(parsed.messages[2]!.externalMessageId).toBeNull();
+  });
+
+  it('never borrows the id of a neighbouring message', async () => {
+    // The failure this guards against is silent: an id taken from the row next
+    // door makes two distinct messages share a dedup key, so the second one is
+    // dropped as a duplicate and the customer's words disappear.
+    const html = `
+      <div role="log">
+        <div data-scope="messages_table" aria-label="Pukul 19 September 2026 10.00, Budi: pesan tanpa id">
+          <span dir="auto">pesan tanpa id</span>
+        </div>
+        <div data-scope="messages_table" data-message-id="mid.$cAAABtetangga"
+             aria-label="Pukul 19 September 2026 10.01, Budi: pesan bertetangga">
+          <span dir="auto">pesan bertetangga</span>
+        </div>
+      </div>`;
+    const parsed = parseMessengerTranscript(html, { selfName: 'Red Panda Test' });
+
+    expect(parsed.messages.map((m) => m.text)).toEqual(['pesan tanpa id', 'pesan bertetangga']);
+    expect(parsed.messages[0]!.externalMessageId).toBeNull();
+    expect(parsed.messages[1]!.externalMessageId).toBe('mid.$cAAABtetangga');
+  });
+
+  it('keeps reconciliation idempotent on a realistic transcript', async () => {
+    // Two passes over the same rendered transcript: the second finds the same
+    // ids, so with the CRM already holding them nothing is selected again.
+    const html = await fixture('messenger-thread-live.html');
+    const first = selectBackfill(
+      parseMessengerTranscript(html, { selfName: 'Red Panda Test' }).messages,
+      { isKnown: () => false, maxMessages: 50 });
+    const stored = new Set(first.map((m) => m.externalMessageId!));
+    const second = selectBackfill(
+      parseMessengerTranscript(html, { selfName: 'Red Panda Test' }).messages,
+      { isKnown: (id) => stored.has(id), maxMessages: 50 });
+
+    expect(first).toHaveLength(3);
+    expect(second).toEqual([]);
   });
 });
 
@@ -427,7 +641,7 @@ describe('a Facebook event reaching the CRM', () => {
       messageEvent({ senderId: undefined }),
       messageEvent({ text: undefined }),
       messageEvent({ seq: undefined }),
-      messageEvent({ direction: 'outbound' }),
+      messageEvent({ direction: 'sideways' }),
     ]) {
       expect((await post(broken)).statusCode).toBe(400);
     }
@@ -568,6 +782,250 @@ describe('a Facebook event reaching the CRM', () => {
     expect(outbox[0]!.n).toBe(0);
   });
 
+  it('marks a reply sent once the bridge confirms delivery', async () => {
+    // The other half of the outbound contract: a confirmed send has to leave
+    // the message as 'sent' and take it out of the outbox, or the relay would
+    // deliver it a second time.
+    const conv = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ id: string }>(
+        `select c.id from conversations c
+           join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+          where c.tenant_id = $1 and ch.kind = 'messenger_bridge' limit 1`,
+        [t.tenantId]));
+    const queued = await withTenant(db, t.tenantId, (tx) =>
+      queueOutboundMessage({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        conversationId: conv[0]!.id, body: 'baik kak, saya cek dulu', senderType: 'agent',
+      }));
+
+    const never = () => { throw new Error('a Facebook reply must never reach another provider client'); };
+    await processOutbound({
+      db, kek: TEST_KEK,
+      meta: { send: never } as never,
+      waBridge: { send: never } as never,
+      igBridge: { send: never } as never,
+      fbBridge: { send: async () => {} } as never,
+      accessTokenFor: never as never,
+    }, { tenantId: t.tenantId, messageId: queued.messageId });
+
+    const after = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ status: string }>('select status from messages where tenant_id = $1 and id = $2',
+        [t.tenantId, queued.messageId]));
+    const outbox = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        'select count(*)::int as n from message_outbox where tenant_id = $1 and message_id = $2',
+        [t.tenantId, queued.messageId]));
+
+    expect(after[0]!.status).toBe('sent');
+    expect(outbox[0]!.n).toBe(0);
+  });
+
+  it('fails a reply to a thread that cannot accept one, without retrying', async () => {
+    // A message request renders its transcript and offers no composer at all.
+    // No retry will ever produce one, so the bridge answers 409 and the client
+    // marks it permanent — the message fails with the reason rather than
+    // cycling through the outbox forever.
+    const conv = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ id: string }>(
+        `select c.id from conversations c
+           join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+          where c.tenant_id = $1 and ch.kind = 'messenger_bridge' limit 1`,
+        [t.tenantId]));
+    const queued = await withTenant(db, t.tenantId, (tx) =>
+      queueOutboundMessage({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        conversationId: conv[0]!.id, body: 'halo kak', senderType: 'agent',
+      }));
+
+    const never = () => { throw new Error('a Facebook reply must never reach another provider client'); };
+    await processOutbound({
+      db, kek: TEST_KEK,
+      meta: { send: never } as never,
+      waBridge: { send: never } as never,
+      igBridge: { send: never } as never,
+      fbBridge: {
+        send: async () => {
+          const err = new Error(
+            'fb-bridge send failed: Percakapan ini belum bisa dibalas — Facebook tidak menampilkan kotak pesan',
+          ) as Error & { permanent?: boolean };
+          err.permanent = true;
+          throw err;
+        },
+      } as never,
+      accessTokenFor: never as never,
+    }, { tenantId: t.tenantId, messageId: queued.messageId });
+
+    const after = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ status: string; error: Record<string, unknown> | null }>(
+        'select status, error from messages where tenant_id = $1 and id = $2',
+        [t.tenantId, queued.messageId]));
+    const outbox = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        'select count(*)::int as n from message_outbox where tenant_id = $1 and message_id = $2',
+        [t.tenantId, queued.messageId]));
+
+    expect(after[0]!.status).toBe('failed');
+    expect(JSON.stringify(after[0]!.error)).toContain('kotak pesan');
+    expect(outbox[0]!.n).toBe(0);
+  });
+
+  it('imports a thread\'s history with each message on the right side', async () => {
+    // A conversation that predates the bridge is half ours. Importing only the
+    // customer's side leaves the CRM showing somebody talking to nobody, and an
+    // agent reading that cannot tell the question was already answered.
+    const thread = '100000000000042';
+    const history = [
+      { seq: 0, direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
+      { seq: 1, direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
+      { seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
+    ];
+    for (const m of history) {
+      const res = await post(messageEvent({ ...m, threadId: thread, senderId: thread }));
+      expect(res.statusCode).toBe(200);
+    }
+
+    const rows = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ direction: string; sender_type: string; status: string }>(
+        `select m.direction, m.sender_type, m.status from messages m
+           join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
+           join contacts ct on ct.id = c.contact_id and ct.tenant_id = m.tenant_id
+          where m.tenant_id = $1 and ct.fb_user_id_bidx is not null
+            and m.provider_message_id like 'fb_dm:%hist%'
+          order by m.provider_ts`, [t.tenantId]));
+
+    expect(rows.map((r) => r.direction)).toEqual(['inbound', 'outbound', 'inbound']);
+    // Our own historical reply is recorded as already sent by an agent.
+    expect(rows[1]).toMatchObject({ sender_type: 'agent', status: 'sent' });
+  });
+
+  it('never queues a historical outbound message to be sent again', async () => {
+    // These were sent on Facebook long ago. An outbox row would deliver them a
+    // second time, to a real person.
+    const outbox = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from message_outbox o
+           join messages m on m.id = o.message_id and m.tenant_id = o.tenant_id
+          where o.tenant_id = $1 and m.provider_message_id like 'fb_dm:%hist%'`, [t.tenantId]));
+
+    expect(outbox[0]!.n).toBe(0);
+  });
+
+  it('inserts nothing on a second reconciliation of the same history', async () => {
+    const count = () => withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from messages
+          where tenant_id = $1 and provider_message_id like 'fb_dm:%hist%'`, [t.tenantId]));
+    const before = (await count())[0]!.n;
+
+    const thread = '100000000000042';
+    for (const m of [
+      { seq: 0, direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
+      { seq: 1, direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
+      { seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
+    ]) {
+      await post(messageEvent({ ...m, threadId: thread, senderId: thread }));
+    }
+
+    expect((await count())[0]!.n).toBe(before);
+  });
+
+  it('keeps history Facebook has stopped rendering', async () => {
+    // A transcript only shows a window of a conversation. Reconciliation must
+    // never take "Facebook no longer displays it" as "it did not happen".
+    const before = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from messages
+          where tenant_id = $1 and provider_message_id like 'fb_dm:%hist%'`, [t.tenantId]));
+
+    // A later sweep sees only the newest message of that thread.
+    await post(messageEvent({
+      seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003',
+      threadId: '100000000000042', senderId: '100000000000042',
+    }));
+
+    const after = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from messages
+          where tenant_id = $1 and provider_message_id like 'fb_dm:%hist%'`, [t.tenantId]));
+
+    expect(after[0]!.n).toBe(before[0]!.n);
+    expect(after[0]!.n).toBe(3);
+  });
+
+  it('tells the bridge which message ids it already holds', async () => {
+    // This is what makes Postgres the source of truth for reconciliation: a
+    // backfill walks a thread newest-first and stops at the first id named here.
+    const channel = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ id: string }>(
+        `select id from channels where tenant_id = $1 and kind = 'messenger_bridge' limit 1`, [t.tenantId]));
+
+    const known = await withTenant(db, t.tenantId, (tx) =>
+      knownMessengerMessageIds({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        channelId: channel[0]!.id,
+        providerMessageIds: [
+          `fb_dm:${t.tenantId}:mid.$hist002`,
+          `fb_dm:${t.tenantId}:mid.$neverSeen`,
+        ],
+      }));
+
+    expect(known.has(`fb_dm:${t.tenantId}:mid.$hist002`)).toBe(true);
+    expect(known.has(`fb_dm:${t.tenantId}:mid.$neverSeen`)).toBe(false);
+  });
+
+  it('keeps the fallback id stable across reconciliation', async () => {
+    // A message with no Facebook id of its own still has to land on the same
+    // row every time the thread is re-read, or each sweep would add a copy.
+    const base = {
+      threadId: '100000000000043', senderId: '100000000000043',
+      externalMessageId: null, text: 'tanpa id', seq: 0, direction: 'inbound',
+    };
+    await post(messageEvent(base));
+    await post(messageEvent(base));
+    await post(messageEvent(base));
+
+    const rows = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from messages m
+           join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
+           join contacts ct on ct.id = c.contact_id and ct.tenant_id = m.tenant_id
+          where m.tenant_id = $1 and ct.fb_user_id_bidx is not null`, [t.tenantId]));
+
+    // Three identical reconciliations, one row.
+    expect(rows[0]!.n).toBeGreaterThan(0);
+    const again = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        `select count(*)::int as n from messages where tenant_id = $1
+           and provider_message_id = $2`,
+        [t.tenantId, null]));
+    expect(again[0]!.n).toBe(0);
+  });
+
+  it('tells the bridge which ids it holds, over the read endpoint', async () => {
+    // The bridge reconciles against this rather than a file of its own, so a
+    // restore or redeploy on either side cannot leave the two disagreeing.
+    const res = await app.inject({
+      method: 'POST', url: '/v1/webhooks/fb-bridge/known',
+      headers: { authorization: `Bearer ${e.FB_BRIDGE_SECRET}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        tenantId: t.tenantId,
+        externalIds: [`fb_dm:${t.tenantId}:mid.$hist002`, `fb_dm:${t.tenantId}:mid.$neverSeen`],
+      }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { known: string[] };
+    expect(body.known).toContain(`fb_dm:${t.tenantId}:mid.$hist002`);
+    expect(body.known).not.toContain(`fb_dm:${t.tenantId}:mid.$neverSeen`);
+  });
+
+  it('refuses the read endpoint without the shared secret', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/v1/webhooks/fb-bridge/known',
+      headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' },
+      payload: JSON.stringify({ tenantId: t.tenantId, externalIds: [] }),
+    });
+
+    expect(res.statusCode).toBe(401);
+  });
+
   it('stores a comment without opening a conversation for it', async () => {
     const conversationsBefore = await withTenant(db, t.tenantId, (tx) =>
       tx.query<{ n: number }>('select count(*)::int as n from conversations where tenant_id = $1', [t.tenantId]));
@@ -639,5 +1097,191 @@ describe('a Facebook event reaching the CRM', () => {
     expect(connection.status).toBe('checkpoint_required');
     expect(connection.lastError).toContain('verifikasi manual');
     expect(channel[0]!.status).toBe('error');
+  });
+});
+
+/* ------------------------------------------- comment processing state machine */
+
+describe('a comment being worked on', () => {
+  let db: Database;
+  let t: TestTenant;
+  let seq = 0;
+
+  beforeAll(async () => {
+    db = await freshDb();
+    t = await makeTenant(db, 'fbcomment');
+  });
+  afterAll(async () => { await db.close(); });
+
+  /** A fresh comment, so each test starts from 'new' without touching another. */
+  const given = async (over: Record<string, unknown> = {}) => {
+    seq += 1;
+    const commentId = `9000000000${seq}`;
+    const row = await withTenant(db, t.tenantId, (tx) =>
+      recordFacebookComment({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        pageId: PAGE.id, pageName: PAGE.name, postId: '998877665544', commentId,
+        authorExternalId: `10000000000${seq}`, authorName: 'Budi Santoso',
+        body: 'mau tau jasa ini gimana?', commentedAt: new Date(1789000000_000 + seq), ...over,
+      }));
+    return row.id;
+  };
+
+  const pending = (args: Record<string, unknown> = {}) => withTenant(db, t.tenantId, (tx) =>
+    listPendingComments({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { limit: 100, ...args }));
+
+  const statusOf = async (id: string) => {
+    const rows = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ status: string; public_reply_error: string | null; dm_error: string | null; attempts: number }>(
+        'select status, public_reply_error, dm_error, attempts from facebook_comments where tenant_id = $1 and id = $2',
+        [t.tenantId, id]));
+    return rows[0]!;
+  };
+
+  it('offers a newly stored comment as work', async () => {
+    const id = await given();
+    const work = await pending();
+
+    expect(work.map((c) => c.id)).toContain(id);
+    expect(work.find((c) => c.id === id)).toMatchObject({ status: 'new', attempts: 0 });
+  });
+
+  it('lets exactly one worker claim a comment for a public reply', async () => {
+    // The whole point of the guard: a retry, a second sweep or a restarted
+    // bridge must not reply twice on a real customer's post.
+    const id = await given();
+
+    const first = await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    const second = await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect((await statusOf(id)).attempts).toBe(1);
+  });
+
+  it('records a public reply and will not reply to it again', async () => {
+    const id = await given();
+    await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    await withTenant(db, t.tenantId, (tx) =>
+      markCommentPublicReplied({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+
+    expect((await statusOf(id)).status).toBe('public_replied');
+    // Claiming for a reply only ever moves a comment out of 'new'.
+    const again = await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    expect(again).toBe(false);
+  });
+
+  it('keeps the public reply when the private message is unavailable', async () => {
+    // Facebook offers a private reply to a commenter once, inside a window.
+    // "Not available" is an ordinary outcome, and it must not erase the fact
+    // that the customer did get a public answer.
+    const id = await given();
+    for (const step of [claimCommentForPublicReply, markCommentPublicReplied, claimCommentForDm]) {
+      await withTenant(db, t.tenantId, (tx) => step({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    }
+    await withTenant(db, t.tenantId, (tx) =>
+      markCommentDmFailed({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        id, reason: 'Facebook tidak menawarkan private reply untuk komentar ini',
+      }));
+
+    const after = await statusOf(id);
+    expect(after.status).toBe('public_replied');
+    expect(after.dm_error).toContain('private reply');
+    // Terminal: a comment whose DM already failed is not offered again.
+    expect((await pending()).map((c) => c.id)).not.toContain(id);
+  });
+
+  it('marks dm_sent only after a claim, never straight from public_replied', async () => {
+    const id = await given();
+    for (const step of [claimCommentForPublicReply, markCommentPublicReplied]) {
+      await withTenant(db, t.tenantId, (tx) => step({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    }
+
+    const tooEarly = await withTenant(db, t.tenantId, (tx) =>
+      markCommentDmSent({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    expect(tooEarly).toBe(false);
+
+    await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForDm({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    const sent = await withTenant(db, t.tenantId, (tx) =>
+      markCommentDmSent({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+
+    expect(sent).toBe(true);
+    expect((await statusOf(id)).status).toBe('dm_sent');
+    expect((await pending()).map((c) => c.id)).not.toContain(id);
+  });
+
+  it('lets exactly one worker claim a comment for the private message', async () => {
+    const id = await given();
+    for (const step of [claimCommentForPublicReply, markCommentPublicReplied]) {
+      await withTenant(db, t.tenantId, (tx) => step({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    }
+
+    const first = await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForDm({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    const second = await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForDm({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+  });
+
+  it('a failed public reply is terminal', async () => {
+    const id = await given();
+    await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+    await withTenant(db, t.tenantId, (tx) =>
+      markCommentPublicReplyFailed({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        id, reason: 'tombol balas tidak ditemukan',
+      }));
+
+    const after = await statusOf(id);
+    expect(after.status).toBe('failed');
+    expect(after.public_reply_error).toContain('tombol balas');
+    expect((await pending()).map((c) => c.id)).not.toContain(id);
+  });
+
+  it('holds a comment back until its cooldown has passed', async () => {
+    // Pacing is read off the row, not an in-process timer, so a bridge that
+    // restarts every few minutes cannot reset its own pacing and burst.
+    const id = await given();
+    await withTenant(db, t.tenantId, (tx) =>
+      claimCommentForPublicReply({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { id }));
+
+    const held = await pending({ cooldownMs: 60_000 });
+    expect(held.map((c) => c.id)).not.toContain(id);
+
+    const released = await pending({ cooldownMs: 0 });
+    expect(released.map((c) => c.id)).toContain(id);
+  });
+
+  it('gives up on a comment that keeps failing', async () => {
+    const id = await given();
+    for (let i = 0; i < 3; i += 1) {
+      await withTenant(db, t.tenantId, (tx) =>
+        tx.query('update facebook_comments set attempts = attempts + 1 where tenant_id = $1 and id = $2',
+          [t.tenantId, id]));
+    }
+
+    expect((await pending({ maxAttempts: 3 })).map((c) => c.id)).not.toContain(id);
+  });
+
+  it('never offers the same comment twice, however often it is re-read', async () => {
+    // A reconciliation sweep re-reads every comment still on the post. The
+    // unique index absorbs the re-insert; this checks the work list does too.
+    const id = await given();
+    for (let i = 0; i < 3; i += 1) {
+      await withTenant(db, t.tenantId, (tx) =>
+        recordFacebookComment({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+          pageId: PAGE.id, postId: '998877665544', commentId: `9000000000${seq}`,
+          authorName: 'Budi Santoso', body: 'mau tau jasa ini gimana?',
+        }));
+    }
+
+    const work = await pending();
+    expect(work.filter((c) => c.id === id)).toHaveLength(1);
   });
 });
