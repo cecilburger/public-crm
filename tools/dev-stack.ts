@@ -38,6 +38,7 @@ import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from '../apps
 import { GraphMetaClient } from '../apps/worker/src/meta.ts';
 import { WaBridgeClient } from '../apps/worker/src/waBridge.ts';
 import { IgBridgeClient } from '../apps/worker/src/igBridgeClient.ts';
+import { FbBridgeClient } from '../apps/worker/src/fbBridgeClient.ts';
 
 process.env.NODE_ENV ??= 'development';
 process.env.LOG_LEVEL ??= 'warn';
@@ -718,6 +719,7 @@ const accessTokenFor = async (tid: string, channelId: string): Promise<string> =
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
 const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
 const igBridge = new IgBridgeClient(e.IG_BRIDGE_URL, e.IG_BRIDGE_SECRET);
+const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
@@ -757,7 +759,7 @@ const app = buildApp({
       }).catch(() => null);
 
       if (channelKind === 'whatsapp_web' || channelKind === 'instagram_bridge') {
-        await processOutbound({ db, kek, meta, waBridge, igBridge, accessTokenFor }, job)
+        await processOutbound({ db, kek, meta, waBridge, igBridge, fbBridge, accessTokenFor }, job)
           .catch((err) => console.error('[dev-stack] outbound send failed:', (err as Error).message));
       }
     }

@@ -38,6 +38,18 @@ export class SessionExpiredError extends Error {}
 export class CheckpointRequiredError extends Error {}
 /** Nothing is connected for this tenant at all. */
 export class NoActiveSessionError extends Error {}
+/**
+ * The send path exists as a contract but cannot run yet.
+ *
+ * Driving Messenger's composer needs selectors read off the real site, and
+ * every selector guessed for this bridge so far has been wrong — four out of
+ * four. A guessed composer is worse than no composer: a failed *read* delivers
+ * nothing, while a failed *send* leaves an agent believing they answered a
+ * customer. So the capability gate lives here, at the only place that would
+ * actually do the sending, rather than in a flag somewhere upstream that could
+ * be flipped by accident.
+ */
+export class SenderNotImplementedError extends Error {}
 
 export type SessionStatus = 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
 
@@ -456,6 +468,26 @@ export class SessionManager {
   /** Disconnects a tenant and deletes their profile — the only way the stored
    * session is destroyed, and the reason "disconnect" in the CRM really does
    * revoke this bridge's access rather than just hiding it. */
+  /**
+   * Sends a message in a thread — once there is a verified way to drive the
+   * composer.
+   *
+   * The shape is settled deliberately, so the rest of the chain (the HTTP
+   * route, `FbBridgeClient`, the `messenger_bridge` branch in `processOutbound`)
+   * is real code exercised end to end today. What is missing is only the DOM
+   * work, and it lands here: resolve a page for the tenant, drive the composer,
+   * and — the part `apps/ig-bridge` learned the hard way — refuse to report
+   * success until the message is visible as a new bubble from our own account.
+   * An emptied composer is not proof: Facebook clears it optimistically even
+   * when the server rejected the message.
+   */
+  async sendMessage(tenantId: string, threadId: string, text: string): Promise<void> {
+    void tenantId; void threadId; void text;
+    throw new SenderNotImplementedError(
+      'Balasan Facebook belum tersedia — selector composer belum diverifikasi ke DOM Messenger asli',
+    );
+  }
+
   async logout(tenantId: string): Promise<void> {
     const loginWindow = this.loginWindows.get(tenantId);
     if (loginWindow) {

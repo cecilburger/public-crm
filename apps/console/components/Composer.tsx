@@ -22,8 +22,15 @@ function SendButton({ windowOpen }: { windowOpen: boolean }) {
  * comes from WhatsApp, so nobody blames the tool for it.
  */
 export function Composer({
-  conversationId, windowOpen, customerName, quickReplies = [],
-}: { conversationId: string; windowOpen: boolean; customerName: string; quickReplies?: QuickReply[] }) {
+  conversationId, windowOpen, customerName, quickReplies = [], disabledReason,
+}: {
+  conversationId: string; windowOpen: boolean; customerName: string; quickReplies?: QuickReply[];
+  /** Set on a channel that cannot send. The reply box is replaced by this
+   * sentence rather than left there to accept a message nothing can deliver —
+   * an agent who types into a dead composer believes they answered the
+   * customer. Channels that can send pass nothing and are unaffected. */
+  disabledReason?: string;
+}) {
   const [state, action] = useActionState<ActionResult | null, FormData>(sendMessage, null);
   const ref = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -63,6 +70,15 @@ export function Composer({
     el.setSelectionRange(caret, caret);
   }
 
+  // After every hook above, so the hook order never changes between renders.
+  if (disabledReason) {
+    return (
+      <div className="notice" style={{ margin: 12 }}>
+        <span className="notice-icon">i</span>
+        <span>{disabledReason}</span>
+      </div>
+    );
+  }
   return (
     <form className="composer" action={action} ref={ref}>
       <CsrfField />

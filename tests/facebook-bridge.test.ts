@@ -6,11 +6,12 @@ import type { FastifyInstance } from 'fastify';
 import { env, type Env } from '@kirana/core';
 import {
   withTenant, ensureMessengerBridgeChannel, getFbBridgeConnection, listFacebookComments,
-  type Database,
+  queueOutboundMessage, type Database,
 } from '@kirana/db';
 import { buildApp } from '../apps/api/src/app.ts';
 import { facebookExternalId } from '../apps/api/src/routes/webhooks.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
+import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
 import { facebookMessageKey } from '../apps/worker/src/processors/facebookInbound.ts';
 import { parseMessengerInbox } from '../apps/fb-bridge/src/parsers/messengerInbox.ts';
 import { parseMessengerThread } from '../apps/fb-bridge/src/parsers/messengerThread.ts';
@@ -498,6 +499,72 @@ describe('a Facebook event reaching the CRM', () => {
     const outbox = await withTenant(db, t.tenantId, (tx) =>
       tx.query<{ n: number }>('select count(*)::int as n from message_outbox where tenant_id = $1', [t.tenantId]));
 
+    expect(outbox[0]!.n).toBe(0);
+  });
+
+  it('fails a reply instead of leaving it queued forever', async () => {
+    // The bridge cannot send, so a reply has nothing to deliver it. Falling
+    // through reached the Meta Graph sender — the one thing this channel exists
+    // to avoid — and the message simply stayed at 'queued'. Confirmed live: an
+    // agent typed a reply to a real customer, saw it sitting in the thread, and
+    // it had never left the CRM. A queued message reads as sent; a failed one
+    // with a reason does not.
+    const conv = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ id: string }>(
+        `select c.id from conversations c
+           join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+          where c.tenant_id = $1 and ch.kind = 'messenger_bridge' limit 1`,
+        [t.tenantId]));
+    expect(conv[0]).toBeDefined();
+
+    const queued = await withTenant(db, t.tenantId, (tx) =>
+      queueOutboundMessage({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        conversationId: conv[0]!.id, body: 'berapa mas?', senderType: 'agent',
+      }));
+
+    // Every other provider client throws: a Facebook reply reaching one of them
+    // would itself be the bug, so the test fails loudly rather than quietly
+    // sending down the wrong channel.
+    const never = () => { throw new Error('a Facebook reply must never reach another provider client'); };
+    // The Facebook client stands in for a bridge that has no sender yet, which
+    // is what it really answers today (501 → permanent).
+    let sentThreadId: string | null = null;
+    const fbBridge = {
+      send: async (args: { threadId: string }) => {
+        sentThreadId = args.threadId;
+        const err = new Error(
+          'fb-bridge send failed: Balasan Facebook belum tersedia — selector composer belum diverifikasi',
+        ) as Error & { permanent?: boolean };
+        err.permanent = true;
+        throw err;
+      },
+    };
+    await processOutbound({
+      db, kek: TEST_KEK,
+      meta: { send: never } as never,
+      waBridge: { send: never } as never,
+      igBridge: { send: never } as never,
+      fbBridge: fbBridge as never,
+      accessTokenFor: never as never,
+    }, { tenantId: t.tenantId, messageId: queued.messageId });
+
+    // The real chain ran: the thread id was unsealed off the contact and handed
+    // to the client. Only the delivery itself is missing.
+    expect(sentThreadId).toBe('100000000000001');
+
+    const after = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ status: string; error: Record<string, unknown> | null }>(
+        'select status, error from messages where tenant_id = $1 and id = $2',
+        [t.tenantId, queued.messageId]));
+    const outbox = await withTenant(db, t.tenantId, (tx) =>
+      tx.query<{ n: number }>(
+        'select count(*)::int as n from message_outbox where tenant_id = $1 and message_id = $2',
+        [t.tenantId, queued.messageId]));
+
+    expect(after[0]!.status).toBe('failed');
+    expect(JSON.stringify(after[0]!.error)).toContain('belum tersedia');
+    // Left in the outbox it would be retried forever against a sender that
+    // cannot exist yet.
     expect(outbox[0]!.n).toBe(0);
   });
 

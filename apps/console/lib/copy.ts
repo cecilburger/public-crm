@@ -564,6 +564,7 @@ export const t = {
     sectionTitle: 'Facebook Messenger & Komentar (Tidak Resmi)',
     subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Hanya menerima pesan masuk — tidak bisa membalas dari sini.',
     inboundOnly: 'Hanya pesan masuk. Balasan, pemindahan ke WhatsApp, dan chatbot belum tersedia untuk Facebook.',
+    replyUnavailable: 'Balasan Facebook belum tersedia. Pesan masuk tetap tercatat di sini, tapi jawabannya harus dikirim lewat Facebook langsung untuk sekarang.',
     pageId: 'ID Halaman',
     pageIdPlaceholder: 'mis. 61594393176093',
     pageIdHint: 'Angka di URL Halaman Anda. Buka Halaman di Facebook, lihat bagian profile.php?id=… atau Pengaturan Halaman.',

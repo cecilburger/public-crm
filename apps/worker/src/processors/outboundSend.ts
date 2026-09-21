@@ -6,6 +6,7 @@ import {
 import type { MetaClient } from '../meta.ts';
 import type { WaBridgeClient } from '../waBridge.ts';
 import type { IgBridgeClient } from '../igBridgeClient.ts';
+import type { FbBridgeClient } from '../fbBridgeClient.ts';
 
 const IG_GRAPH_URL = 'https://graph.instagram.com';
 
@@ -15,6 +16,7 @@ export interface SendDeps {
   meta: MetaClient;
   waBridge: WaBridgeClient;
   igBridge: IgBridgeClient;
+  fbBridge: FbBridgeClient;
   accessTokenFor: (tenantId: string, channelId: string) => Promise<string>;
 }
 
@@ -32,11 +34,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
-      ig_psid_enc: string | null; ig_thread_id_enc: string | null;
+      ig_psid_enc: string | null; ig_thread_id_enc: string | null; fb_thread_id_enc: string | null;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
               c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id,
-              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc
+              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.fb_thread_id_enc
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
@@ -106,6 +108,41 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       }
       try {
         await deps.igBridge.send({ tenantId: job.tenantId, threadId, body });
+        await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
+          [job.tenantId, job.messageId]);
+        await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
+          [job.tenantId, job.messageId]);
+        return { status: 'sent' };
+      } catch (err) {
+        if ((err as { permanent?: boolean }).permanent === true) {
+          await markFailed(tx, job, (err as Error).message.slice(0, 500));
+          return { status: 'failed' };
+        }
+        await scheduleRetry(tx, job, err as Error);
+        throw err;
+      }
+    }
+
+    // Facebook. The whole chain below is real — thread id, client, the success
+    // and failure handling — and it is exercised end to end today. What it
+    // reaches is a bridge that answers 501, because driving Messenger's composer
+    // needs selectors read off the live site and every selector guessed for this
+    // bridge so far has been wrong. The client turns that into a permanent
+    // failure, so the message is marked failed with the bridge's own reason
+    // rather than sitting at 'queued' looking sent — which is exactly what
+    // happened to a real agent replying to a real customer.
+    //
+    // It sits above the phone lookup because a Facebook contact is identified by
+    // a Facebook id and has no phone number at all; the generic
+    // 'channel_unavailable' failure fired first and buried the real reason.
+    if (msg.channel_kind === 'messenger_bridge') {
+      const threadId = msg.fb_thread_id_enc ? openField(keys, job.tenantId, msg.fb_thread_id_enc) : null;
+      if (!threadId) {
+        await markFailed(tx, job, 'Percakapan Facebook ini belum punya thread id — tidak bisa dibalas');
+        return { status: 'failed' };
+      }
+      try {
+        await deps.fbBridge.send({ tenantId: job.tenantId, threadId, body });
         await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
           [job.tenantId, job.messageId]);
         await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',

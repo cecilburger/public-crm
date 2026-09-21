@@ -92,6 +92,9 @@ export interface ConversationDetail {
   conversation: {
     id: string; status: string; assignee_id: string | null; contact_id: string;
     channel_id: string; last_inbound_at: string | null; autopilot_mode: string;
+    /** Which channel this thread is on. The reply box is hidden for one that
+     * cannot send — see `Composer`'s `disabledReason`. */
+    channel_kind: string;
     serviceWindowOpen: boolean;
   };
   contact: { displayName: string | null; phone: string | null; tags: string[] };

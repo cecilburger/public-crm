@@ -1,6 +1,6 @@
 import path from 'node:path';
 import Fastify from 'fastify';
-import { SessionManager } from './sessionManager.ts';
+import { NoActiveSessionError, SenderNotImplementedError, SessionManager } from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
 import type { FbBridgeEvent } from './events.ts';
@@ -134,6 +134,34 @@ app.post<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/sweep-c
     return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
   }
 });
+
+/**
+ * Sends a reply in a thread.
+ *
+ * Answers 501 while the composer selectors are unverified, and says why in the
+ * body. That status is deliberate: the CRM treats it as permanent and fails the
+ * message with the reason attached, so an agent sees "not available yet" rather
+ * than a reply that sits queued looking sent. When the sender lands, nothing
+ * upstream changes — this route simply stops answering 501.
+ */
+app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string } }>(
+  '/internal/sessions/:tenantId/threads/:threadId/send', async (req, reply) => {
+    const text = req.body?.text;
+    if (!text) return reply.status(400).send({ error: 'text is required' });
+    try {
+      await sessions.sendMessage(req.params.tenantId, req.params.threadId, text);
+      return reply.send({ sent: true });
+    } catch (err) {
+      if (err instanceof SenderNotImplementedError) {
+        return reply.status(501).send({ error: err.message, code: 'sender_not_implemented' });
+      }
+      if (err instanceof NoActiveSessionError) {
+        return reply.status(404).send({ error: err.message });
+      }
+      app.log.warn({ err, tenantId: req.params.tenantId }, 'fb-bridge send failed');
+      return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal mengirim pesan Facebook' });
+    }
+  });
 
 /** Deletes the stored Chromium profile. This is what makes "disconnect" in the
  * CRM actually revoke the session rather than just hide it. */
