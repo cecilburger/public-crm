@@ -211,6 +211,32 @@ export interface Contact {
   clientStatus: 'on_progress' | 'deal';
 }
 
+export interface DashboardSummary {
+  totalClients: number;
+  newClientsThisWeek: number;
+  unansweredCount: number;
+  salesThisMonthMicros: string;
+  salesLastMonthMicros: string;
+  avgReplySeconds: number | null;
+  daily: { date: string; count: number }[];
+  channels: { kind: string; count: number }[];
+  pipeline: { stageName: string; isWon: boolean; amountMicros: string }[];
+  recentContacts: {
+    id: string; displayName: string | null; phone: string | null; tags: string[]; lastSeenAt: string;
+  }[];
+}
+
+export interface AgentPerformanceSummary {
+  activeAgents: number;
+  handledToday: number;
+  avgReplySeconds: number | null;
+  resolutionPct: number | null;
+  agents: {
+    userId: string; name: string; handled: number; waiting: number;
+    avgReplySeconds: number | null; resolved: number;
+  }[];
+}
+
 export interface ContactDetail {
   id: string;
   displayName: string | null;

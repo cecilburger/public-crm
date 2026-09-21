@@ -1,78 +1,79 @@
+import { api, type DashboardSummary } from '@/lib/api';
 import { t } from '@/lib/copy';
-import { rp, initials } from '@/lib/format';
+import { rp, initials, ago } from '@/lib/format';
 import { StatTile, BarList, type BarItem } from '@/components/DashboardWidgets';
 
-// Everything on this page is placeholder data — there is no live query here.
-// It exists so the shell of a dashboard (layout, stat tiles, ranked charts,
-// a recent-activity table) has somewhere to live before it's wired to
-// real aggregates.
-const DAILY: BarItem[] = [
-  { label: t.dashboard.days[0], value: 18 },
-  { label: t.dashboard.days[1], value: 24 },
-  { label: t.dashboard.days[2], value: 31 },
-  { label: t.dashboard.days[3], value: 27 },
-  { label: t.dashboard.days[4], value: 35 },
-  { label: t.dashboard.days[5], value: 19 },
-  { label: t.dashboard.days[6], value: 12 },
-];
+export const dynamic = 'force-dynamic';
 
-const CHANNELS: BarItem[] = [
-  { label: t.channels.whatsapp, value: 86 },
-  { label: t.channels.instagram, value: 22 },
-  { label: t.channels.whatsapp_web, value: 14 },
-  { label: t.channels.email, value: 6 },
-];
+const toIdr = (micros: string) => Number(micros) / 1_000_000;
 
-const PIPELINE: BarItem[] = [
-  { label: 'Baru', value: 3_150_000, display: rp(3_150_000) },
-  { label: 'Berminat', value: 1_440_000, display: rp(1_440_000) },
-  { label: 'Penawaran', value: 12_400_000, display: rp(12_400_000) },
-  { label: 'Nego', value: 24_900_000, display: rp(24_900_000) },
-  { label: 'Berhasil', value: 2_880_000, display: rp(2_880_000), tone: 'good' },
-];
+const pctDelta = (current: number, previous: number): { label: string; direction: 'up' | 'down' } | null => {
+  if (previous <= 0) return null;
+  const pct = Math.round(((current - previous) / previous) * 100);
+  if (pct === 0) return null;
+  return { label: `${pct > 0 ? '+' : ''}${pct}% dari bulan lalu`, direction: pct >= 0 ? 'up' : 'down' };
+};
 
-const RECENT = [
-  { name: 'Bu Sari', phone: '+628123456789', tags: ['vip', 'customer'], when: '4m' },
-  { name: 'Pak Hendra', phone: '+6281298765432', tags: ['korporat', 'customer'], when: '22m' },
-  { name: 'Dinda Wardani', phone: '+6285712345678', tags: ['reseller', 'customer'], when: '2h' },
-  { name: 'Toko Melati', phone: '+6281377788899', tags: ['grosir', 'customer'], when: '5h' },
-  { name: 'Bu Ratna', phone: '+6287811223344', tags: ['baru', 'customer'], when: '1d' },
-];
+const replyTimeLabel = (seconds: number | null): string => {
+  if (seconds === null) return '—';
+  const minutes = Math.round(seconds / 60);
+  return minutes < 1 ? '<1 menit' : `${minutes} menit`;
+};
 
-export const dynamic = 'force-static';
+export default async function DashboardPage() {
+  const summary = await api<DashboardSummary>('/v1/dashboard/summary');
 
-export default function DashboardPage() {
+  const daily: BarItem[] = summary.daily.map((d) => ({
+    label: t.dashboard.days[(new Date(`${d.date}T00:00:00`).getDay() + 6) % 7],
+    value: d.count,
+  }));
+
+  const channels: BarItem[] = summary.channels.map((c) => ({
+    label: t.channels[c.kind] ?? c.kind,
+    value: c.count,
+  }));
+
+  const pipeline: BarItem[] = summary.pipeline.map((s) => ({
+    label: s.stageName, value: toIdr(s.amountMicros), display: rp(toIdr(s.amountMicros)),
+    tone: s.isWon ? 'good' : undefined,
+  }));
+
+  const salesDelta = pctDelta(toIdr(summary.salesThisMonthMicros), toIdr(summary.salesLastMonthMicros));
+
   return (
     <>
       <div className="topbar">
         <div>
           <h1>{t.dashboard.title}</h1>
-          <p className="subtitle">{t.dashboard.subtitle}</p>
+          <p className="subtitle">Ringkasan toko Anda.</p>
         </div>
         <span className="spacer" />
-        <span className="chip">{t.dashboard.dummyNote}</span>
       </div>
 
       <div className="scroll pad stack">
         <div className="grid c4">
-          <StatTile label={t.dashboard.statClients} value="128" delta={t.dashboard.statClientsDelta} direction="up" />
-          <StatTile label={t.dashboard.statUnanswered} value="7" delta={t.dashboard.statUnansweredDelta} direction="down" />
-          <StatTile label={t.dashboard.statSales} value={rp(42_500_000)} delta={t.dashboard.statSalesDelta} direction="up" />
-          <StatTile label={t.dashboard.statReplyTime} value="6 menit" delta={t.dashboard.statReplyTimeDelta} direction="down" />
+          <StatTile label={t.dashboard.statClients} value={String(summary.totalClients)}
+                    delta={`+${summary.newClientsThisWeek} minggu ini`} direction="up" />
+          <StatTile label={t.dashboard.statUnanswered} value={String(summary.unansweredCount)} />
+          <StatTile label={t.dashboard.statSales} value={rp(toIdr(summary.salesThisMonthMicros))}
+                    delta={salesDelta?.label} direction={salesDelta?.direction} />
+          <StatTile label={t.dashboard.statReplyTime} value={replyTimeLabel(summary.avgReplySeconds)} />
         </div>
 
         <div className="grid c3">
           <div className="panel">
             <header><h2>{t.dashboard.panelDaily}</h2></header>
-            <div className="body"><BarList items={DAILY} /></div>
+            <div className="body"><BarList items={daily} /></div>
           </div>
           <div className="panel">
             <header><h2>{t.dashboard.panelChannels}</h2></header>
-            <div className="body"><BarList items={CHANNELS} /></div>
+            <div className="body">
+              {channels.length > 0 ? <BarList items={channels} /> : <p className="dim">Belum ada pesan.</p>}
+            </div>
           </div>
           <div className="panel">
             <header><h2>{t.dashboard.panelPipeline}</h2></header>
-            <div className="body"><BarList items={PIPELINE} /></div>
+            <div className="body"><BarList items={pipeline} /></div>
           </div>
         </div>
 
@@ -88,21 +89,24 @@ export default function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {RECENT.map((c) => (
-                <tr key={c.phone}>
+              {summary.recentContacts.length === 0 && (
+                <tr><td colSpan={4} className="dim">Belum ada client.</td></tr>
+              )}
+              {summary.recentContacts.map((c) => (
+                <tr key={c.id}>
                   <td>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                      <span className="avatar" aria-hidden>{initials(c.name)}</span>
-                      <b>{c.name}</b>
+                      <span className="avatar" aria-hidden>{initials(c.displayName ?? '?')}</span>
+                      <b>{c.displayName ?? '(tanpa nama)'}</b>
                     </span>
                   </td>
-                  <td className="mono">{c.phone}</td>
+                  <td className="mono">{c.phone ?? '—'}</td>
                   <td>
                     <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {c.tags.map((tag) => <span key={tag} className="chip">{tag}</span>)}
                     </span>
                   </td>
-                  <td className="num">{c.when}</td>
+                  <td className="num">{ago(c.lastSeenAt)}</td>
                 </tr>
               ))}
             </tbody>

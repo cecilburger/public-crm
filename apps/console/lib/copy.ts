@@ -941,25 +941,20 @@ export const t = {
 
   agentPerformance: {
     title: 'Performa Agen',
-    subtitle: 'Ringkasan kinerja tim membalas chat. Data contoh — belum tersambung ke angka asli.',
-    dummyNote: 'Data contoh',
+    subtitle: 'Ringkasan kinerja tim membalas chat.',
 
     statActive: 'Agen Aktif',
-    statActiveDelta: 'sedang online',
     statAvgReply: 'Rata-rata Waktu Balas',
-    statAvgReplyDelta: '-1 menit dari kemarin',
     statHandled: 'Obrolan Ditangani Hari Ini',
-    statHandledDelta: '+9 dari kemarin',
     statResolution: 'Tingkat Penyelesaian',
-    statResolutionDelta: '+3% dari minggu lalu',
 
     panelHandled: 'Obrolan Ditangani per Agen',
     panelResolution: 'Tingkat Penyelesaian per Agen',
     panelRings: 'Ringkasan Performa Tim',
-    panelRingsNote: 'Tiap garis mewakili satu ukuran, dihitung dari pencapaian terhadap target.',
-    ringChat: 'Chat',
-    ringRespon: 'Respon',
-    ringSpeed: 'Speed',
+    panelRingsNote: 'Tiap garis satu ukuran nyata: obrolan terjawab, tingkat selesai, dan kecepatan balas.',
+    ringChat: 'Terjawab',
+    ringRespon: 'Selesai',
+    ringSpeed: 'Kecepatan',
     panelRingsPerAgent: 'Skor Performa per Agen',
     panelRingsPerAgentNote: 'Sama seperti di atas, dipecah per agen. Angka di tengah adalah rata-rata ketiga ukuran.',
     ringScoreLabel: 'Skor',
@@ -970,7 +965,6 @@ export const t = {
     tableWaiting: 'Perlu Dibalas',
     tableAvgReply: 'Rata-rata Waktu Balas',
     tableResolution: 'Tingkat Penyelesaian',
-    tableRating: 'Rating',
   },
 
   contact: {

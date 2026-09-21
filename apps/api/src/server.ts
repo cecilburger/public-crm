@@ -7,12 +7,13 @@ import { createRealtimeHub, type RealtimeEvent } from './realtime.ts';
 const e = env();
 const kek = loadKek(e.KIRANA_KEK);
 
-// Two pools, two roles. The tenant pool cannot read the webhook spool or the
-// tenants table; the control pool never runs tenant queries.
+// Two pools, two roles. The tenant pool (kirana_app) cannot read the webhook
+// spool or the tenants table; the control pool (kirana_provisioner) never runs
+// tenant queries — see CONTROL_DATABASE_URL in packages/core/src/env.ts.
 const db = await connectPostgres(e.DATABASE_URL, {
   max: e.DATABASE_MAX_CONNECTIONS, poolMode: e.DATABASE_POOL_MODE,
 });
-const control = await connectPostgres(e.DATABASE_URL, { max: 4, poolMode: e.DATABASE_POOL_MODE });
+const control = await connectPostgres(e.CONTROL_DATABASE_URL ?? e.DATABASE_URL, { max: 4, poolMode: e.DATABASE_POOL_MODE });
 
 // One shared counter across every replica. Without this each pod allows the
 // full budget on its own, which is the same as having no limit at all.

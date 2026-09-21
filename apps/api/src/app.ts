@@ -29,6 +29,8 @@ import { registerBrandRoutes } from './routes/brands.ts';
 import { registerMessageTemplateRoutes } from './routes/messageTemplates.ts';
 import { registerQuickReplyRoutes } from './routes/quickReplies.ts';
 import { registerSalesTargetRoutes } from './routes/salesTargets.ts';
+import { registerDashboardRoutes } from './routes/dashboard.ts';
+import { registerAgentPerformanceRoutes } from './routes/agentPerformance.ts';
 import { registerDocumentRoutes } from './routes/documents.ts';
 import { registerDocumentKindRoutes } from './routes/documentKinds.ts';
 import { registerDocumentModelRoutes } from './routes/documentModels.ts';
@@ -345,6 +347,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerMessageTemplateRoutes(app, ctx);
   registerQuickReplyRoutes(app, ctx);
   registerSalesTargetRoutes(app, ctx);
+  registerDashboardRoutes(app, ctx);
+  registerAgentPerformanceRoutes(app, ctx);
   registerDocumentRoutes(app, ctx);
   registerDocumentKindRoutes(app, ctx);
   registerDocumentModelRoutes(app, ctx);

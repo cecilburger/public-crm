@@ -37,6 +37,7 @@ services:
       NODE_ENV: development
       # The API connects as kirana_app: subject to row-level security, no DDL.
       DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
+      CONTROL_DATABASE_URL: postgres://kirana_provisioner:${PROVISIONER_DB_PASSWORD:-kirana-provisioner-local}@postgres:5432/kirana
       REDIS_URL: redis://redis:6379
       KIRANA_KEK: ${KIRANA_KEK:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-000000}
@@ -54,6 +55,7 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
+      CONTROL_DATABASE_URL: postgres://kirana_provisioner:${PROVISIONER_DB_PASSWORD:-kirana-provisioner-local}@postgres:5432/kirana
       REDIS_URL: redis://redis:6379
       KIRANA_KEK: ${KIRANA_KEK:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
       META_APP_SECRET: ${META_APP_SECRET:-dev-meta-app-secret}

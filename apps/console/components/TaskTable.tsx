@@ -111,11 +111,15 @@ export function TaskTable({
     });
   }, [filtered, filteredGoogleEvents]);
 
+  // Calendar view never falls back to the plain "empty" placeholder — a
+  // grid with nothing on it (today's date, month navigation, a Google
+  // Calendar toggle if connected) is still worth seeing, unlike an empty
+  // table or board.
   const showEmptyState = view === 'table'
     ? rows.length === 0
     : view === 'kanban'
       ? filtered.length === 0 && !(showGoogle && filteredGoogleEvents.length > 0)
-      : filtered.length === 0;
+      : false;
 
   return (
     <>

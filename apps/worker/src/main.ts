@@ -21,7 +21,8 @@ const connection = { url: e.REDIS_URL };
 const db = await connectPostgres(e.DATABASE_URL, {
   max: e.DATABASE_MAX_CONNECTIONS, poolMode: e.DATABASE_POOL_MODE,
 });
-const control = await connectPostgres(e.DATABASE_URL, { max: 4, poolMode: e.DATABASE_POOL_MODE });
+// kirana_provisioner, not kirana_app — see CONTROL_DATABASE_URL in packages/core/src/env.ts.
+const control = await connectPostgres(e.CONTROL_DATABASE_URL ?? e.DATABASE_URL, { max: 4, poolMode: e.DATABASE_POOL_MODE });
 
 const { Queue } = await import('bullmq');
 const queues = new Map<string, InstanceType<typeof Queue>>();

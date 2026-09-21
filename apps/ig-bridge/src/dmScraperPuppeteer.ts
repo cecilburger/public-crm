@@ -443,11 +443,30 @@ export class SendNotConfirmedError extends Error {}
  * using the identical `SCRAPE_MESSAGES_JS` walk so "sent" here means the
  * exact same thing "received" means when reading a thread.
  */
+const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsername: string | null): boolean => {
+  const last = messages[messages.length - 1];
+  return !!last && last.text === wanted
+    && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase());
+};
+
 export async function sendThreadMessage(
   page: Page, threadId: string, text: string, ownUsername: string | null,
 ): Promise<void> {
   await page.goto(`https://www.instagram.com/direct/t/${threadId}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
+
+  const wanted = text.trim();
+
+  // A retry (BullMQ, or the caller's own backoff) lands here for the exact
+  // same text — including one whose *previous* attempt actually reached
+  // Instagram and only looked like it failed because the confirmation
+  // below timed out first (confirmed live: a message reported as
+  // unconfirmed showed up in the thread moments later). Re-typing and
+  // re-pressing Enter in that case sends a real duplicate, not a retry.
+  // Checking what's already there first is what makes a retry safe to
+  // repeat as many times as the caller wants.
+  await page.waitForSelector('div[aria-label^="See more options for message from "]', { timeout: 8000 }).catch(() => {});
+  if (lastMessageMatches(await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[], wanted, ownUsername)) return;
 
   const selector = [
     'div[contenteditable="true"][aria-label="Message"]',
@@ -459,16 +478,17 @@ export async function sendThreadMessage(
   await page.keyboard.sendCharacter(text);
   await page.keyboard.press('Enter');
 
-  const wanted = text.trim();
-  const deadline = Date.now() + 8000;
+  // Instagram's own render of a just-sent bubble is not instant, and is
+  // slower still right after a session reconnects — confirmed live at
+  // over 8s more than once, past the old deadline, with the message
+  // landing anyway. 25s trades a slower failure report for far fewer
+  // false ones; the pre-check above is what keeps a *false* one cheap to
+  // retry instead of compounding into a real duplicate.
+  const deadline = Date.now() + 25_000;
   while (Date.now() < deadline) {
     const messages = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
-    const last = messages[messages.length - 1];
-    if (last && last.text === wanted
-        && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase())) {
-      return;
-    }
-    await sleep(400);
+    if (lastMessageMatches(messages, wanted, ownUsername)) return;
+    await sleep(500);
   }
   throw new SendNotConfirmedError(
     'Pesan sudah diketik tapi tidak muncul sebagai pesan terkirim di thread — kemungkinan ditolak diam-diam oleh Instagram (mis. thread kena rate-limit)',

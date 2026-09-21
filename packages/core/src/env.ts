@@ -10,6 +10,17 @@ const schema = z.object({
   PORT: z.coerce.number().int().default(8080),
 
   DATABASE_URL: z.string().default('postgres://kirana:kirana@localhost:5432/kirana'),
+  /**
+   * The connection behind `ctx.control` — every cross-tenant read that has to
+   * happen before a tenant context can exist (resolving a workspace slug at
+   * login, spooling a webhook, routing an inbound message to its tenant). It
+   * authenticates as `kirana_provisioner`, not `kirana_app`: that role can see
+   * across tenants for exactly these narrow, policy-scoped lookups (see
+   * 0009_orders.sql, 0049_workspace_lookup.sql) and nothing else. Falls back to
+   * `DATABASE_URL` so a deployment that has not set this yet still boots —
+   * cross-tenant reads on that path will keep failing under RLS until it is.
+   */
+  CONTROL_DATABASE_URL: z.string().optional(),
   DATABASE_MAX_CONNECTIONS: z.coerce.number().int().default(20),
   /**
    * How the database is pooled in front of us.

@@ -23,13 +23,19 @@ export interface NormaliseDeps {
  * an incident is therefore safe, which is the property that lets us replay at all.
  */
 export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId: string): Promise<{ status: string }> {
-  const claimed = await withoutTenant(deps.control, 'claiming a spooled webhook', (tx) =>
-    tx.query<{ id: string; provider: string; payload: Record<string, unknown> }>(
+  const claimedRows = await withoutTenant(deps.control, 'claiming a spooled webhook', (tx) =>
+    tx.query<{ id: string; provider: string; payload: Record<string, unknown> | string }>(
       `update webhook_events set status = 'processed', processed_at = now()
         where id = $1 and status = 'received'
         returning id, provider, payload`,
       [webhookEventId],
     ));
+  // PGlite (tests, dev-stack) hands `payload` back already parsed; postgres-js
+  // (the real driver) returns the raw jsonb text — same defensive check
+  // audit.ts/documents.ts/security.ts already use for their own jsonb reads.
+  const claimed = claimedRows.map((r) => ({
+    ...r, payload: typeof r.payload === 'string' ? JSON.parse(r.payload) as Record<string, unknown> : r.payload,
+  }));
 
   if (!claimed[0]) return { status: 'already_processed' };
   // Same spool, same idempotency barrier, different shape on the wire — the
