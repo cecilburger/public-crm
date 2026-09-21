@@ -1158,6 +1158,45 @@ export interface IgBridgeResult {
   challengeType?: 'two_factor' | 'checkpoint' | 'unknown';
 }
 
+/**
+ * Connecting Facebook takes no credential — see `apps/fb-bridge`. All the CRM
+ * sends is which Page to watch; the operator then logs in by hand in a browser
+ * window the bridge opens on its own machine. That is why this returns
+ * `awaiting_login` rather than a success: the real work happens somewhere this
+ * request cannot see, and the page polls for the outcome.
+ */
+export interface FbBridgeResult extends ActionResult {
+  status?: 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
+}
+
+export async function connectFacebookBridge(_prev: FbBridgeResult | null, form: FormData): Promise<FbBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const pageId = String(form.get('pageId') ?? '').trim();
+  const pageName = String(form.get('pageName') ?? '').trim();
+  if (!pageId || !pageName) return { ok: false, error: t.facebookBridge.missingFields };
+
+  try {
+    const res = await api<{ status: FbBridgeResult['status']; lastError?: string | null }>(
+      '/v1/facebook-bridge/connect', { method: 'POST', body: { pageId, pageName } },
+    );
+    revalidatePath('/pengaturan/facebook');
+    return { ok: true, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.facebookBridge.failed };
+  }
+}
+
+export async function disconnectFacebookBridge(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api('/v1/facebook-bridge/disconnect', { method: 'POST' });
+    revalidatePath('/pengaturan/facebook');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.facebookBridge.failed };
+  }
+}
+
 export async function connectInstagramBridge(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const username = String(form.get('username') ?? '').trim();

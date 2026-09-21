@@ -11,6 +11,7 @@ const TABS = [
   { href: '/pengaturan/balasan-cepat', label: t.quickReply.title },
   { href: '/pengaturan/email', label: t.settings.tabEmail },
   { href: '/pengaturan/instagram', label: t.settings.tabInstagram },
+  { href: '/pengaturan/facebook', label: t.settings.tabFacebook },
   { href: '/pengaturan/keamanan', label: t.security.title },
   { href: '/pengaturan/riwayat', label: t.settings.tabHistory },
 ];

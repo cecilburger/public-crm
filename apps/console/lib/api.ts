@@ -319,6 +319,31 @@ export interface IgBridgeConnection {
   updatedAt: string | null;
 }
 
+export interface FbBridgeConnection {
+  status: 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
+  pageId: string | null;
+  pageName: string | null;
+  lastError: string | null;
+  lastSeenAt: string | null;
+  updatedAt: string | null;
+  /** False when the bridge service itself could not be reached — a different
+   * problem from an expired session, and fixed differently. */
+  bridgeReachable?: boolean;
+}
+
+export interface FacebookComment {
+  id: string;
+  pageId: string;
+  pageName: string | null;
+  postId: string;
+  commentId: string;
+  authorExternalId: string | null;
+  authorName: string | null;
+  body: string;
+  commentedAt: string | null;
+  createdAt: string;
+}
+
 export interface IgMetaConnection {
   status: 'disconnected' | 'connected' | 'error';
   igUsername: string | null;
