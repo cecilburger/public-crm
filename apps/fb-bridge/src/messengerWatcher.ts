@@ -1,13 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from 'puppeteer';
-import { INBOX, THREAD, URLS } from './selectors.ts';
-import { parseMessengerInbox } from './parsers/messengerInbox.ts';
-import {
-  parseMessengerThread, parseMessengerTranscript, selectBackfill, type ParsedMessage,
-} from './parsers/messengerThread.ts';
+import { selectBackfill, type ParsedMessage } from './parsers/messengerThread.ts';
 import { CheckpointRequiredError, SessionExpiredError, type SessionManager } from './sessionManager.ts';
+import { businessSuiteTransport } from './transport/businessSuite.ts';
+import { messengerDotComTransport } from './transport/messengerDotCom.ts';
+import type { ThreadTransport, TransportContext } from './transport/types.ts';
 import type { FbBridgeEvent } from './events.ts';
+
+// Moved to its own module so `transport/` can use it without importing this
+// file, which imports `transport/`. Re-exported because `commentWatcher.ts` and
+// `sessionManager.ts` already import it from here.
+export { readContainerHtml } from './pageHtml.ts';
 
 export interface Logger {
   info: (obj: unknown, msg?: string) => void;
@@ -56,6 +60,10 @@ export class MessengerWatcher {
   private signatures = new Map<string, Map<string, string>>();
   private anchors = new Map<string, Map<string, Anchor[]>>();
   private nextSeq = new Map<string, Map<string, number>>();
+  /** Per tenant, per thread: who the conversation is with. Only Business Suite
+   * needs it — messenger.com names the sender inside every message — but it is
+   * kept for both so the watcher itself has no transport-shaped branches. */
+  private contactNames = new Map<string, Map<string, string>>();
   private chain = new Map<string, Promise<void>>();
   private timer: NodeJS.Timeout | null = null;
 
@@ -159,8 +167,10 @@ export class MessengerWatcher {
       return;
     }
 
+    const { transport, ctx } = await this.transportFor(tenantId);
+
     try {
-      await page.goto(URLS.inbox, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(transport.inboxUrl(ctx), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.sessions.assertUsable(page);
       // The conversation list renders after the page has text in it, so
       // `assertUsable` passing is not the same as the list being there.
@@ -170,10 +180,20 @@ export class MessengerWatcher {
       // `MutationObserver` only fires on *future* changes — nothing swept
       // again until the next reconciliation ten minutes later. `readThread`
       // already waits for its own marker this way.
-      await page.waitForSelector(INBOX.list.join(', '), { timeout: 15_000 }).catch(() => {});
+      await page.waitForSelector(transport.inboxWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
       await installInboxObserver(page, () => this.enqueue(tenantId, () => this.sweepInbox(tenantId)));
       this.observerPages.set(tenantId, page);
-      this.log.info({ tenantId }, 'fb-bridge: inbox observer attached');
+      this.log.info({ tenantId, transport: transport.kind }, 'fb-bridge: inbox observer attached');
+      if (!transport.discoversConversations) {
+        // Said once, at attach, rather than never: this transport reconciles
+        // what it already knows and reads whichever conversation the surface
+        // has selected, but it cannot enumerate an inbox. An operator seeing a
+        // healthy-looking bridge deserves to know which of those it is doing.
+        this.log.warn(
+          { tenantId, transport: transport.kind },
+          'fb-bridge: this surface exposes no per-row conversation id — only the selected conversation and already-known threads are read',
+        );
+      }
       // The observer fires on future mutations only, so the first reading has
       // to be taken here or a thread that never changes again is never seen.
       this.enqueue(tenantId, () => this.sweepInbox(tenantId));
@@ -211,14 +231,15 @@ export class MessengerWatcher {
     const page = this.observerPages.get(tenantId);
     if (!page || page.isClosed()) return;
 
-    const html = await readContainerHtml(page, INBOX.list);
-    if (!html) {
+    const { transport } = await this.transportFor(tenantId);
+    const reading = await transport.readInbox(page);
+    if (!reading) {
       this.log.warn({ tenantId }, 'fb-bridge: inbox container not found — selectors may be stale');
       return;
     }
 
-    const { rows, linkCount } = parseMessengerInbox(html);
-    if (linkCount === 0) {
+    const { rows, rowCount } = reading;
+    if (rowCount === 0) {
       // The container rendered but holds no conversation links at all. That is
       // either a genuinely empty inbox or a stale selector, and the two are
       // indistinguishable from here — so it is logged rather than swallowed,
@@ -236,6 +257,11 @@ export class MessengerWatcher {
     // inbox's idea of the name alongside would be a second source of truth for
     // the same fact, and the weaker of the two.
     for (const row of rows) {
+      // Business Suite names nobody inside a message, so the row's name is the
+      // only reading of who this conversation is with. Remembered rather than
+      // passed through, because backfill reaches a thread without having just
+      // read the inbox.
+      this.rememberContactName(tenantId, row.threadId, row.name);
       if (seen.get(row.threadId) === row.signature) continue;
       seen.set(row.threadId, row.signature);
       await this.readThread(tenantId, row.threadId).catch((err) =>
@@ -256,13 +282,18 @@ export class MessengerWatcher {
     const page = this.observerPages.get(tenantId);
     if (!page || page.isClosed()) return;
 
-    const html = await readContainerHtml(page, INBOX.list);
-    if (!html) {
+    const { transport } = await this.transportFor(tenantId);
+    const reading = await transport.readInbox(page);
+    if (!reading) {
       this.log.warn({ tenantId }, 'fb-bridge: inbox container not found — cannot reconcile history');
       return;
     }
 
-    const { rows } = parseMessengerInbox(html);
+    // Threads seen in this reading, plus every thread already anchored. On a
+    // surface that cannot enumerate its inbox, the anchors are the only memory
+    // of which conversations exist at all — without them a reconnecting bridge
+    // would reconcile one conversation and silently forget the rest.
+    const rows = this.withKnownThreads(tenantId, reading.rows);
     let imported = 0;
     for (const row of rows) {
       try {
@@ -294,19 +325,21 @@ export class MessengerWatcher {
    * to a real person a second time.
    */
   private async backfillThread(tenantId: string, threadId: string): Promise<number> {
-    const marker = await this.sessions.getPageMarker(tenantId);
+    const { transport, ctx } = await this.transportFor(tenantId);
     const page = await this.sessions.newPage(tenantId);
     if (!page) return 0;
 
     try {
-      await page.goto(URLS.thread(threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.sessions.assertUsable(page);
-      await page.waitForSelector(THREAD.row.join(', '), { timeout: 15_000 }).catch(() => {});
+      await page.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
 
-      const html = await readContainerHtml(page, THREAD.messageList);
-      if (!html) throw new Error('message container not found — THREAD.messageList may be stale');
+      const html = await transport.readTranscriptHtml(page);
+      if (!html) throw new Error('message container not found — the transcript selectors may be stale');
 
-      const parsed = parseMessengerTranscript(html, { selfName: marker?.pageName ?? null });
+      const parsed = transport.parseTranscript(html, {
+        selfName: ctx.pageName, contactName: this.contactNameFor(tenantId, threadId),
+      });
       const candidates = parsed.messages
         .map((m) => m.externalMessageId)
         .filter((id): id is string => Boolean(id))
@@ -342,26 +375,31 @@ export class MessengerWatcher {
   }
 
   private async readThread(tenantId: string, threadId: string): Promise<void> {
-    const marker = await this.sessions.getPageMarker(tenantId);
+    const { transport, ctx } = await this.transportFor(tenantId);
     const page = await this.sessions.newPage(tenantId);
     if (!page) return;
 
     try {
-      await page.goto(URLS.thread(threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.sessions.assertUsable(page);
       // Waits for real message markup rather than a fixed sleep. A flat delay
       // lands on Facebook's loading skeleton often enough to be the actual
       // cause of "empty read", not a transient blip — worse under the CPU
       // pressure of several dev servers at once.
-      await page.waitForSelector(THREAD.row.join(', '), { timeout: 15_000 }).catch(() => {});
+      await page.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
 
-      const html = await readContainerHtml(page, THREAD.messageList);
+      const html = await transport.readTranscriptHtml(page);
       if (!html) {
-        this.log.warn({ tenantId, threadId }, 'fb-bridge: message container not found — THREAD.messageList may be stale');
+        this.log.warn(
+          { tenantId, threadId, transport: transport.kind },
+          'fb-bridge: message container not found — the transcript selectors may be stale',
+        );
         return;
       }
 
-      const parsed = parseMessengerThread(html, { selfName: marker?.pageName ?? null });
+      const parsed = transport.parseThread(html, {
+        selfName: ctx.pageName, contactName: this.contactNameFor(tenantId, threadId),
+      });
 
       if (parsed.matchedRows > 0 && parsed.unknownSenderRows === parsed.matchedRows) {
         // Every single row had text but no attributable sender. One such row is
@@ -460,6 +498,56 @@ export class MessengerWatcher {
     return current.slice(-1);
   }
 
+  /* --------------------------------------------------------- transports */
+
+  /**
+   * Which surface this tenant's conversations are on.
+   *
+   * Decided by whether the connection carries a Business Suite asset id, which
+   * is the one fact that distinguishes a Page connection from a personal one.
+   * It is read from the connection rather than configured globally, because two
+   * tenants on the same bridge can legitimately be on different surfaces.
+   */
+  private async transportFor(tenantId: string): Promise<{ transport: ThreadTransport; ctx: TransportContext }> {
+    const marker = await this.sessions.getPageMarker(tenantId);
+    const ctx: TransportContext = {
+      pageName: marker?.pageName ?? null,
+      assetId: marker?.assetId ?? null,
+    };
+    return { transport: ctx.assetId ? businessSuiteTransport : messengerDotComTransport, ctx };
+  }
+
+  private rememberContactName(tenantId: string, threadId: string, name: string): void {
+    if (!name.trim()) return;
+    const byThread = this.contactNames.get(tenantId) ?? new Map<string, string>();
+    this.contactNames.set(tenantId, byThread);
+    byThread.set(threadId, name.trim());
+  }
+
+  private contactNameFor(tenantId: string, threadId: string): string | null {
+    return this.contactNames.get(tenantId)?.get(threadId) ?? null;
+  }
+
+  /**
+   * The inbox reading, plus every thread this tenant has an anchor for.
+   *
+   * On a surface that cannot enumerate its conversations, an inbox reading
+   * names at most the selected one. The anchors are the only record that the
+   * others exist, so reconciliation has to start from their union — otherwise
+   * a bridge that restarts reconciles whichever conversation happened to be
+   * open and leaves every other one behind, permanently and silently.
+   */
+  private withKnownThreads(
+    tenantId: string, rows: { threadId: string; name: string; signature: string }[],
+  ): { threadId: string; name: string; signature: string }[] {
+    const merged = new Map(rows.map((row) => [row.threadId, row]));
+    for (const threadId of this.anchors.get(tenantId)?.keys() ?? []) {
+      if (merged.has(threadId)) continue;
+      merged.set(threadId, { threadId, name: this.contactNameFor(tenantId, threadId) ?? '', signature: '' });
+    }
+    return [...merged.values()];
+  }
+
   private takeSeq(tenantId: string, threadId: string): number {
     const byThread = this.nextSeq.get(tenantId) ?? new Map<string, number>();
     this.nextSeq.set(tenantId, byThread);
@@ -516,25 +604,6 @@ export class MessengerWatcher {
 }
 
 /* ------------------------------------------------------------- page glue */
-
-/**
- * The entire in-page half of this scraper: hand back one container's
- * `outerHTML`. No finding, no filtering, no interpretation — all of that lives
- * in `parsers/`, where it can be tested against a fixture. Keeping this to a
- * single expression is what makes that possible.
- */
-export async function readContainerHtml(page: Page, selectors: readonly string[]): Promise<string | null> {
-  return await page.evaluate(`
-    (function () {
-      var selectors = ${JSON.stringify(selectors)};
-      for (var i = 0; i < selectors.length; i++) {
-        var el = document.querySelector(selectors[i]);
-        if (el) return el.outerHTML;
-      }
-      return null;
-    })();
-  `).catch(() => null) as string | null;
-}
 
 /**
  * Watches the inbox for changes instead of re-opening it on a timer — much

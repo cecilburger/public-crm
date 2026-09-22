@@ -8,8 +8,9 @@ import {
   CHECKPOINT_TEXT_RE, CHECKPOINT_URL_MARKERS, COMPOSER, LOGGED_OUT_TEXT_RE, LOGGED_OUT_URL_MARKERS,
   THREAD, URLS,
 } from './selectors.ts';
-import { countOwnMessages } from './parsers/messengerThread.ts';
-import { readContainerHtml } from './messengerWatcher.ts';
+import { businessSuiteTransport } from './transport/businessSuite.ts';
+import { messengerDotComTransport } from './transport/messengerDotCom.ts';
+import type { TransportContext } from './transport/types.ts';
 
 // Same interop dance as `apps/ig-bridge/src/sessionManager.ts`, and for the
 // same reason: `puppeteer-extra`'s default export needs CJS/ESM interop this
@@ -75,9 +76,24 @@ export interface SessionState {
   lastError: string | null;
 }
 
-interface PageMarker {
+export interface PageMarker {
   pageId: string;
   pageName: string;
+  /**
+   * The Business Suite asset id, when this connection is a Page.
+   *
+   * Its presence is what selects the Business Suite transport, so it is the
+   * single switch between reading a Page's inbox and reading a personal one.
+   * Optional because every connection made before Page support existed has no
+   * such id on disk, and those must keep working as messenger.com connections
+   * rather than failing to load.
+   *
+   * NOT the Page id. Confirmed live: the same Page is `61594393176093` in a
+   * profile URL and `1225922357281590` as a Business Suite asset. Overloading
+   * one field with both would produce URLs that load a valid-looking page
+   * containing none of this tenant's conversations.
+   */
+  assetId?: string | null;
 }
 
 /**
@@ -484,29 +500,34 @@ export class SessionManager {
    * session is destroyed, and the reason "disconnect" in the CRM really does
    * revoke this bridge's access rather than just hiding it. */
   /**
-   * Sends a message in a thread — once there is a verified way to drive the
-   * composer.
+   * Sends a message in a thread, on whichever surface this tenant is connected
+   * to.
    *
-   * The shape is settled deliberately, so the rest of the chain (the HTTP
-   * route, `FbBridgeClient`, the `messenger_bridge` branch in `processOutbound`)
-   * is real code exercised end to end today. What is missing is only the DOM
-   * work, and it lands here: resolve a page for the tenant, drive the composer,
-   * and — the part `apps/ig-bridge` learned the hard way — refuse to report
-   * success until the message is visible as a new bubble from our own account.
-   * An emptied composer is not proof: Facebook clears it optimistically even
-   * when the server rejected the message.
+   * The mechanics are identical on both and that is not a coincidence: the
+   * composer is a Lexical editor in Business Suite exactly as it is on
+   * messenger.com, and neither renders a Send button. What differs is only the
+   * URL, the selectors and how "ours" is recognised in the transcript — all of
+   * which the transport supplies.
+   *
+   * Success is never reported from an emptied composer. Facebook clears it
+   * optimistically even when the server rejected the message, so the proof is a
+   * new bubble of our own carrying exactly this text.
    */
   async sendMessage(tenantId: string, threadId: string, text: string): Promise<void> {
+    const marker = await this.getPageMarker(tenantId);
+    const ctx: TransportContext = { pageName: marker?.pageName ?? null, assetId: marker?.assetId ?? null };
+    const transport = ctx.assetId ? businessSuiteTransport : messengerDotComTransport;
+
     const page = await this.newPage(tenantId);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
 
     try {
-      await page.goto(URLS.thread(threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.assertUsable(page);
-      await page.waitForSelector(THREAD.row.join(', '), { timeout: 15_000 }).catch(() => {});
+      await page.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
 
-      const composer = COMPOSER.box.join(', ');
-      const hasComposer = await page.waitForSelector(composer, { timeout: COMPOSER.waitMs })
+      const composer = transport.composerSelectors.join(', ');
+      const hasComposer = await page.waitForSelector(composer, { timeout: transport.composerWaitMs })
         .then(() => true).catch(() => false);
       if (!hasComposer) {
         throw new ThreadRequiresAcceptanceError(
@@ -519,8 +540,9 @@ export class SessionManager {
       // earlier one ("baik kak", "siap"). Asking "is our text on screen?" would
       // report success off a message from last week — including when nothing
       // was sent at all.
-      const selfName = (await this.getPageMarker(tenantId))?.pageName ?? null;
-      const before = countOwnMessages(await readTranscript(page), { text, selfName });
+      const selfName = ctx.pageName;
+      const readTranscript = async () => (await transport.readTranscriptHtml(page)) ?? '';
+      const before = transport.countOwn(await readTranscript(), { text, selfName });
 
       await page.click(composer);
       // `page.type()` would be the obvious call and it does not work here. The
@@ -537,9 +559,9 @@ export class SessionManager {
       // appears only once text is present. Enter is how the message goes.
       await page.keyboard.press('Enter');
 
-      const deadline = Date.now() + COMPOSER.confirmMs;
+      const deadline = Date.now() + transport.confirmMs;
       while (Date.now() < deadline) {
-        if (countOwnMessages(await readTranscript(page), { text, selfName }) > before) return;
+        if (transport.countOwn(await readTranscript(), { text, selfName }) > before) return;
         await sleep(500);
       }
       throw new SendNotConfirmedError(
@@ -580,7 +602,3 @@ export class SessionManager {
   }
 }
 
-/** The transcript as markup, for the pure confirmation counter to read. */
-async function readTranscript(page: Page): Promise<string> {
-  return (await readContainerHtml(page, THREAD.messageList)) ?? '';
-}

@@ -138,13 +138,21 @@ app.get('/healthz', async () => ({ status: 'ok' }));
  * whole point is that no Facebook credential ever passes through this service
  * or the CRM.
  */
-app.post<{ Params: { tenantId: string }; Body: { pageId?: string; pageName?: string } }>(
+app.post<{
+  Params: { tenantId: string };
+  Body: { pageId?: string; pageName?: string; assetId?: string };
+}>(
   '/internal/sessions/:tenantId/login-window', async (req, reply) => {
-    const { pageId, pageName } = req.body ?? {};
+    const { pageId, pageName, assetId } = req.body ?? {};
     if (!pageId || !pageName) {
       return reply.status(400).send({ error: 'pageId and pageName are required' });
     }
-    const state = await sessions.openLoginWindow(req.params.tenantId, { pageId, pageName }, (settled) => {
+    // `assetId` is optional and its absence is meaningful: without one this
+    // connection reads facebook.com/messages/t/, with one it reads that Page's
+    // Business Suite inbox. Stored beside the profile so a restart resumes on
+    // the same surface instead of silently falling back to the personal one.
+    const marker = { pageId, pageName, assetId: assetId ?? null };
+    const state = await sessions.openLoginWindow(req.params.tenantId, marker, (settled) => {
       if (settled.status !== 'ready') return;
       void messenger.loadAnchors(req.params.tenantId)
         .then(() => messenger.attachTenant(req.params.tenantId))

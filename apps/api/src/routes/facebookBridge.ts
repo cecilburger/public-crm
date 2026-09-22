@@ -103,6 +103,15 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
     const body = z.object({
       pageId: z.string().min(1).max(120),
       pageName: z.string().min(1).max(200),
+      /**
+       * The Business Suite asset id, for a Page whose inbox lives there rather
+       * than on messenger.com. Optional, and its absence is meaningful: a
+       * connection without one is read as a personal account. Constrained to
+       * digits because every Business Suite URL interpolates it, and a
+       * malformed value produces a page that loads and holds nobody's
+       * conversations.
+       */
+      assetId: z.string().regex(/^\d{6,}$/).max(40).optional(),
     }).safeParse(req.body);
     if (!body.success) {
       throw invalid('Isi ID dan nama Halaman Facebook yang mau dihubungkan');
@@ -123,6 +132,11 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
       });
       await setFbBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
         status: call.body!.status, pageId: body.data.pageId, pageName: body.data.pageName,
+        // Written as null rather than left undefined when absent, so
+        // reconnecting a Page as a personal account really does clear it. Left
+        // undefined it would keep an asset id the operator just removed, and
+        // the bridge would go on reading a Business Suite inbox.
+        assetId: body.data.assetId ?? null,
         lastError: call.body!.lastError, actorId: actor.userId,
       });
     });

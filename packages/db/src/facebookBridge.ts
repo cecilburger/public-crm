@@ -26,6 +26,16 @@ export interface FbBridgeConnection {
   status: 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
   pageId: string | null;
   pageName: string | null;
+  /**
+   * The Business Suite asset id, when this connection is a Page.
+   *
+   * Null means a personal-account connection, read from messenger.com. Its
+   * presence is what puts the bridge on the Page inbox instead, so this single
+   * value decides which of two entirely different Facebook surfaces a tenant's
+   * conversations are read from. Deliberately distinct from `pageId` — see
+   * migration 0051.
+   */
+  assetId: string | null;
   lastError: string | null;
   lastSeenAt: Date | null;
   updatedAt: Date | null;
@@ -40,19 +50,23 @@ export interface FbBridgeConnection {
  */
 export async function getFbBridgeConnection(ctx: Ctx): Promise<FbBridgeConnection> {
   const rows = await ctx.tx.query<{
-    page_id: string | null; page_name: string | null; status: FbBridgeConnection['status'];
+    page_id: string | null; page_name: string | null; asset_id: string | null;
+    status: FbBridgeConnection['status'];
     last_error: string | null; last_seen_at: Date | null; updated_at: Date;
   }>(
-    `select page_id, page_name, status, last_error, last_seen_at, updated_at
+    `select page_id, page_name, asset_id, status, last_error, last_seen_at, updated_at
        from fb_bridge_connections where tenant_id = $1`,
     [ctx.tenantId],
   );
   const row = rows[0];
   if (!row) {
-    return { status: 'disconnected', pageId: null, pageName: null, lastError: null, lastSeenAt: null, updatedAt: null };
+    return {
+      status: 'disconnected', pageId: null, pageName: null, assetId: null,
+      lastError: null, lastSeenAt: null, updatedAt: null,
+    };
   }
   return {
-    status: row.status, pageId: row.page_id, pageName: row.page_name,
+    status: row.status, pageId: row.page_id, pageName: row.page_name, assetId: row.asset_id,
     lastError: row.last_error, lastSeenAt: row.last_seen_at, updatedAt: row.updated_at,
   };
 }
@@ -67,22 +81,25 @@ export async function setFbBridgeConnection(
   ctx: Ctx,
   args: {
     status: FbBridgeConnection['status']; pageId?: string | null; pageName?: string | null;
+    assetId?: string | null;
     lastError?: string | null; lastSeenAt?: Date | null; actorId: string | null;
   },
 ): Promise<void> {
   await ctx.tx.query(
-    `insert into fb_bridge_connections (tenant_id, page_id, page_name, status, last_error, last_seen_at, updated_by)
-     values ($1, $2, $3, $4, $5, $6, $7)
+    `insert into fb_bridge_connections
+       (tenant_id, page_id, page_name, asset_id, status, last_error, last_seen_at, updated_by)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (tenant_id) do update set
-       page_id = case when $8 then excluded.page_id else fb_bridge_connections.page_id end,
-       page_name = case when $9 then excluded.page_name else fb_bridge_connections.page_name end,
+       page_id = case when $9 then excluded.page_id else fb_bridge_connections.page_id end,
+       page_name = case when $10 then excluded.page_name else fb_bridge_connections.page_name end,
+       asset_id = case when $11 then excluded.asset_id else fb_bridge_connections.asset_id end,
        status = excluded.status, last_error = excluded.last_error,
        last_seen_at = coalesce(excluded.last_seen_at, fb_bridge_connections.last_seen_at),
-       updated_by = $7, updated_at = now()`,
+       updated_by = $8, updated_at = now()`,
     [
-      ctx.tenantId, args.pageId ?? null, args.pageName ?? null, args.status,
+      ctx.tenantId, args.pageId ?? null, args.pageName ?? null, args.assetId ?? null, args.status,
       args.lastError ?? null, args.lastSeenAt ?? null, args.actorId,
-      args.pageId !== undefined, args.pageName !== undefined,
+      args.pageId !== undefined, args.pageName !== undefined, args.assetId !== undefined,
     ],
   );
 

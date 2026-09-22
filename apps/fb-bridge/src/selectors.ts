@@ -286,3 +286,93 @@ export const VOLATILE_TEXT_RES: readonly RegExp[] = [
   /\b\d+\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|w|y|mnt|jam|hari|mgg|minggu|thn)\b/gi,
   /\b(just now|baru saja|kemarin|yesterday)\b/gi,
 ];
+
+/* ------------------------------------------------- Meta Business Suite */
+
+/**
+ * A Page's own inbox, which is a different surface from `messages/t/`.
+ *
+ * Confirmed live: when the session is the Page identity, Messenger does NOT
+ * serve the Page's conversations at facebook.com/messages/t/ at all. They live
+ * in Meta Business Suite, and a watcher pointed at the old URL sweeps a
+ * perfectly healthy personal inbox forever while a customer waits — the worst
+ * shape of failure this bridge can have, because nothing errors.
+ *
+ * The messenger.com selectors above are deliberately untouched. A personal
+ * inbox is still a real thing to read, and the two surfaces now have one
+ * transport each rather than one set of selectors pretending to fit both.
+ */
+export const BIZ_URLS = {
+  inbox: (assetId: string) =>
+    `https://business.facebook.com/latest/inbox/all/?asset_id=${encodeURIComponent(assetId)}`,
+  /**
+   * A single conversation. `asset_id` says which Page's inbox, and
+   * `selected_item_id` which conversation inside it — both are required, which
+   * is why the asset id is connection state rather than anything derivable.
+   */
+  thread: (assetId: string, conversationId: string) =>
+    `https://business.facebook.com/latest/inbox/all?asset_id=${encodeURIComponent(assetId)}`
+    + `&selected_item_id=${encodeURIComponent(conversationId)}&thread_type=FB_MESSAGE`,
+} as const;
+
+/** The conversation id out of a Business Suite URL. */
+export const BIZ_CONVERSATION_ID_RE = /[?&]selected_item_id=(\d{6,})/;
+
+/**
+ * Where a message's direction is recorded.
+ *
+ * Business Suite states direction only in layout: the wrapper above an inbound
+ * bubble computes `justify-content: flex-start`, an outbound one `flex-end`.
+ * That is a computed style, so it exists in the stylesheet and NOT in the
+ * markup — no amount of HTML parsing can recover it.
+ *
+ * So the in-page half measures it and stamps this attribute onto the clone it
+ * serialises; the parser stays pure and reads nothing but the attribute. The
+ * one differing atomic class (`x1nhvcw1` vs `x13a6bvl` at the time of writing)
+ * is deliberately NOT used: those hashes are regenerated on Facebook's own
+ * deploys, and the failure when one rotates is silent and severe — every agent
+ * reply would be filed as something the customer said.
+ */
+export const DIRECTION_ATTR = 'data-kirana-direction';
+
+export const BIZ_THREAD = {
+  /** The pane holding one conversation's transcript and its composer. */
+  detailView: ['span[data-surface*="bizweb_inbox:messenger_detail_view"]'],
+  /** The transcript. An ARIA region, named in full by Business Suite. */
+  messageList: [
+    'div[role="region"][aria-label*="Message list container"]',
+    'div[role="region"][aria-label*="Daftar pesan"]',
+  ],
+  /**
+   * One message. Business Suite puts the body directly in this element's text
+   * and exposes no per-message aria-label at all — the opposite of
+   * messenger.com, where everything is encoded in the label. Which is why the
+   * messenger.com transcript parser cannot be reused here, only its helpers.
+   */
+  row: [`[data-message-id]`],
+  messageIdAttrs: ['data-message-id'],
+  /** Facebook's own epoch-seconds stamp, when the surrounding group carries one. */
+  timeAttrs: ['data-utime'],
+  /** The header above the transcript, which is where the contact's name is —
+   * the bubbles themselves never name a sender. */
+  header: ['span[data-surface*="inbox:detail_view_header"]'],
+  /** The conversation list. */
+  list: ['span[data-surface*="bizweb_inbox:thread_list"]'],
+} as const;
+
+export const BIZ_COMPOSER = {
+  /**
+   * Lexical again, exactly as on messenger.com — so `page.type()` is just as
+   * useless here, and the same CDP insertText path applies.
+   */
+  box: [
+    'div[role="textbox"][contenteditable="true"][data-lexical-editor="true"][aria-placeholder*="Reply in Messenger"]',
+    'div[role="textbox"][contenteditable="true"][data-lexical-editor="true"]',
+  ],
+  /**
+   * Business Suite renders no Send button; the only send-shaped control beside
+   * the composer is "Send a Like". So Enter is the send, same as messenger.com.
+   */
+  waitMs: 12_000,
+  confirmMs: 15_000,
+} as const;

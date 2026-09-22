@@ -1,0 +1,92 @@
+<!--
+  A Meta Business Suite Page-inbox transcript.
+
+  THE STRUCTURE IS REAL, THE VALUES ARE NOT. The nesting, the ARIA region and
+  its label, `data-message-id`, `data-utime` and the depth between a bubble and
+  the wrapper carrying its alignment were all read off the live site. Every id,
+  name and word is invented — no real person's message is copied into this
+  repository.
+
+  `data-kirana-direction` is stamped by the in-page measurement layer (see
+  `buildAnnotatorScript`), never by Facebook. It appears here because this
+  fixture stands in for what that layer hands the parser, which is the only
+  thing the parser is allowed to read direction from.
+
+  The last message deliberately carries NO direction attribute. That is the
+  case where the measurement failed — a layout change, a bubble whose ancestors
+  report neither value — and the parser must drop it and say so rather than
+  guess, because guessing wrong files an agent's own words as a customer's.
+-->
+<div role="region" aria-label="Message list container with messages, suggestions and typing indicators" tabindex="0">
+  <div>
+    <div>
+
+      <!-- inbound: the wrapper above this computed justify-content: flex-start -->
+      <div data-utime="1758546240">
+        <div>
+          <div>
+            <div>
+              <div>
+                <div data-message-id="mid.$cAAQAAsynthetic0001" data-kirana-direction="inbound">halo kak</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- outbound: same shape, the wrapper computed justify-content: flex-end.
+           Deliberately the same words as the inbound one above, so a parser that
+           keys on text rather than on the stamp is caught. -->
+      <div data-utime="1758546300">
+        <div>
+          <div>
+            <div>
+              <div>
+                <div data-message-id="mid.$cAAQAAsynthetic0002" data-kirana-direction="outbound">halo kak</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-utime="1758546360">
+        <div>
+          <div>
+            <div>
+              <div>
+                <div data-message-id="mid.$cAAQAAsynthetic0003" data-kirana-direction="inbound">mau tanya harga</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- a sticker: a real bubble with a real id and no text at all -->
+      <div data-utime="1758546420">
+        <div>
+          <div>
+            <div>
+              <div>
+                <div data-message-id="mid.$cAAQAAsynthetic0004" data-kirana-direction="inbound"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- the measurement failed on this one: text, an id, and no direction -->
+      <div data-utime="1758546480">
+        <div>
+          <div>
+            <div>
+              <div>
+                <div data-message-id="mid.$cAAQAAsynthetic0005">ini tidak boleh ikut masuk</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
