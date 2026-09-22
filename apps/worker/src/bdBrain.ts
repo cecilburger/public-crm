@@ -92,4 +92,100 @@ export class BdBrainClient {
 
     return (await res.json()) as BdStep;
   }
+
+  /**
+   * Ask the brain to actually book the meeting it just decided on.
+   *
+   * `/v1/step` is a pure state machine — it answers "book a meeting" and
+   * stops, because choosing *when* needs a calendar and a reading of what the
+   * contact asked for, and `step` has neither. This second call is where that
+   * happens, on the side that owns both: it reads the requested day and hour
+   * out of the conversation, checks the calendar for a genuinely free slot,
+   * and books it with a Meet link.
+   *
+   * `history` is what makes that possible — the preferred hour is routinely
+   * mentioned a message or two before the one that triggered the booking.
+   *
+   * It may legitimately come back `booked: false`: the day can be full, the
+   * hour taken, or the calendar unreachable. The messages it returns still
+   * have to go out — a contact who just agreed to a meeting and then hears
+   * nothing is the one outcome worse than a late booking.
+   */
+  async book(args: {
+    conversation: BdConversation;
+    history: { direction: 'in' | 'out'; body: string }[];
+    now: Date;
+  }): Promise<BdBooking> {
+    const res = await fetch(`${this.baseUrl}/v1/book`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
+      body: JSON.stringify({
+        conversation: args.conversation,
+        history: args.history,
+        now: args.now.toISOString(),
+      }),
+      // Booking talks to Google Calendar and may read the conversation with
+      // an LLM, so it is slower than a `step` by design.
+      signal: AbortSignal.timeout(Math.max(this.timeoutMs, 45_000)),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`bd-brain book failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
+      err.permanent = res.status === 400 || res.status === 401 || res.status === 404;
+      throw err;
+    }
+
+    return (await res.json()) as BdBooking;
+  }
+
+  /**
+   * Offer the free slots the flow just asked us to offer.
+   *
+   * This is what answers an agreement — the contact said yes but not when,
+   * and `book_meeting` does not fire until they name a time. Leaving it
+   * unhandled is silence at the single turn where silence costs a lead.
+   *
+   * `fallback` is the flow's own wording for an unreachable calendar, so
+   * agreement still gets an answer when Google cannot be asked.
+   */
+  async proposeSlots(args: {
+    conversation: BdConversation;
+    fallbackText: string;
+    fallbackKey: string;
+    history: { direction: 'in' | 'out'; body: string }[];
+    now: Date;
+  }): Promise<{ messages: string[]; conversation: BdConversation }> {
+    const res = await fetch(`${this.baseUrl}/v1/propose-slots`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
+      body: JSON.stringify({
+        conversation: args.conversation,
+        fallback_text: args.fallbackText,
+        fallback_key: args.fallbackKey,
+        history: args.history,
+        now: args.now.toISOString(),
+      }),
+      signal: AbortSignal.timeout(Math.max(this.timeoutMs, 45_000)),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`bd-brain propose-slots failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
+      err.permanent = res.status === 400 || res.status === 401 || res.status === 404;
+      throw err;
+    }
+
+    return await res.json() as { messages: string[]; conversation: BdConversation };
+  }
+}
+
+export interface BdBooking {
+  booked: boolean;
+  meeting_at: string | null;
+  meet_link: string;
+  /** What to say to the contact — already written by the bot, whether the
+   * booking succeeded, the slot was taken, or the calendar failed. */
+  messages: string[];
+  conversation: BdConversation;
 }

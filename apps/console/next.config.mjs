@@ -12,6 +12,13 @@ export default {
     config.resolve.alias.canvas = false;
     return config;
   },
+  // The same alias for Turbopack, which ignores the webpack block above and
+  // says so on every start. Without it the dev server resolves `canvas` for
+  // real and the two konva editors are the pages that would break. Turbopack
+  // cannot map a module to `false`, so it gets an empty module instead.
+  turbopack: {
+    resolveAlias: { canvas: './empty-module.js' },
+  },
   async headers() {
     return [{
       source: '/:path*',

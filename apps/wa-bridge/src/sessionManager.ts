@@ -1,3 +1,5 @@
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import pkg from 'whatsapp-web.js';
 import QRCode from 'qrcode';
 
@@ -52,6 +54,95 @@ export class SessionManager {
     return this.clients.has(channelId);
   }
 
+  /**
+   * A marker written next to a session's files the moment it authenticates,
+   * and removed when it logs out.
+   *
+   * `LocalAuth` leaves a directory behind for every channel that ever started
+   * a session, authenticated or not — this workspace has 47 of them, all but
+   * one abandoned by old development runs. "Has a folder" is therefore not
+   * the same question as "should be running", and resuming on the folder
+   * alone would launch dozens of browsers at boot.
+   */
+  private activeMarker(channelId: string): string {
+    return path.join(this.authDir, `session-${channelId}`, '.active');
+  }
+
+  /**
+   * Launch a browser, or take over one that is already running on this
+   * session's profile.
+   *
+   * Chrome refuses a second launch against a `userDataDir` it already holds,
+   * and this process restarts far more often than the browser it leaves
+   * behind: `tsx watch` on every save, plus any crash or redeploy. Confirmed
+   * live — the resume failed with "The browser is already running for
+   * …session-…", the client never initialised, no `ready` event was ever
+   * emitted, and the channel sat on "MEMULAI…" indefinitely while WhatsApp
+   * itself was perfectly logged in. Nothing surfaced that: the process was
+   * healthy and `/healthz` answered fine.
+   *
+   * Chrome writes its own debugging port into the profile so that something
+   * else can find it, which is exactly the situation here — adopting the
+   * browser is both cheaper and safer than fighting it for the lock.
+   * `apps/ig-bridge` learned the same lesson first.
+   */
+  private async puppeteerFor(channelId: string): Promise<Record<string, unknown>> {
+    const portFile = path.join(this.authDir, `session-${channelId}`, 'DevToolsActivePort');
+    try {
+      const contents = await fs.readFile(portFile, 'utf8');
+      const port = contents.split('\n')[0]?.trim() ?? '';
+      const wsPath = contents.split('\n')[1]?.trim() ?? '';
+      if (/^\d+$/.test(port)) {
+        // Reachable only if that browser is genuinely still up; the file
+        // outlives the process that wrote it.
+        const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+          signal: AbortSignal.timeout(2000),
+        }).catch(() => null);
+        if (res?.ok) {
+          const info = await res.json() as { webSocketDebuggerUrl?: string };
+          const endpoint = info.webSocketDebuggerUrl
+            ?? (wsPath ? `ws://127.0.0.1:${port}${wsPath}` : null);
+          if (endpoint) return { browserWSEndpoint: endpoint };
+        }
+      }
+    } catch {
+      // No port file, or nothing listening — launch our own below.
+    }
+    return { headless: true };
+  }
+
+  /**
+   * Every channel whose session is worth bringing back up.
+   *
+   * Nothing called this before: `start()` only ever ran because a request
+   * asked for it, so a restart — which `tsx watch` does on every save —
+   * silently stopped WhatsApp from receiving anything. The process stayed
+   * up, `/healthz` kept answering ok, and the channel row kept saying
+   * 'connected', so there was no symptom until someone noticed messages had
+   * quietly stopped hours earlier.
+   */
+  async resumable(): Promise<string[]> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(this.authDir);
+    } catch {
+      return [];
+    }
+
+    const out: string[] = [];
+    for (const entry of entries) {
+      if (!entry.startsWith('session-')) continue;
+      const channelId = entry.slice('session-'.length);
+      try {
+        await fs.access(this.activeMarker(channelId));
+        out.push(channelId);
+      } catch {
+        // Never authenticated, or logged out since.
+      }
+    }
+    return out;
+  }
+
   private isSelfEcho(channelId: string, providerMessageId: string): boolean {
     if (this.selfSentIds.delete(providerMessageId)) return true;
     return (this.inFlightSends.get(channelId) ?? 0) > 0;
@@ -62,7 +153,7 @@ export class SessionManager {
 
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: channelId, dataPath: this.authDir }),
-      puppeteer: { headless: true },
+      puppeteer: await this.puppeteerFor(channelId),
     });
     this.clients.set(channelId, client);
 
@@ -76,10 +167,17 @@ export class SessionManager {
     });
 
     client.on('authenticated', () => {
+      // Written here, not on 'ready': authentication is the moment this
+      // session becomes one worth restoring after a restart.
+      void fs.writeFile(this.activeMarker(channelId), new Date().toISOString(), 'utf8').catch(() => {});
       this.onEvent({ channelId, event: 'authenticated', at: new Date().toISOString() });
     });
 
     client.on('auth_failure', (message) => {
+      // The stored login is no longer good, so stop advertising it as
+      // resumable — otherwise every restart retries a session that can only
+      // fail, and the QR the user actually needs never gets asked for.
+      void fs.rm(this.activeMarker(channelId), { force: true }).catch(() => {});
       this.onEvent({ channelId, event: 'auth_failure', at: new Date().toISOString(),
         disconnected: { reason: message } });
     });
@@ -206,15 +304,29 @@ export class SessionManager {
       if (remaining <= 0) this.inFlightSends.delete(channelId);
       else this.inFlightSends.set(channelId, remaining);
     }
-    // Belt and suspenders: whatsapp-web.js resolves `chatId` to a chat before
-    // sending anything, and returns `undefined` — not a rejected promise —
-    // if that somehow still fails. Retrying that would just fail the same
-    // way forever, so it is reported as the permanent failure it is instead
-    // of crashing on `sent.id` with no explanation.
+    // `sendMessage` resolving with `undefined` does NOT mean the send failed.
+    // Confirmed live: the reply arrived on the recipient's phone while this
+    // returned nothing, and the old code called that "WhatsApp could not find
+    // that number" — reporting a delivered message as a permanent failure,
+    // under an error about the number that had nothing to do with it.
+    //
+    // A rejection means the send failed; resolving means WhatsApp Web
+    // accepted it and the library merely could not build the Message object
+    // to hand back (its serialisation breaks whenever WhatsApp updates its
+    // own internals). So this is treated as sent, with no id to match the
+    // echo against.
     if (!sent) {
-      const err = new Error('WhatsApp could not find that number — it may not be on WhatsApp') as Error & { status?: number };
-      err.status = 400;
-      throw err;
+      // Nothing can match the echo by id, so the channel is kept "sending"
+      // for a while instead — otherwise `message_create` sees our own
+      // message as new and files a second copy of it.
+      this.inFlightSends.set(channelId, (this.inFlightSends.get(channelId) ?? 0) + 1);
+      setTimeout(() => {
+        const left = (this.inFlightSends.get(channelId) ?? 1) - 1;
+        if (left <= 0) this.inFlightSends.delete(channelId);
+        else this.inFlightSends.set(channelId, left);
+      }, 15_000);
+
+      return { providerMessageId: `unconfirmed:${Date.now()}` };
     }
     // The echo can still take a moment to round-trip back through
     // `message_create` after this call already returned, so the id is kept
@@ -225,7 +337,62 @@ export class SessionManager {
     return { providerMessageId };
   }
 
+  /**
+   * Ask each live session whether it is actually still there.
+   *
+   * WhatsApp Web updates itself and reloads its own interface; the page
+   * scripts `whatsapp-web.js` injects die with it, and nothing raises. The
+   * process stays healthy, `/healthz` answers, the channel row still reads
+   * 'connected' — and inbound messages simply stop. Confirmed three separate
+   * times in one afternoon, each found only because somebody sent a message
+   * and waited for a reply that never came.
+   *
+   * `getState()` has to round-trip through the page to answer, so a client
+   * whose page is gone cannot fake it: it throws, or it hangs, and the
+   * timeout treats a hang as the death it is.
+   */
+  private heartbeat: NodeJS.Timeout | null = null;
+
+  startHeartbeat(onDead: (channelId: string) => void, everyMs = 2 * 60_000): void {
+    if (this.heartbeat) return;
+    this.heartbeat = setInterval(() => void this.checkAll(onDead), everyMs);
+    this.heartbeat.unref?.();
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  private async checkAll(onDead: (channelId: string) => void): Promise<void> {
+    for (const [channelId, client] of [...this.clients]) {
+      let alive = false;
+      try {
+        const state = await Promise.race([
+          client.getState(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('getState timed out')), 15_000)),
+        ]);
+        alive = state === 'CONNECTED';
+      } catch {
+        alive = false;
+      }
+      if (alive) continue;
+
+      // Drop it before re-initialising, or `start` returns early on the
+      // dead client still sitting in the map and nothing is repaired.
+      this.clients.delete(channelId);
+      await client.destroy().catch(() => {});
+      onDead(channelId);
+    }
+  }
+
   async stop(channelId: string): Promise<void> {
+    // Removed before the client is torn down, so a logout that then fails
+    // half way cannot leave a session marked resumable that the user
+    // believes they disconnected.
+    await fs.rm(this.activeMarker(channelId), { force: true }).catch(() => {});
+
     const client = this.clients.get(channelId);
     if (!client) return;
     this.clients.delete(channelId);

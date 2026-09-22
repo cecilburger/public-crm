@@ -4,7 +4,10 @@ import puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { sendThreadMessage, clickButtonByText, SessionExpiredError } from './dmScraperPuppeteer.ts';
+import {
+  sendThreadMessage, clickButtonByText, SessionExpiredError, SendNotConfirmedError,
+} from './dmScraperPuppeteer.ts';
+import { dmLanded } from './commentPoster.ts';
 
 // `puppeteer-extra`'s own default export relies on CJS/ESM default-import
 // interop this workspace's tsconfig doesn't enable — `addExtra` is a plain
@@ -522,12 +525,38 @@ export class SessionManager {
    * the observer down along with it, and inbound messages stop arriving
    * from that point on until the next reattach.
    */
-  async sendDm(tenantId: string, threadId: string, text: string): Promise<void> {
+  async sendDm(tenantId: string, threadId: string, text: string, username?: string): Promise<void> {
     const page = await this.newPage(tenantId);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Instagram yang aktif untuk tenant ini');
     try {
       const ownUsername = await this.getOwnUsername(tenantId);
-      await sendThreadMessage(page, threadId, text, ownUsername);
+      // Taken before anything is typed: only a message that appears after
+      // this instant can be the one we are sending now. A few seconds of
+      // slack absorbs clock differences between here and Instagram.
+      const startedAt = Date.now() - 5_000;
+
+      // Retry safety, asked of a source that has a clock. A queue retry lands
+      // here within minutes, so "did we already send this text recently?" is
+      // the real question — not "does this text appear in the thread", which
+      // is true of every line the bot has ever repeated. When the username is
+      // unknown there is nobody to ask, and the page scan inside
+      // `sendThreadMessage` stays as the weaker fallback.
+      if (username) {
+        if (await dmLanded(page, username, text, { sinceMs: Date.now() - 10 * 60_000 })) return;
+      }
+
+      try {
+        await sendThreadMessage(page, threadId, text, ownUsername, { skipDuplicateScan: !!username });
+      } catch (err) {
+        // The thread scrape cannot see a message Instagram rendered as a
+        // link preview, and every opener this bot sends names a domain — so
+        // "typed but not visible" was reported as a failure for messages
+        // that had landed, and the queue's retries delivered the same
+        // opening line to one prospect three times. Instagram's own inbox
+        // can see it, and settles the question before a retry is earned.
+        if (!(err instanceof SendNotConfirmedError) || !username) throw err;
+        if (!(await dmLanded(page, username, text, { sinceMs: startedAt }))) throw err;
+      }
     } catch (err) {
       if (err instanceof SessionExpiredError) this.forgetSession(tenantId);
       throw err;

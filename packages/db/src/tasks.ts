@@ -108,7 +108,11 @@ export async function createTask(
   ctx: Ctx,
   args: {
     contactId?: string | null; brandId?: string | null; title: string; dueAt: Date; notes?: string | null;
-    dealId?: string | null; conversationId?: string | null; assigneeId?: string | null; createdBy: string;
+    dealId?: string | null; conversationId?: string | null; assigneeId?: string | null;
+    /** Null when nobody created it by hand — the BD chatbot books meetings
+     * with no user behind the action, and `tasks.created_by` is nullable
+     * precisely so that stays honest rather than borrowing someone's name. */
+    createdBy: string | null;
     kind?: string; meetingLink?: string | null; priority?: string;
     repeatUnit?: string | null; repeatInterval?: number; repeatUntil?: Date | null;
   },
@@ -124,7 +128,7 @@ export async function createTask(
   );
   const id = rows[0]!.id;
   await audit(ctx.tx, ctx.tenantId, {
-    actorType: 'user', actorId: args.createdBy, action: 'task.created',
+    actorType: args.createdBy ? 'user' : 'system', actorId: args.createdBy, action: 'task.created',
     resourceType: 'task', resourceId: id,
     meta: { contactId: args.contactId ?? null, brandId: args.brandId ?? null, dueAt: args.dueAt.toISOString() },
   });

@@ -49,12 +49,32 @@ watcher.start();
 const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
 comments.start();
 
-process.on('uncaughtException', (err) => {
-  app.log.error({ err }, 'uncaught exception in ig-bridge — continuing');
-});
-process.on('unhandledRejection', (err) => {
-  app.log.error({ err }, 'unhandled rejection in ig-bridge — continuing');
-});
+/**
+ * Absorbing an error is only right once the service is actually serving.
+ *
+ * The same handler in `apps/wa-bridge` swallowed an `EADDRINUSE` from a
+ * restart racing the previous process for the port, leaving a process that
+ * logged happily and listened to nothing — invisible, because the dying
+ * process still answered `/healthz`. A failure before `listen` resolves means
+ * this process never became the service.
+ */
+let listening = false;
+
+function onFatal(err: unknown, kind: string): void {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EADDRINUSE') {
+    app.log.error({ err }, `${kind}: port ${PORT} is already held by another ig-bridge — exiting`);
+    process.exit(1);
+  }
+  if (!listening) {
+    app.log.error({ err }, `${kind} before ig-bridge was serving — exiting instead of pretending to run`);
+    process.exit(1);
+  }
+  app.log.error({ err }, `${kind} in ig-bridge — continuing`);
+}
+
+process.on('uncaughtException', (err) => onFatal(err, 'uncaught exception'));
+process.on('unhandledRejection', (err) => onFatal(err, 'unhandled rejection'));
 
 // A tenant's browser legitimately keeps more than one tab open at once (the
 // long-lived inbox observer plus a short-lived reader/request tab) — left
@@ -268,12 +288,12 @@ app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status',
   return reply.send({ hasSession });
 });
 
-app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string } }>(
+app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string; username?: string } }>(
   '/internal/sessions/:tenantId/threads/:threadId/send', async (req, reply) => {
-    const { text } = req.body ?? {};
+    const { text, username } = req.body ?? {};
     if (!text) return reply.status(400).send({ error: 'text is required' });
     try {
-      await sessions.sendDm(req.params.tenantId, req.params.threadId, text);
+      await sessions.sendDm(req.params.tenantId, req.params.threadId, text, username);
       watcher.markSentByUs(req.params.tenantId, req.params.threadId, text);
       return reply.send({ sent: true });
     } catch (err) {
@@ -335,7 +355,13 @@ app.post<{
         const threadId = await openThreadWithUser(page, commenter);
         if (!threadId) {
           result.dm.error = `@${commenter}: tombol Message diklik tapi thread tidak pernah terbuka`;
-        } else if (await dmLanded(page, commenter, dmText)) {
+        // `IG_COMMENT_FORCE_DM=true` sends the opener even to someone who
+        // already has it. That is not a behaviour anyone wants in front of
+        // real prospects — it is how the same introduction reaches one person
+        // three times — so it exists only to exercise this path on a test
+        // account that has already been through it once, and stays off unless
+        // it is deliberately switched on.
+        } else if (process.env.IG_COMMENT_FORCE_DM !== 'true' && await dmLanded(page, commenter, dmText)) {
           // The sender has its own pre-send check, but it reads the thread
           // the same blind way — so on a retry it would send this a second
           // time to someone who already has it. Asked of the inbox instead,
@@ -347,6 +373,9 @@ app.post<{
           // Instagram for a message that was never sent.
           result.dm = { sent: false, alreadyThere: true, threadId };
         } else {
+          // Only a message that appears after this instant can be the one
+          // being sent now — see `dmLanded`.
+          const startedAt = Date.now() - 5_000;
           try {
             await sendThreadMessage(page, threadId, dmText, ownUsername);
           } catch (err) {
@@ -355,7 +384,8 @@ app.post<{
             // (it names a domain), which the thread scrape cannot see, and
             // treating that as a failure is what would message a stranger a
             // second time. Instagram's own inbox settles it.
-            if (!(err instanceof SendNotConfirmedError) || !(await dmLanded(page, commenter, dmText))) throw err;
+            if (!(err instanceof SendNotConfirmedError)
+              || !(await dmLanded(page, commenter, dmText, { sinceMs: startedAt }))) throw err;
             app.log.info({ commenter }, 'ig-bridge: DM confirmed through the inbox, not the thread view');
           }
           watcher.markSentByUs(req.params.tenantId, threadId, dmText);
@@ -378,4 +408,5 @@ app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', asy
 });
 
 await app.listen({ port: PORT, host: '127.0.0.1' });
+listening = true;
 app.log.info(`ig-bridge listening on 127.0.0.1:${PORT}`);

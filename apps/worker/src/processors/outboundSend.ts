@@ -32,11 +32,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
-      ig_psid_enc: string | null; ig_thread_id_enc: string | null;
+      ig_psid_enc: string | null; ig_thread_id_enc: string | null; ig_username_enc: string | null;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
               c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id,
-              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc
+              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.ig_username_enc
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
@@ -105,7 +105,16 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         return { status: 'failed' };
       }
       try {
-        await deps.igBridge.send({ tenantId: job.tenantId, threadId, body });
+        // The username travels with the send so the bridge can settle "did
+        // this land?" by looking in Instagram's own inbox rather than at the
+        // thread page. A message Instagram renders as a link preview — which
+        // is any message naming a domain, so every opener this bot sends —
+        // is invisible to the page scrape, and calling that a failure is what
+        // had the same opener delivered three times to one prospect.
+        const username = msg.ig_username_enc
+          ? openField(keys, job.tenantId, msg.ig_username_enc)
+          : undefined;
+        await deps.igBridge.send({ tenantId: job.tenantId, threadId, body, username });
         await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
           [job.tenantId, job.messageId]);
         await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',

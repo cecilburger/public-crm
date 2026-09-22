@@ -52,6 +52,39 @@ function groupGoogleByDay(events: GoogleCalendarEvent[]): Map<string, GoogleCale
   return map;
 }
 
+/**
+ * The same grouping the hour grids use for tasks.
+ *
+ * Day and Week place things in an hour row, so a by-day map cannot reach
+ * them — which is exactly why Google events were fetched on those views and
+ * then silently dropped: only Month ever received them. All-day events have
+ * no hour to sit in and stay out of the hour grids rather than being pinned
+ * to an arbitrary 00:00.
+ */
+function groupGoogleByDayHour(events: GoogleCalendarEvent[]): Map<string, GoogleCalendarEvent[]> {
+  const map = new Map<string, GoogleCalendarEvent[]>();
+  for (const ev of events) {
+    if (ev.allDay) continue;
+    const at = new Date(ev.start);
+    const key = `${at.toDateString()}#${at.getHours()}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(ev);
+  }
+  return map;
+}
+
+/** One Google event in an hour grid. A link out, not a button: these are
+ *  read-only here — the integration never writes back to Google. */
+function GooglePill({ event }: { event: GoogleCalendarEvent }) {
+  return (
+    <a href={event.htmlLink} target="_blank" rel="noreferrer"
+       className="time-event google"
+       title={event.title} onClick={(e) => e.stopPropagation()}>
+      {event.title}
+    </a>
+  );
+}
+
 /** The visible window worth asking Google for, per calendar mode — the month
  *  grid always shows a few days of the neighbouring months too, so its range
  *  is the grid's own first/last cell, not just the 1st–30th. */
@@ -151,7 +184,10 @@ function MiniMonth({
   );
 }
 
-function DayGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDayHour: Map<string, Task[]>; today: Date }) {
+function DayGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
+  anchor: Date; eventsByDayHour: Map<string, Task[]>;
+  googleByDayHour: Map<string, GoogleCalendarEvent[]>; today: Date;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { scrollRef.current?.scrollTo({ top: ROW_H * 6 }); }, [anchor]);
   const isToday = sameDay(anchor, today);
@@ -161,11 +197,13 @@ function DayGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDay
       <div className="time-scroll" ref={scrollRef}>
         {HOURS.map((h) => {
           const items = eventsByDayHour.get(`${anchor.toDateString()}#${h}`) ?? [];
+          const googleItems = googleByDayHour.get(`${anchor.toDateString()}#${h}`) ?? [];
           return (
             <div key={h} className={`time-row ${isToday && h === nowHour ? 'current-hour' : ''}`}>
               <div className="time-row-label">{String(h).padStart(2, '0')}:00</div>
               <div className="time-row-slot">
                 {items.map((tk) => <EventPill key={tk.id} task={tk} />)}
+                {googleItems.map((ev) => <GooglePill key={ev.id} event={ev} />)}
               </div>
             </div>
           );
@@ -175,7 +213,10 @@ function DayGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDay
   );
 }
 
-function WeekGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDayHour: Map<string, Task[]>; today: Date }) {
+function WeekGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
+  anchor: Date; eventsByDayHour: Map<string, Task[]>;
+  googleByDayHour: Map<string, GoogleCalendarEvent[]>; today: Date;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const days = useMemo(() => weekDays(startOfWeek(anchor)), [anchor]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: ROW_H * 6 }); }, [anchor]);
@@ -196,9 +237,11 @@ function WeekGrid({ anchor, eventsByDayHour, today }: { anchor: Date; eventsByDa
             <div className="time-row-label">{String(h).padStart(2, '0')}:00</div>
             {days.map((d) => {
               const items = eventsByDayHour.get(`${d.toDateString()}#${h}`) ?? [];
+              const googleItems = googleByDayHour.get(`${d.toDateString()}#${h}`) ?? [];
               return (
                 <div key={d.toISOString()} className={`time-row-slot ${sameDay(d, today) ? 'today' : ''}`}>
                   {items.map((tk) => <EventPill key={tk.id} task={tk} compact />)}
+                  {googleItems.map((ev) => <GooglePill key={ev.id} event={ev} />)}
                 </div>
               );
             })}
@@ -385,19 +428,23 @@ export function TaskCalendar({
   }, [mode, anchor, googleStatus.connected]);
 
   const googleByDay = useMemo(() => groupGoogleByDay(googleEvents), [googleEvents]);
+  const googleByDayHour = useMemo(() => groupGoogleByDayHour(googleEvents), [googleEvents]);
 
+  // Counts Google's events too, or a day carrying nothing but those would
+  // show them *and* the "nothing here" line underneath at the same time.
   const hasAnyInPeriod = useMemo(() => {
-    if (mode === 'day') return (byDay.get(anchor.toDateString())?.length ?? 0) > 0;
-    if (mode === 'week') {
-      const days = weekDays(startOfWeek(anchor));
-      return days.some((d) => (byDay.get(d.toDateString())?.length ?? 0) > 0);
-    }
+    const dayHasSomething = (d: Date) =>
+      (byDay.get(d.toDateString())?.length ?? 0) > 0
+      || (googleByDay.get(d.toDateString())?.length ?? 0) > 0;
+
+    if (mode === 'day') return dayHasSomething(anchor);
+    if (mode === 'week') return weekDays(startOfWeek(anchor)).some(dayHasSomething);
     if (mode === 'year') return visibleTasks.some((tk) => new Date(tk.dueAt).getFullYear() === anchor.getFullYear());
-    return visibleTasks.some((tk) => {
-      const d = new Date(tk.dueAt);
-      return d.getMonth() === anchor.getMonth() && d.getFullYear() === anchor.getFullYear();
-    });
-  }, [mode, anchor, byDay, visibleTasks]);
+    const inThisMonth = (d: Date) =>
+      d.getMonth() === anchor.getMonth() && d.getFullYear() === anchor.getFullYear();
+    return visibleTasks.some((tk) => inThisMonth(new Date(tk.dueAt)))
+      || googleEvents.some((ev) => inThisMonth(new Date(ev.start)));
+  }, [mode, anchor, byDay, googleByDay, visibleTasks, googleEvents]);
 
   return (
     <div className="panel" style={{ marginTop: 14 }}>
@@ -427,8 +474,14 @@ export function TaskCalendar({
 
         <div className="calendar-body">
           <div className="calendar-main">
-            {mode === 'day' ? <DayGrid anchor={anchor} eventsByDayHour={byDayHour} today={today} /> : null}
-            {mode === 'week' ? <WeekGrid anchor={anchor} eventsByDayHour={byDayHour} today={today} /> : null}
+            {mode === 'day' ? (
+              <DayGrid anchor={anchor} eventsByDayHour={byDayHour}
+                       googleByDayHour={googleByDayHour} today={today} />
+            ) : null}
+            {mode === 'week' ? (
+              <WeekGrid anchor={anchor} eventsByDayHour={byDayHour}
+                        googleByDayHour={googleByDayHour} today={today} />
+            ) : null}
             {mode === 'month' ? (
               <MonthGrid anchor={anchor} eventsByDay={byDay} googleEventsByDay={googleByDay} today={today}
                          onSelectDay={setDetailDay} onSelectTask={onOpenTaskDetail} />

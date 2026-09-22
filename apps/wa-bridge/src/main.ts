@@ -32,12 +32,34 @@ const sessions = new SessionManager(authDir, (ev) => void postEvent(ev));
  * process and every other tenant's live session along with it; logging it and
  * carrying on costs only that one event, not the service.
  */
-process.on('uncaughtException', (err) => {
-  app.log.error({ err }, 'uncaught exception in wa-bridge — continuing');
-});
-process.on('unhandledRejection', (err) => {
-  app.log.error({ err }, 'unhandled rejection in wa-bridge — continuing');
-});
+/**
+ * Carrying on is only right once the service is actually up.
+ *
+ * Confirmed live: a restart raced the previous process for the port, the
+ * `EADDRINUSE` landed here, and this handler swallowed it — leaving a process
+ * that was alive, logging, and listening to nothing at all. Nothing else
+ * noticed: the port was still held by the dying process, so `/healthz` kept
+ * answering, and WhatsApp stayed silently disconnected. A failure before the
+ * server is listening is not a tenant-level hiccup to absorb; it means this
+ * process never became the service, and it should get out of the way.
+ */
+let listening = false;
+
+function onFatal(err: unknown, kind: string): void {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EADDRINUSE') {
+    app.log.error({ err }, `${kind}: port ${PORT} is already held by another wa-bridge — exiting`);
+    process.exit(1);
+  }
+  if (!listening) {
+    app.log.error({ err }, `${kind} before wa-bridge was serving — exiting instead of pretending to run`);
+    process.exit(1);
+  }
+  app.log.error({ err }, `${kind} in wa-bridge — continuing`);
+}
+
+process.on('uncaughtException', (err) => onFatal(err, 'uncaught exception'));
+process.on('unhandledRejection', (err) => onFatal(err, 'unhandled rejection'));
 
 // Internal service only — never exposed publicly, authenticated by one shared
 // secret rather than per-tenant tokens, the same way `apps/api` and
@@ -47,6 +69,31 @@ app.addHook('onRequest', async (req, reply) => {
     return reply.status(401).send({ error: 'unauthorized' });
   }
 });
+
+/**
+ * Bring every already-authenticated session back up.
+ *
+ * Without this, a session only ever ran because a request started it — so
+ * every restart (and `tsx watch` restarts on each save) left WhatsApp
+ * silently deaf: the process healthy, `/healthz` fine, the channel row still
+ * 'connected', and no inbound message reaching the CRM until somebody
+ * noticed hours later and called the start endpoint by hand.
+ */
+async function resumeSessions(): Promise<void> {
+  const channelIds = await sessions.resumable();
+  if (channelIds.length === 0) {
+    app.log.info('wa-bridge: no authenticated session to resume');
+    return;
+  }
+  for (const channelId of channelIds) {
+    try {
+      await sessions.start(channelId);
+      app.log.info({ channelId }, 'wa-bridge: resumed a saved WhatsApp session');
+    } catch (err) {
+      app.log.warn({ err, channelId }, 'wa-bridge: could not resume a saved session');
+    }
+  }
+}
 
 app.get('/healthz', async () => ({ status: 'ok' }));
 
@@ -72,4 +119,21 @@ app.delete<{ Params: { channelId: string } }>('/internal/sessions/:channelId', a
 });
 
 await app.listen({ port: PORT, host: '127.0.0.1' });
+listening = true;
 app.log.info(`wa-bridge listening on 127.0.0.1:${PORT}`);
+
+// After listening, not before: a session takes tens of seconds to come up,
+// and blocking the port on it would make the service look dead to everything
+// that polls it during a restart.
+void resumeSessions();
+
+// Nothing else notices a session dying in place. WhatsApp Web updates itself,
+// reloads its interface, and the injected page scripts go with it — the
+// process stays healthy and inbound messages simply stop. Checking costs one
+// round trip every two minutes; not checking cost three silent outages in a
+// single afternoon, each one found by a person waiting for a reply.
+sessions.startHeartbeat((channelId) => {
+  app.log.warn({ channelId }, 'wa-bridge: session stopped responding — restarting it');
+  void sessions.start(channelId).catch((err) =>
+    app.log.error({ err, channelId }, 'wa-bridge: could not restart a dead session'));
+});

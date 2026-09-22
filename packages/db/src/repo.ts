@@ -248,6 +248,36 @@ export async function updateContact(
  * separate, heavier operation reserved for a real privacy request (see
  * `governance.ts`'s DSR erasure), not a button on a list page.
  */
+/**
+ * Fill the store fields on the Client page from what the chatbot read.
+ *
+ * A merge, not a write of the whole record: `updateContact` replaces every
+ * attribute it is given, so using it here would blank an address or a note an
+ * agent had typed just to set a store name. `||` on jsonb keeps whatever else
+ * is in there.
+ *
+ * Only ever fills a blank. A value already on the record was put there by a
+ * person looking at this client, and that outranks a name parsed out of chat.
+ */
+export async function fillContactStoreFromChat(
+  ctx: Ctx, args: { contactId: string; storeName: string; storeStatus?: string },
+): Promise<boolean> {
+  const name = args.storeName.trim();
+  if (!name) return false;
+
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update contacts set attributes = attributes || jsonb_build_object(
+        'storeName', $3::text,
+        'storeStatus', coalesce(nullif(attributes->>'storeStatus', ''), $4::text)
+      )
+      where tenant_id = $1 and id = $2 and deleted_at is null
+        and coalesce(nullif(attributes->>'storeName', ''), '') = ''
+      returning id`,
+    [ctx.tenantId, args.contactId, name, args.storeStatus ?? 'aktif'],
+  );
+  return !!rows[0];
+}
+
 export async function softDeleteContact(ctx: Ctx, args: { contactId: string }): Promise<boolean> {
   const rows = await ctx.tx.query<{ id: string }>(
     `update contacts set deleted_at = now()

@@ -146,17 +146,33 @@ export async function installInboxObserver(
   page: Page, onChange: (threads: InboxThread[]) => void,
 ): Promise<void> {
   const callbackName = '__igOnInboxChange';
-  try {
-    await page.exposeFunction(callbackName, (json: string) => {
-      try {
-        onChange(JSON.parse(json) as InboxThread[]);
-      } catch {
-        // Malformed payload — drop it, the next mutation resends the full state.
-      }
-    });
-  } catch {
-    // Already exposed on this page — expected on a self-heal re-injection.
-  }
+
+  // A page that already carries an observer is the normal case now, not an
+  // odd one: this process adopts a browser the previous one left running, so
+  // the tab arrives with a live MutationObserver whose callback points into a
+  // process that no longer exists. Confirmed live — the inbox tab looked
+  // perfect, the flag said "installed", and not one message reached the CRM
+  // for hours. Both halves therefore have to be torn down and rebuilt: the
+  // page-side binding (or `exposeFunction` refuses the name, leaving this
+  // process with no callback at all) and the observer itself (or two of them
+  // end up running).
+  await page.removeExposedFunction(callbackName).catch(() => {});
+  await page.evaluate(`
+    (function () {
+      if (window.__igObserver) { try { window.__igObserver.disconnect(); } catch (e) {} }
+      window.__igObserver = null;
+      window.__igObserverInstalled = false;
+      try { delete window.${callbackName}; } catch (e) { window.${callbackName} = undefined; }
+    })();
+  `).catch(() => {});
+
+  await page.exposeFunction(callbackName, (json: string) => {
+    try {
+      onChange(JSON.parse(json) as InboxThread[]);
+    } catch {
+      // Malformed payload — drop it, the next mutation resends the full state.
+    }
+  });
 
   await page.evaluate(`
     (function () {
@@ -200,6 +216,9 @@ export async function installInboxObserver(
         debounceTimer = setTimeout(scan, 1500);
       });
       observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      // Kept reachable so the next process to adopt this browser can stop it
+      // instead of leaving a second one running beside its own.
+      window.__igObserver = observer;
       // Reported once immediately — otherwise a thread that never changes
       // after page load is never reported at all, even though it is a
       // real, existing conversation.
@@ -466,6 +485,7 @@ const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsern
 
 export async function sendThreadMessage(
   page: Page, threadId: string, text: string, ownUsername: string | null,
+  opts: { skipDuplicateScan?: boolean } = {},
 ): Promise<void> {
   await page.goto(`https://www.instagram.com/direct/t/${threadId}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
@@ -487,11 +507,20 @@ export async function sendThreadMessage(
   // that a deliberately repeated line, sent much earlier, suppresses a real
   // one now.
   await page.waitForSelector('div[aria-label^="See more options for message from "]', { timeout: 8000 }).catch(() => {});
-  const onScreen = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
-  const alreadySent = onScreen.slice(-5).some((m) =>
-    sameMessage(m.text, wanted)
-    && (!ownUsername || m.senderUsername.toLowerCase() === ownUsername.toLowerCase()));
-  if (alreadySent) return;
+  // Skipped when the caller has already answered this question with a
+  // timestamped source. This scan cannot: the DOM carries no clock, so it
+  // cannot tell our retry from a line the bot legitimately said an hour ago.
+  // Confirmed live — the bot greeted someone with the same sentence it had
+  // used 85 minutes earlier, that older bubble was still within the last
+  // five, and the send returned here without sending while the message was
+  // recorded as delivered.
+  if (!opts.skipDuplicateScan) {
+    const onScreen = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
+    const alreadySent = onScreen.slice(-5).some((m) =>
+      sameMessage(m.text, wanted)
+      && (!ownUsername || m.senderUsername.toLowerCase() === ownUsername.toLowerCase()));
+    if (alreadySent) return;
+  }
 
   const selector = [
     'div[contenteditable="true"][aria-label="Message"]',

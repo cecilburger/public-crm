@@ -87,6 +87,52 @@ export async function createBrand(
 }
 
 /** A form save — always writes the whole record, the way the edit page submits it. */
+/**
+ * Record the brand name the chatbot read out of a conversation.
+ *
+ * The BD flow captures "Nama Brand: …" from the qualification form the bot
+ * asks every new lead to fill in, but until now that name lived only for the
+ * length of one call: the CRM sent the brand it already knew, and threw away
+ * whatever came back. An agent then retyped what the client had already
+ * typed.
+ *
+ * Deliberately never overwrites. The flow only captures a name when it has
+ * none, and the CRM hands it the existing one, so the single case where the
+ * bot knows a name the database does not is a contact with no brand yet.
+ * Anything else — a name corrected by hand, a brand linked to the wrong
+ * contact — is a person's decision and outranks a regex reading of chat.
+ *
+ * `status: 'replied'` rather than the default: this brand exists *because*
+ * they answered.
+ */
+export async function recordBrandFromChat(
+  ctx: Ctx, args: { contactId: string; name: string; category?: string | null },
+): Promise<{ id: string } | null> {
+  const name = args.name.trim();
+  if (!name || name.length > 60) return null;
+
+  const existing = await ctx.tx.query<{ id: string }>(
+    'select id from brands where tenant_id = $1 and contact_id = $2 limit 1',
+    [ctx.tenantId, args.contactId],
+  );
+  if (existing[0]) return null;
+
+  const rows = await ctx.tx.query<{ id: string }>(
+    `insert into brands (tenant_id, name, category, contact_id, source, status, created_by)
+     values ($1, $2, $3, $4, 'other', 'replied', null)
+     returning id`,
+    [ctx.tenantId, name, args.category?.trim() || null, args.contactId],
+  );
+  const id = rows[0]!.id;
+
+  await audit(ctx.tx, ctx.tenantId, {
+    actorType: 'system', action: 'brand.captured_from_chat',
+    resourceType: 'brand', resourceId: id,
+    meta: { contactId: args.contactId, name },
+  });
+  return { id };
+}
+
 export async function updateBrand(
   ctx: Ctx, args: BrandInput & { brandId: string },
 ): Promise<boolean> {

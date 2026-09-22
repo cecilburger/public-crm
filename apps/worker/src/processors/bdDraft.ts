@@ -1,5 +1,8 @@
-import { withTenant, tenantKeys, openField, sealField, queueOutboundMessage, audit, type Database, type Sql } from '@kirana/db';
-import type { BdAction, BdBrainClient, BdConversation } from '../bdBrain.ts';
+import {
+  withTenant, tenantKeys, openField, sealField, queueOutboundMessage, createTask,
+  recordBrandFromChat, fillContactStoreFromChat, audit, type Database, type Sql,
+} from '@kirana/db';
+import type { BdAction, BdBooking, BdBrainClient, BdConversation } from '../bdBrain.ts';
 
 /**
  * Reply to one inbound message on a BD conversation, using the `trained-cb`
@@ -127,23 +130,116 @@ export async function processBdDraft(
 
   const step = await deps.brain.step({ conversation, text: job.text, now });
 
+  /* 2b — a decision to book is not a booking */
+  //
+  // `step` only says "book a meeting": choosing when needs a calendar and a
+  // reading of what the contact actually asked for, neither of which a pure
+  // state machine has. The brain's booking endpoint owns both, so the
+  // decision is handed straight back to it along with the recent turns the
+  // requested hour is usually hiding in.
+  let booking: BdBooking | null = null;
+  let offered: string[] = [];
+  const propose = step.actions.find((a) => a.type === 'propose_slots');
+  const wantsBooking = step.actions.some((a) => a.type === 'book_meeting');
+
+  if (wantsBooking || propose) {
+    const history = await withTenant(deps.db, job.tenantId, (tx) =>
+      recentTurns({ tx, tenantId: job.tenantId, kek: deps.kek }, job.conversationId));
+    try {
+      if (wantsBooking) {
+        booking = await deps.brain.book({ conversation: step.conversation, history, now });
+      } else if (propose?.type === 'propose_slots') {
+        // Agreement, with no time named yet. This is the turn a lead is most
+        // likely to be lost on, so it must never go unanswered — the flow
+        // even carries its own wording for a calendar it cannot reach.
+        const result = await deps.brain.proposeSlots({
+          conversation: step.conversation,
+          fallbackText: propose.fallback_text,
+          fallbackKey: propose.fallback_key,
+          history,
+          now,
+        });
+        offered = result.messages;
+      }
+    } catch (err) {
+      // Never fatal to the reply. The contact agreed to a meeting; failing
+      // the whole job here would leave them with silence, which is the one
+      // outcome the flow's own failure paths exist to prevent.
+      console.warn('[bd] scheduling step failed, continuing without it:', (err as Error).message);
+      // The flow's own fallback is better than nothing when the calendar
+      // could not be reached at all.
+      if (!wantsBooking && propose?.type === 'propose_slots') offered = [propose.fallback_text];
+    }
+  }
+
   /* 3 — apply what came back */
   return applyActions(deps, {
     tenantId: job.tenantId,
     conversationId: job.conversationId,
+    contactId: row.contact_id,
+    assigneeId: row.assignee_id,
+    knewBrand: !!row.brand_name,
     now,
     step,
+    booking,
+    offered,
   });
+}
+
+/**
+ * Strip what WhatsApp's own formatting leaves on a captured name.
+ *
+ * The brand is read out of chat with a regex, and chat carries `*bold*`,
+ * bullets and stray punctuation — the first name this captured live came
+ * through as "* MCNASIA". Cleaning it here rather than in the flow keeps the
+ * repair next to the thing that stores it, and a name that is nothing but
+ * markup is dropped instead of written.
+ */
+function cleanBrandName(raw: string | undefined): string {
+  const name = (raw ?? '')
+    .replace(/[*_~`]/g, '')
+    .replace(/^[\s•\-–—:]+/, '')
+    .replace(/[\s•\-–—:]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Nothing left but punctuation, or long enough to be a sentence rather
+  // than a name.
+  if (!/[a-z0-9]/i.test(name) || name.length > 60) return '';
+  return name;
+}
+
+/** The last few turns, oldest first — what the brain reads to find a day and
+ * hour the contact named a message or two ago. */
+async function recentTurns(
+  ctx: { tx: Sql; tenantId: string; kek: Buffer }, conversationId: string,
+): Promise<{ direction: 'in' | 'out'; body: string }[]> {
+  const rows = await ctx.tx.query<{ direction: string; body_enc: string | null }>(
+    `select direction, body_enc from messages
+      where tenant_id = $1 and conversation_id = $2
+      order by created_at desc limit 8`,
+    [ctx.tenantId, conversationId],
+  );
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  return rows
+    .reverse()
+    .map((r) => ({
+      direction: (r.direction === 'inbound' ? 'in' : 'out') as 'in' | 'out',
+      body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
+    }))
+    .filter((t) => t.body);
 }
 
 async function applyActions(
   deps: BdDeps,
   args: {
-    tenantId: string; conversationId: string; now: Date;
+    tenantId: string; conversationId: string; contactId: string; assigneeId: string | null;
+    knewBrand: boolean; now: Date;
     step: { intent: string; conversation: BdConversation; actions: BdAction[] };
+    booking: BdBooking | null;
+    offered: string[];
   },
 ): Promise<BdOutcome> {
-  const { step } = args;
+  const { step, booking, offered } = args;
 
   // The brain returns the mutated state; `set_node` carries the node change
   // separately, because the flow never writes `convo.node` itself. Applying
@@ -154,9 +250,17 @@ async function applyActions(
     ...step.conversation,
     node: setNode?.type === 'set_node' ? setNode.node : step.conversation.node,
     outcome: setNode?.type === 'set_node' ? setNode.outcome : step.conversation.outcome,
+    // The booking call advanced the conversation further than `step` did —
+    // it is the one that knows the meeting time and the Meet link.
+    ...(booking ? { meeting_at: booking.meeting_at, meet_link: booking.meet_link } : {}),
   };
 
-  const deferred = [...new Set(step.actions.filter((a) => !HANDLED.has(a.type)).map((a) => a.type))];
+  // A booking that ran is no longer deferred work — it happened, and its own
+  // messages are below.
+  const handled = new Set(HANDLED);
+  if (booking) handled.add('book_meeting');
+  if (offered.length) handled.add('propose_slots');
+  const deferred = [...new Set(step.actions.filter((a) => !handled.has(a.type)).map((a) => a.type))];
   const escalation = step.actions.find((a) => a.type === 'escalate');
   const sends = step.actions.filter((a): a is Extract<BdAction, { type: 'send' }> => a.type === 'send');
 
@@ -199,6 +303,69 @@ async function applyActions(
         now: args.now,
       });
       messageIds.push(messageId);
+    }
+
+    // What the booking decided to say — a confirmation, a list of open slots
+    // when the requested hour was taken, or the "jadwalnya sedang saya
+    // siapkan" holding line when the calendar could not be reached. Queued
+    // the same way as any other reply so the outbox and the bridges handle
+    // delivery unchanged.
+    for (const text of [...(booking?.messages ?? []), ...offered]) {
+      const { messageId } = await queueOutboundMessage(ctx, {
+        conversationId: args.conversationId,
+        body: text,
+        senderType: 'autopilot',
+        now: args.now,
+      });
+      messageIds.push(messageId);
+    }
+
+    // The bot reads "Nama Brand: …" off the form it asks every new lead to
+    // fill in. Writing it down here is what stops an agent retyping what the
+    // client already typed — and what keeps a meeting from being titled after
+    // whatever the contact happened to be called.
+    const capturedBrand = cleanBrandName(step.conversation.brand);
+    if (!args.knewBrand && capturedBrand) {
+      await recordBrandFromChat(ctx, {
+        contactId: args.contactId,
+        name: capturedBrand,
+        category: step.conversation.category || null,
+      });
+      // The Client page reads its store columns off the contact, not off the
+      // brand row — so filling one without the other leaves the page looking
+      // exactly as empty as before.
+      await fillContactStoreFromChat(ctx, {
+        contactId: args.contactId,
+        storeName: capturedBrand,
+        storeStatus: 'aktif',
+      });
+    }
+
+    // A booked meeting has to be visible to the people who will attend it,
+    // not just recorded in the bot's own state. A `meeting` task carries it
+    // onto Tugas and Kalender, and onto Client On Proses — which lists
+    // contacts tagged `customer` and shows each one's nearest open meeting.
+    if (booking?.booked && booking.meeting_at) {
+      await createTask(ctx, {
+        contactId: args.contactId,
+        conversationId: args.conversationId,
+        title: `Meeting ${step.conversation.brand || step.conversation.name || 'Client'} x MCN Asia`,
+        dueAt: new Date(booking.meeting_at),
+        kind: 'meeting',
+        meetingLink: booking.meet_link || null,
+        notes: 'Dijadwalkan otomatis oleh chatbot BD.',
+        assigneeId: args.assigneeId,
+        createdBy: args.assigneeId,
+      });
+
+      // Without the tag the meeting exists but the contact never appears on
+      // Client On Proses, which is where the team looks for exactly this.
+      await tx.query(
+        `update contacts set tags = (
+           select array_agg(distinct t) from unnest(tags || array['customer']) as t
+         ) where tenant_id = $1 and id = $2 and not ('customer' = any(tags))`,
+        [args.tenantId, args.contactId],
+      );
     }
 
     if (escalation?.type === 'escalate') {

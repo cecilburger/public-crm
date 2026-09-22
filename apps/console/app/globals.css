@@ -846,6 +846,9 @@ button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
   background: var(--brand-soft); color: var(--brand);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Pulled in from Google, not a task in this CRM — same accent the month
+   grid uses for them, so the two views read as the same kind of thing. */
+.time-event.google { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
 .time-event.overdue { background: var(--danger-soft); color: var(--danger); }
 .time-event.done { background: var(--good-soft); color: var(--good); text-decoration: line-through; opacity: .8; }
 .time-event.cancelled { background: var(--panel); color: var(--ink-3); text-decoration: line-through; }

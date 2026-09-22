@@ -6,11 +6,14 @@
 export class IgBridgeClient {
   constructor(private baseUrl: string, private secret: string) {}
 
-  async send(args: { tenantId: string; threadId: string; body: string }): Promise<void> {
+  async send(args: { tenantId: string; threadId: string; body: string; username?: string }): Promise<void> {
     const res = await fetch(`${this.baseUrl}/internal/sessions/${args.tenantId}/threads/${args.threadId}/send`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
-      body: JSON.stringify({ text: args.body }),
+      // `username` is optional and only used to confirm a send the thread
+      // scrape could not see. A send without it still works; it just falls
+      // back to reporting an unconfirmed send as a failure.
+      body: JSON.stringify({ text: args.body, username: args.username }),
     });
 
     if (!res.ok) {

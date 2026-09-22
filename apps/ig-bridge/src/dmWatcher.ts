@@ -4,7 +4,7 @@ import type { Page } from 'puppeteer';
 import type { SessionManager } from './sessionManager.ts';
 import {
   gotoInbox, installInboxObserver, discoverThreadId, readThreadMessages, acceptPendingRequests,
-  isSessionExpiredError, type InboxThread,
+  isSessionExpiredError, type InboxThread, type ScrapedMessage,
 } from './dmScraperPuppeteer.ts';
 
 export type DmWatcherEvent =
@@ -310,12 +310,44 @@ export class DmWatcher {
     } catch {
       // No persisted anchors yet.
     }
+    await this.loadSequences(tenantId);
+  }
+
+  private sequencesFile(tenantId: string): string {
+    return path.join(this.sessions.getProfileDir(tenantId), '.thread-sequences.json');
+  }
+
+  /**
+   * The counter that makes a repeated message distinguishable, kept across
+   * restarts for the same reason the anchors are.
+   *
+   * It was held only in memory, so every restart handed the next message
+   * index 0 again — and the webhook keys on
+   * `(thread, sender, index, text)`. The first message after a restart
+   * therefore hashed identically to the first one ever ingested from that
+   * person in that thread, and was dropped as a duplicate. Confirmed live:
+   * three messages in a row vanished this way, each one posted by the bridge
+   * and silently discarded by the API, with nothing anywhere saying so.
+   */
+  private async loadSequences(tenantId: string): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.sequencesFile(tenantId), 'utf8');
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      this.nextSeq.set(tenantId, new Map(Object.entries(parsed)));
+    } catch {
+      // No persisted sequences yet.
+    }
   }
 
   private persistAnchors(tenantId: string): void {
     const byThread = this.lastMessageList.get(tenantId);
     if (!byThread) return;
     void fs.writeFile(this.anchorsFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8').catch(() => {});
+
+    const seqs = this.nextSeq.get(tenantId);
+    if (seqs) {
+      void fs.writeFile(this.sequencesFile(tenantId), JSON.stringify(Object.fromEntries(seqs)), 'utf8').catch(() => {});
+    }
   }
 
   /**
@@ -372,10 +404,30 @@ export class DmWatcher {
       return current;
     }
 
-    for (let i = current.length - 1; i >= 0; i--) {
-      const m = current[i]!;
-      if (m.senderUsername === anchor.senderUsername && m.text === anchor.text) return current.slice(i + 1);
+    // Matching on the last known message alone cannot tell that message apart
+    // from an identical one sent right after it — and people repeat
+    // themselves constantly ("halo", "iya", "ok"). Confirmed live: a second
+    // "Halo kak" from the same person was swallowed, because the backwards
+    // scan found the *new* message first and read it as the anchor, so
+    // "everything after the anchor" was nothing at all.
+    //
+    // A short run of trailing messages is matched instead. Repeated text
+    // stops being ambiguous once what came before it has to line up too, and
+    // scanning from the end still prefers the most recent position — which is
+    // what keeps an old, long-scrolled-past repeat of the same words from
+    // re-reporting a whole thread.
+    const tail = prev.slice(-Math.min(prev.length, 3));
+    const same = (a: ScrapedMessage, b: ScrapedMessage) =>
+      a.senderUsername === b.senderUsername && a.text === b.text;
+
+    for (let end = current.length - 1; end >= tail.length - 1; end--) {
+      let matched = true;
+      for (let k = 0; k < tail.length; k++) {
+        if (!same(current[end - tail.length + 1 + k]!, tail[k]!)) { matched = false; break; }
+      }
+      if (matched) return current.slice(end + 1);
     }
+
     this.log.warn(
       { threadId, anchor, currentTail: current.slice(-3) },
       'ig-bridge DEBUG: diffNewMessages — anchor not found in current scrape',

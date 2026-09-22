@@ -297,9 +297,16 @@ async function openThreadFromInbox(page: Page, username: string): Promise<string
  * every single comment DM trips it, and a failure that is really a success
  * is the exact shape that gets a stranger messaged twice.
  */
-export async function dmLanded(page: Page, username: string, text: string): Promise<boolean> {
+export async function dmLanded(
+  page: Page, username: string, text: string, opts: { sinceMs?: number } = {},
+): Promise<boolean> {
   const inbox = await getJson(page, '/api/v1/direct_v2/inbox/?limit=20&thread_message_limit=5') as {
-    inbox?: { threads?: { users?: { username?: unknown }[]; items?: { text?: unknown; link?: { text?: unknown } }[] }[] };
+    inbox?: {
+      threads?: {
+        users?: { username?: unknown }[];
+        items?: { text?: unknown; timestamp?: unknown; link?: { text?: unknown } }[];
+      }[];
+    };
   } | null;
   if (!inbox) return false;
 
@@ -310,6 +317,15 @@ export async function dmLanded(page: Page, username: string, text: string): Prom
     const withThem = (thread.users ?? []).some((u) => String(u.username ?? '').toLowerCase() === want);
     if (!withThem) continue;
     for (const item of thread.items ?? []) {
+      // Instagram reports item timestamps in microseconds.
+      const atMs = Number(item.timestamp ?? 0) / 1000;
+      // Without this bound, confirming a send meant asking "does this text
+      // exist in that thread?" — and a bot repeats itself constantly, so an
+      // identical greeting sent half an hour earlier answered yes for a
+      // message that never went out. Confirmed live: a reply recorded as
+      // sent was nowhere on Instagram. A confirmation may only count a
+      // message that arrived after the send began.
+      if (opts.sinceMs && !(atMs >= opts.sinceMs)) continue;
       // A link item carries the message body under `link.text`, not `text`.
       const body = normalise(String(item.text ?? item.link?.text ?? ''));
       if (body && wanted && (body.startsWith(wanted.slice(0, 60)) || wanted.startsWith(body.slice(0, 60)))) {
