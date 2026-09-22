@@ -11,9 +11,13 @@ import { audit } from './audit.ts';
  * Adding a new encrypted column and forgetting to add it here would leave it
  * readable only by a key we are about to throw away, so the list is checked
  * against the schema by a test rather than trusted.
+ *
+ * `cursor` is the uuid column a batch walks in order, and defaults to `id`.
+ * The per-tenant settings tables have no surrogate key — one row per tenant,
+ * or one per user — so they name the column they are actually keyed by.
  */
-export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
-  { table: 'contacts', columns: ['phone_enc', 'email_enc'] },
+export const ENCRYPTED_COLUMNS: { table: string; columns: string[]; cursor?: string }[] = [
+  { table: 'contacts', columns: ['phone_enc', 'email_enc', 'ig_psid_enc', 'ig_username_enc', 'ig_thread_id_enc'] },
   { table: 'brands', columns: ['phone_enc', 'email_enc'] },
   { table: 'messages', columns: ['body_enc'] },
   { table: 'message_drafts', columns: ['body_enc'] },
@@ -21,6 +25,11 @@ export const ENCRYPTED_COLUMNS: { table: string; columns: string[] }[] = [
   { table: 'users', columns: ['mfa_secret_enc'] },
   { table: 'orders', columns: ['recipient_enc', 'address_enc'] },
   { table: 'bd_conversation_state', columns: ['email_enc'] },
+  { table: 'ig_comments', columns: ['commenter_enc', 'text_enc', 'public_reply_enc'] },
+  { table: 'google_calendar_connections', columns: ['access_token_enc', 'refresh_token_enc'], cursor: 'user_id' },
+  { table: 'ig_meta_connections', columns: ['access_token_enc'], cursor: 'tenant_id' },
+  { table: 'ig_bridge_connections', columns: ['username_enc'], cursor: 'tenant_id' },
+  { table: 'tenant_email_settings', columns: ['smtp_url_enc'], cursor: 'tenant_id' },
 ];
 
 export interface RotationProgress {
@@ -94,11 +103,12 @@ export async function rotateBatch(
       }
 
       const cursor = state[0]?.last_id ?? null;
+      const key = target.cursor ?? 'id';
       const anyEncrypted = target.columns.map((c) => `${c} is not null`).join(' or ');
       const rows = await tx.query<Record<string, string | null>>(
-        `select id, ${target.columns.join(', ')} from ${target.table}
-          where tenant_id = $1 and ($2::uuid is null or id > $2) and (${anyEncrypted})
-          order by id asc limit $3`,
+        `select ${key}, ${target.columns.join(', ')} from ${target.table}
+          where tenant_id = $1 and ($2::uuid is null or ${key} > $2) and (${anyEncrypted})
+          order by ${key} asc limit $3`,
         [tenantId, cursor, batchSize],
       );
 
@@ -117,7 +127,7 @@ export async function rotateBatch(
 
       for (const row of rows) {
         const updates: string[] = [];
-        const values: unknown[] = [tenantId, row.id as string];
+        const values: unknown[] = [tenantId, row[key] as string];
 
         for (const column of target.columns) {
           const current = row[column];
@@ -129,11 +139,11 @@ export async function rotateBatch(
         }
         if (updates.length > 0) {
           await tx.query(
-            `update ${target.table} set ${updates.join(', ')} where tenant_id = $1 and id = $2`,
+            `update ${target.table} set ${updates.join(', ')} where tenant_id = $1 and ${key} = $2`,
             values,
           );
         }
-        lastId = row.id as string;
+        lastId = row[key] as string;
       }
 
       const rowsDone = Number(state[0]?.rows_done ?? 0) + rows.length;

@@ -237,6 +237,24 @@ export interface AgentPerformanceSummary {
   }[];
 }
 
+export interface IgComment {
+  id: string;
+  platform: 'instagram' | 'facebook';
+  postRef: string;
+  commentRef: string;
+  /** Set when this is a reply inside another comment's thread. */
+  parentRef: string | null;
+  commenter: string;
+  text: string;
+  publicStatus: 'pending' | 'sent' | 'failed' | 'skipped';
+  dmStatus: 'pending' | 'sent' | 'failed' | 'skipped';
+  publicReply: string | null;
+  lastError: string | null;
+  conversationId: string | null;
+  commentedAt: string | null;
+  createdAt: string;
+}
+
 export interface ContactDetail {
   id: string;
   displayName: string | null;

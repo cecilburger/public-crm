@@ -214,9 +214,25 @@ export class SessionManager {
     const launch = (async () => {
       if (!(await this.hasSession(tenantId))) return null;
       await this.clearCrashedSessionState(tenantId);
-      const browser = await puppeteerExtra.launch({
-        headless: HEADLESS, userDataDir: this.profileDir(tenantId), defaultViewport: { width: 1280, height: 900 },
-      }) as unknown as Browser;
+      let browser: Browser;
+      try {
+        browser = await puppeteerExtra.launch({
+          headless: HEADLESS, userDataDir: this.profileDir(tenantId), defaultViewport: { width: 1280, height: 900 },
+        }) as unknown as Browser;
+      } catch (err) {
+        // Almost always the profile lock, held by a Chrome this process did
+        // not start. `tsx watch` restarts on every save and the shutdown
+        // handler does not always win the race to close the browser first,
+        // so the surviving Chrome blocks every launch the new process
+        // attempts — confirmed live, repeatedly, each restart leaving the
+        // bridge unable to open a single page until the stray was killed by
+        // hand. Adopting it is strictly better than fighting it: same
+        // profile, same cookies, same logged-in session.
+        const adopted = await this.adoptRunningBrowser(tenantId);
+        if (!adopted) throw err;
+        this.contexts.set(tenantId, adopted);
+        return adopted;
+      }
       this.contexts.set(tenantId, browser);
       return browser;
     })();
@@ -225,6 +241,35 @@ export class SessionManager {
       return await launch;
     } finally {
       this.launching.delete(tenantId);
+    }
+  }
+
+  /**
+   * Reconnect to a Chrome already running against this tenant's profile.
+   *
+   * Chrome writes its own debugging port into `DevToolsActivePort` inside the
+   * profile directory — that file exists precisely so something else can find
+   * a running instance. Puppeteer can attach over it, which turns a leftover
+   * browser from the previous `tsx watch` generation from a blocker into the
+   * session we go on using.
+   */
+  private async adoptRunningBrowser(tenantId: string): Promise<Browser | null> {
+    let port: string;
+    try {
+      const contents = await fs.readFile(path.join(this.profileDir(tenantId), 'DevToolsActivePort'), 'utf8');
+      port = contents.split('\n')[0]?.trim() ?? '';
+    } catch {
+      return null;
+    }
+    if (!/^\d+$/.test(port)) return null;
+
+    try {
+      return await puppeteer.connect({
+        browserURL: `http://127.0.0.1:${port}`, defaultViewport: { width: 1280, height: 900 },
+      });
+    } catch {
+      // The file outlives the browser it described. Nothing to adopt.
+      return null;
     }
   }
 

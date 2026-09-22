@@ -24,4 +24,36 @@ export class IgBridgeClient {
       throw err;
     }
   }
+
+  /**
+   * Answer a comment: the short public line, then the DM that actually says
+   * something. Returns what happened to each half rather than throwing on a
+   * partial success — a public reply that lands while the DM bounces is a
+   * normal outcome (a commenter can simply be unreachable by DM), and the
+   * caller records both.
+   */
+  async replyToComment(args: {
+    tenantId: string; postRef: string; commentRef: string; commenter: string;
+    publicReply?: string; dmText?: string;
+  }): Promise<{
+    public: { sent: boolean; error?: string };
+    dm: { sent: boolean; alreadyThere?: boolean; threadId?: string; error?: string };
+  }> {
+    const res = await fetch(`${this.baseUrl}/internal/sessions/${args.tenantId}/comments/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
+      body: JSON.stringify({
+        postRef: args.postRef, commentRef: args.commentRef, commenter: args.commenter,
+        publicReply: args.publicReply, dmText: args.dmText,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(`ig-bridge comment reply failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
+      err.permanent = res.status === 400 || res.status === 404;
+      throw err;
+    }
+    return await res.json() as Awaited<ReturnType<IgBridgeClient['replyToComment']>>;
+  }
 }

@@ -1656,3 +1656,22 @@ export async function sendCalendarEventEmail(_prev: ActionResult | null, form: F
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.sendEmailFailed };
   }
 }
+
+/**
+ * What an agent did about one Instagram comment.
+ *
+ * Deliberately a record of a human's action, not a send: the public reply is
+ * posted by the agent in Instagram itself, and this is where they say so.
+ * Nothing here talks to Instagram — see docs on the Komentar IG page for why
+ * posting publicly is the one step left to a person for now.
+ */
+export async function recordCommentOutcome(form: FormData): Promise<void> {
+  await assertCsrf(form);
+  const id = String(form.get('commentId') ?? '');
+  const publicStatus = String(form.get('publicStatus') ?? 'sent') as 'sent' | 'skipped';
+  await api(`/v1/ig-comments/${id}`, {
+    method: 'PATCH',
+    body: { publicStatus, ...(publicStatus === 'skipped' ? { dmStatus: 'skipped' } : {}) },
+  });
+  revalidatePath('/komentar-ig');
+}

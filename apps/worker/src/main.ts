@@ -15,6 +15,7 @@ import { runHealthChecks } from './processors/healthChecks.ts';
 import { closePeriodAndIssueInvoice, checkUsageThresholds, runDunning } from './processors/billingRollup.ts';
 import { BdBrainClient } from './bdBrain.ts';
 import { processBdDraft } from './processors/bdDraft.ts';
+import { processIgCommentReply } from './processors/igCommentReply.ts';
 
 const e = env();
 const kek = loadKek(e.KIRANA_KEK);
@@ -96,6 +97,29 @@ if (!bdBrain) {
   console.warn('BD_BRAIN_URL is not set — BD conversations will not be answered');
 }
 
+/**
+ * What the bot says to a comment, asked of the bot itself.
+ *
+ * Not held in the CRM: a second copy of these two texts would drift from
+ * `templates.py` without anyone noticing, and the place that would surface
+ * is a public reply under a brand's post.
+ */
+const commentTexts = async (): Promise<{ publicReply: string; dmOpener: string } | null> => {
+  if (!process.env.BD_BRAIN_URL) return null;
+  try {
+    const res = await fetch(`${process.env.BD_BRAIN_URL}/v1/comment-reply`, {
+      headers: { authorization: `Bearer ${process.env.BD_BRAIN_SECRET ?? ''}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { publicReply?: string; dmOpener?: string };
+    if (!body.publicReply || !body.dmOpener) return null;
+    return { publicReply: body.publicReply, dmOpener: body.dmOpener };
+  } catch {
+    return null;
+  }
+};
+
 const workers = [
   new Worker('inbound.normalise', async (job: Job) =>
     processInboundWebhook({ db, control, kek, dispatch, publish }, job.data.webhookEventId), { connection, concurrency: 16 }),
@@ -114,6 +138,16 @@ const workers = [
     }
     return processBdDraft({ db, kek, brain: bdBrain, dispatch }, job.data);
   }, { connection, concurrency: 6 }),
+
+  new Worker('igComment.reply', async (job: Job) => {
+    // Off by default is the wrong default for a feature someone turned on,
+    // but this one speaks in public under the workspace's own name — so it
+    // is a switch that exists, is named, and can be flipped without a
+    // deploy. `IG_COMMENT_AUTOREPLY=false` stops every reply going out while
+    // comments keep being collected and shown on the page for a person.
+    if (process.env.IG_COMMENT_AUTOREPLY === 'false') return { status: 'disabled' };
+    return processIgCommentReply({ db, kek, igBridge, commentTexts }, job.data);
+  }, { connection, concurrency: 1 }),
 
   new Worker('billing.rollup', async (job: Job) =>
     closePeriodAndIssueInvoice(db, job.data.tenantId, new Date(), email), { connection, concurrency: 4 }),

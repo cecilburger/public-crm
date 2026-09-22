@@ -44,6 +44,7 @@ export const t = {
     chats: 'Obrolan',
     chatWa: 'Chat WA',
     chatIg: 'Chat IG',
+    igComments: 'Komentar IG',
     client: 'Client',
     clientDeal: 'Client Deal',
     clientProses: 'Client On Proses',
@@ -673,6 +674,32 @@ export const t = {
   statuses: {
     open: 'Berjalan', pending: 'Menunggu', snoozed: 'Ditunda', resolved: 'Selesai',
   } as Record<string, string>,
+
+  igComments: {
+    title: 'Komentar IG',
+    subtitle: 'Komentar di postingan Instagram Anda. Balasan publik dibuat singkat — penjelasan lengkapnya lewat DM.',
+    tabAll: 'Semua',
+    tabPending: 'Perlu dibalas',
+    empty: 'Belum ada komentar masuk.',
+    onPost: 'di postingan',
+    draftLabel: 'Draft balasan publik',
+    copy: 'Salin',
+    copied: 'Tersalin',
+    markSent: 'Tandai sudah dibalas',
+    skip: 'Lewati',
+    statusPublicSent: 'Sudah dibalas publik',
+    statusPublicPending: 'Belum dibalas',
+    statusPublicSkipped: 'Dilewati',
+    statusPublicFailed: 'Balasan publik gagal',
+    statusDmSent: 'DM terkirim',
+    statusDmFailed: 'DM gagal',
+    openInstagram: 'Buka di Instagram',
+    // Sengaja pendek dan tanpa harga/paket/nama: komentar dibaca semua orang
+    // yang lewat, jadi penjelasan lengkapnya ditaruh di DM. Teks ini kembaran
+    // REPLY_KOMENTAR_PUBLIK di trained-cb — kalau nanti endpoint komentar di
+    // sana sudah ada, draft-nya diambil dari situ, bukan dari sini.
+    draftPublicReply: 'Halo Kak, terima kasih sudah mampir 🙏 Info lengkapnya sudah kami kirim lewat DM ya',
+  },
 
   chatIg: {
     title: 'Chat IG',

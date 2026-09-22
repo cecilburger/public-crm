@@ -240,4 +240,55 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     return reply.status(200).send({ received: true });
   });
+
+  /**
+   * Comments on our own posts, read off the page by `apps/ig-bridge`.
+   *
+   * Spooled like every other provider event rather than written straight
+   * through: the reader re-reads a post on every pass, so the same comment
+   * arrives again and again, and `(provider, external_id)` is the barrier
+   * that already knows what to do about that.
+   *
+   * A comment is deliberately NOT a message — it never reaches the inbox or
+   * the flow. `processIgComment` files it in `ig_comments`, where the rule
+   * that governs it (one short public line, the real answer in DM) can be
+   * applied by whoever is allowed to apply it.
+   */
+  app.post('/v1/webhooks/ig-comments', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${ctx.env.IG_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'ig-comments webhook rejected: bad secret');
+      webhookEvents.inc({ provider: 'ig_comment', outcome: 'bad_signature' });
+      return reply.status(401).send();
+    }
+
+    const body = req.body as {
+      tenantId?: string;
+      comment?: {
+        postRef?: string; commentRef?: string; commenter?: string; text?: string; at?: string;
+        parentRef?: string | null;
+      };
+    };
+    const c = body.comment;
+    if (!body.tenantId || !c?.postRef || !c.commentRef || !c.commenter || !c.text) {
+      webhookEvents.inc({ provider: 'ig_comment', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
+      tx.query<{ id: string }>(
+        `insert into webhook_events (provider, external_id, signature_ok, payload)
+         values ('ig_comment', $1, true, $2)
+         on conflict (provider, external_id) do nothing
+         returning id`,
+        [`${body.tenantId}:${c.commentRef}`, JSON.stringify(body)],
+      ));
+
+    webhookEvents.inc({ provider: 'ig_comment', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    if (inserted[0]) {
+      await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
+    }
+
+    return reply.status(200).send({ received: true });
+  });
 }

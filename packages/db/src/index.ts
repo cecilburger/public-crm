@@ -24,3 +24,4 @@ export * from './igBridge.ts';
 export * from './igMeta.ts';
 export * from './dashboard.ts';
 export * from './agentPerformance.ts';
+export * from './igComments.ts';

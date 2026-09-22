@@ -31,6 +31,7 @@ import { registerQuickReplyRoutes } from './routes/quickReplies.ts';
 import { registerSalesTargetRoutes } from './routes/salesTargets.ts';
 import { registerDashboardRoutes } from './routes/dashboard.ts';
 import { registerAgentPerformanceRoutes } from './routes/agentPerformance.ts';
+import { registerIgCommentRoutes } from './routes/igComments.ts';
 import { registerDocumentRoutes } from './routes/documents.ts';
 import { registerDocumentKindRoutes } from './routes/documentKinds.ts';
 import { registerDocumentModelRoutes } from './routes/documentModels.ts';
@@ -185,6 +186,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // webhook (which authenticates by signature) and the public price calculator.
   const PUBLIC = new Set(['/healthz', '/readyz', '/metrics', '/v1/auth/login', '/v1/auth/refresh',
                           '/v1/webhooks/meta', '/v1/webhooks/wa-bridge', '/v1/webhooks/ig-bridge',
+                          '/v1/webhooks/ig-comments',
                           '/v1/billing/estimate', '/v1/billing/plans', '/v1/auth/mfa/verify']);
 
   app.addHook('onRequest', async (req) => {
@@ -349,6 +351,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerSalesTargetRoutes(app, ctx);
   registerDashboardRoutes(app, ctx);
   registerAgentPerformanceRoutes(app, ctx);
+  registerIgCommentRoutes(app, ctx);
   registerDocumentRoutes(app, ctx);
   registerDocumentKindRoutes(app, ctx);
   registerDocumentModelRoutes(app, ctx);

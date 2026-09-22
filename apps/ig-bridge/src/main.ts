@@ -2,6 +2,10 @@ import path from 'node:path';
 import Fastify from 'fastify';
 import { SessionManager, NoActiveSessionError } from './sessionManager.ts';
 import { DmWatcher, type DmWatcherEvent } from './dmWatcher.ts';
+import { readRecentComments, probeCommentRequests, mediaIdFromShortcode } from './commentScraper.ts';
+import { CommentWatcher, type IgCommentEvent } from './commentWatcher.ts';
+import { replyToComment, openThreadWithUser, alreadyReplied, dmLanded } from './commentPoster.ts';
+import { sendThreadMessage, SendNotConfirmedError } from './dmScraperPuppeteer.ts';
 
 const PORT = Number(process.env.PORT ?? 8091);
 const IG_BRIDGE_SECRET = process.env.IG_BRIDGE_SECRET ?? 'dev-ig-bridge-secret-change-me';
@@ -10,9 +14,13 @@ const authDir = path.join(import.meta.dirname, '..', '.ig_bridge_auth');
 
 const app = Fastify({ logger: true });
 
-async function postEvent(ev: DmWatcherEvent): Promise<void> {
+async function postEvent(ev: DmWatcherEvent | IgCommentEvent): Promise<void> {
+  // Comments spool through their own route: they are not messages, and the
+  // ig-bridge webhook keys DMs on (thread, sender, seq, text), which a
+  // comment has none of.
+  const path = ev.event === 'comment' ? '/v1/webhooks/ig-comments' : '/v1/webhooks/ig-bridge';
   try {
-    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/ig-bridge`, {
+    const res = await fetch(`${KIRANA_API_URL}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${IG_BRIDGE_SECRET}` },
       body: JSON.stringify(ev),
@@ -38,6 +46,9 @@ const watcher = new DmWatcher(sessions, (ev) => void postEvent(ev), app.log);
 // single-instance lock (`ProcessSingleton`) rejected the second launch.
 watcher.start();
 
+const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
+comments.start();
+
 process.on('uncaughtException', (err) => {
   app.log.error({ err }, 'uncaught exception in ig-bridge — continuing');
 });
@@ -60,6 +71,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   app.log.info({ signal }, 'ig-bridge shutting down — closing browsers');
   watcher.stop();
+  comments.stop();
   await sessions.closeAll().catch((err) => app.log.warn({ err }, 'ig-bridge: error closing browsers on shutdown'));
   await app.close().catch(() => {});
   process.exit(0);
@@ -104,6 +116,153 @@ app.post<{ Params: { tenantId: string }; Body: { code: string } }>(
     return reply.send(result);
   });
 
+/**
+ * Read-only: what is actually sitting on our own recent posts right now.
+ *
+ * Nothing is written from here — it is the probe that answers "does this
+ * session still work, and does the account have comments to read" before
+ * anything is ingested, and it stays as the way to check that afterwards.
+ */
+app.get<{ Params: { tenantId: string }; Querystring: { limit?: string; all?: string } }>(
+  '/internal/sessions/:tenantId/comments', async (req, reply) => {
+    const username = await sessions.getOwnUsername(req.params.tenantId);
+    if (!username) return reply.status(404).send({ error: 'no active session for this tenant' });
+
+    const page = await sessions.newPage(req.params.tenantId);
+    if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+    try {
+      const limit = Math.min(Math.max(Number(req.query?.limit ?? 6) || 6, 1), 12);
+      const comments = await readRecentComments(page, username, limit, { includeOwn: req.query?.all === 'true' });
+      return reply.send({ username, count: comments.length, comments });
+    } catch (err) {
+      // Deliberately does NOT call `forgetSession`. Reading comments is a
+      // diagnostic, and this route guessing "the session is dead" from one
+      // unparseable response tears down a session the DM watcher is still
+      // using — which it did, on the very first live run, from a plain
+      // rate-limit page. Only the DM path, which can tell a redirect to the
+      // login form apart from a throttle, is allowed to make that call.
+      app.log.warn({ err, tenantId: req.params.tenantId }, 'ig-bridge could not read comments');
+      return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+
+/**
+ * Read one of instagram.com's own JSON endpoints through this tenant's
+ * session and hand back the raw answer.
+ *
+ * Diagnostic only, and GET-only by construction: when a reader disagrees
+ * with what is actually on a post, the argument is settled by looking at
+ * what Instagram really returns, not by reasoning about the parser. Reading
+ * the parsed result is what let a double-post happen — the parser said
+ * "no reply here" while two were plainly under the post.
+ */
+app.get<{ Params: { tenantId: string }; Querystring: { path?: string } }>(
+  '/internal/sessions/:tenantId/ig-get', async (req, reply) => {
+    const path = req.query?.path ?? '';
+    if (!path.startsWith('/api/v1/')) {
+      return reply.status(400).send({ error: 'path must start with /api/v1/' });
+    }
+
+    const page = await sessions.newPage(req.params.tenantId);
+    if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+    try {
+      if (!page.url().includes('instagram.com')) {
+        await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      }
+      const raw = await page.evaluate(`
+        (async function () {
+          try {
+            var res = await fetch(${JSON.stringify(path)}, {
+              headers: { 'x-ig-app-id': '936619743392459', 'accept': 'application/json' },
+              credentials: 'include',
+            });
+            return JSON.stringify({ status: res.status, body: (await res.text()).slice(0, 400000) });
+          } catch (err) { return JSON.stringify({ status: 0, body: String(err) }); }
+        })();
+      `) as string;
+      return reply.send(JSON.parse(raw));
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+
+/**
+ * Ask the duplicate guard its answer, without posting anything.
+ *
+ * The guard is the one piece of this feature that must never be wrong, and
+ * the only way it was being tested was by posting — which is how a comment
+ * ended up answered twice. This makes it checkable for free.
+ */
+app.get<{ Params: { tenantId: string }; Querystring: { postRef?: string; commentRef?: string } }>(
+  '/internal/sessions/:tenantId/comments/replied', async (req, reply) => {
+    const { postRef, commentRef } = req.query ?? {};
+    if (!postRef || !commentRef) return reply.status(400).send({ error: 'postRef and commentRef are required' });
+    const mediaId = mediaIdFromShortcode(postRef);
+    if (!mediaId) return reply.status(400).send({ error: `postRef tidak valid: ${postRef}` });
+
+    const ownUsername = await sessions.getOwnUsername(req.params.tenantId);
+    if (!ownUsername) return reply.status(404).send({ error: 'no active session for this tenant' });
+    const page = await sessions.newPage(req.params.tenantId);
+    if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+
+    try {
+      if (!page.url().includes('instagram.com')) {
+        await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      }
+      return reply.send({
+        mediaId,
+        alreadyReplied: await alreadyReplied(page, { mediaId, commentRef, ownUsername }),
+      });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+
+/**
+ * Can we open a DM thread with this person at all? Opens it and reports the
+ * thread id, without sending a word.
+ *
+ * Reaching a stranger is the half that keeps failing, and the only way it
+ * was being tested was by running the whole reply — which meant a public
+ * post every time we wanted to learn one fact about the DM.
+ */
+app.get<{ Params: { tenantId: string }; Querystring: { username?: string } }>(
+  '/internal/sessions/:tenantId/dm-probe', async (req, reply) => {
+    const username = req.query?.username;
+    if (!username) return reply.status(400).send({ error: 'username is required' });
+
+    const page = await sessions.newPage(req.params.tenantId);
+    if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+    try {
+      const threadId = await openThreadWithUser(page, username);
+      return reply.send({ username, reachable: !!threadId, threadId });
+    } catch (err) {
+      return reply.send({ username, reachable: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+
+/** Diagnostic for the above — see `probeCommentRequests`. Read-only. */
+app.get<{ Params: { tenantId: string } }>(
+  '/internal/sessions/:tenantId/comment-probe', async (req, reply) => {
+    const username = await sessions.getOwnUsername(req.params.tenantId);
+    if (!username) return reply.status(404).send({ error: 'no active session for this tenant' });
+
+    const page = await sessions.newPage(req.params.tenantId);
+    if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+    try {
+      return reply.send(await probeCommentRequests(page, username));
+    } catch (err) {
+      app.log.warn({ err, tenantId: req.params.tenantId }, 'ig-bridge comment probe failed');
+      return reply.status(502).send({ error: err instanceof Error ? err.message : 'Probe gagal' });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+
 app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status', async (req, reply) => {
   const hasSession = await sessions.hasSession(req.params.tenantId);
   return reply.send({ hasSession });
@@ -123,6 +282,95 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string 
       return reply.status(status).send({ error: err instanceof Error ? err.message : 'Gagal mengirim pesan Instagram' });
     }
   });
+
+/**
+ * Answer one comment: a short line in public, the real reply in DM.
+ *
+ * Both halves are reported separately because they fail separately and the
+ * caller records them separately — Instagram will happily accept the public
+ * reply and refuse the DM (a commenter who has never messaged us may simply
+ * not be reachable), and that is a normal outcome, not an error.
+ */
+app.post<{
+  Params: { tenantId: string };
+  Body: { postRef?: string; commentRef?: string; commenter?: string; publicReply?: string; dmText?: string };
+}>('/internal/sessions/:tenantId/comments/reply', async (req, reply) => {
+  const { postRef, commentRef, commenter, publicReply, dmText } = req.body ?? {};
+  if (!postRef || !commentRef || !commenter) {
+    return reply.status(400).send({ error: 'postRef, commentRef and commenter are required' });
+  }
+
+  // The caller stores the permalink shortcode, which is the media id in
+  // another base — converted here, where that function already lives, so the
+  // CRM never has to carry a second copy of it.
+  const mediaId = mediaIdFromShortcode(postRef);
+  if (!mediaId) return reply.status(400).send({ error: `postRef tidak valid: ${postRef}` });
+
+  const ownUsername = await sessions.getOwnUsername(req.params.tenantId);
+  if (!ownUsername) return reply.status(404).send({ error: 'no active session for this tenant' });
+
+  const page = await sessions.newPage(req.params.tenantId);
+  if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
+
+  const result: {
+    public: { sent: boolean; error?: string };
+    dm: { sent: boolean; alreadyThere?: boolean; threadId?: string; error?: string };
+  } = { public: { sent: false }, dm: { sent: false } };
+
+  try {
+    if (publicReply) {
+      try {
+        await replyToComment(page, { mediaId, commentRef, text: publicReply, ownUsername });
+        result.public.sent = true;
+      } catch (err) {
+        result.public.error = err instanceof Error ? err.message : 'Gagal membalas komentar';
+        app.log.warn({ err, commentRef }, 'ig-bridge public comment reply failed');
+      }
+    }
+
+    // The DM goes second, on purpose: that is the order the person
+    // experiences it — they see the reply under the post, then find the DM.
+    if (dmText) {
+      try {
+        const threadId = await openThreadWithUser(page, commenter);
+        if (!threadId) {
+          result.dm.error = `@${commenter}: tombol Message diklik tapi thread tidak pernah terbuka`;
+        } else if (await dmLanded(page, commenter, dmText)) {
+          // The sender has its own pre-send check, but it reads the thread
+          // the same blind way — so on a retry it would send this a second
+          // time to someone who already has it. Asked of the inbox instead,
+          // the answer is correct for link-rendered messages too.
+          app.log.info({ commenter }, 'ig-bridge: DM already in this thread — not sending again');
+          // Reported apart from a real send. "We sent it" and "they already
+          // had it, so we did not" are different facts, and the second one
+          // dressed as the first is what makes someone go looking through
+          // Instagram for a message that was never sent.
+          result.dm = { sent: false, alreadyThere: true, threadId };
+        } else {
+          try {
+            await sendThreadMessage(page, threadId, dmText, ownUsername);
+          } catch (err) {
+            // "Typed but not seen in the thread" is not the same as "not
+            // sent". Confirmed live: the opener arrives as a link preview
+            // (it names a domain), which the thread scrape cannot see, and
+            // treating that as a failure is what would message a stranger a
+            // second time. Instagram's own inbox settles it.
+            if (!(err instanceof SendNotConfirmedError) || !(await dmLanded(page, commenter, dmText))) throw err;
+            app.log.info({ commenter }, 'ig-bridge: DM confirmed through the inbox, not the thread view');
+          }
+          watcher.markSentByUs(req.params.tenantId, threadId, dmText);
+          result.dm = { sent: true, threadId };
+        }
+      } catch (err) {
+        result.dm.error = err instanceof Error ? err.message : 'Gagal mengirim DM';
+        app.log.warn({ err, commenter }, 'ig-bridge comment DM failed');
+      }
+    }
+    return reply.send(result);
+  } finally {
+    await page.close().catch(() => {});
+  }
+});
 
 app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', async (req, reply) => {
   await sessions.logout(req.params.tenantId);

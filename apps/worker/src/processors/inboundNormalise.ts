@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import {
   withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, ingestInboundInstagramDmMessage,
-  recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken, type Database,
+  recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken,
+  recordIgComment, type Database,
 } from '@kirana/db';
 import { isBdConversation } from './bdDraft.ts';
 
@@ -46,6 +47,9 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
   }
   if (claimed[0].provider === 'ig_bridge_dm') {
     return processIgBridgeDmEvent(deps, webhookEventId, claimed[0].payload as unknown as IgBridgeDmEventPayload);
+  }
+  if (claimed[0].provider === 'ig_comment') {
+    return processIgCommentEvent(deps, claimed[0].payload as unknown as IgCommentEventPayload);
   }
   if ((claimed[0].payload as { platform?: string }).platform === 'instagram') {
     return processInstagramEvent(deps, webhookEventId, claimed[0].payload as unknown as InstagramEventPayload);
@@ -446,6 +450,49 @@ async function processIgBridgeDmEvent(
             },
           });
     }
+  }
+  return { status: 'processed' };
+}
+
+export interface IgCommentEventPayload {
+  tenantId: string;
+  comment: {
+    postRef: string; commentRef: string; commenter: string; text: string; at?: string;
+    parentRef?: string | null;
+  };
+}
+
+/**
+ * A comment on one of our own posts.
+ *
+ * Filed, and nothing else. It is not handed to Autopilot or to the BD flow:
+ * both answer at length, and a long public answer gives the pitch away to
+ * everyone scrolling past and removes the commenter's own reason to write —
+ * the BD team's rule, and the one thing `trained-cb` refuses to let a
+ * comment do. What happens next is decided on the Komentar IG page, where a
+ * person can see it before anything is said in public.
+ */
+async function processIgCommentEvent(
+  deps: NormaliseDeps, payload: IgCommentEventPayload,
+): Promise<{ status: string }> {
+  const c = payload.comment;
+  const result = await withTenant(deps.db, payload.tenantId, (tx) =>
+    recordIgComment({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
+      postRef: c.postRef, commentRef: c.commentRef, commenter: c.commenter, text: c.text,
+      parentRef: c.parentRef ?? null,
+      commentedAt: c.at ? new Date(c.at) : null,
+    }));
+
+  console.log(`[ig-comment] ${result.created ? 'baru' : 'sudah ada'}: @${c.commenter} on ${c.postRef}`);
+
+  // Only a genuinely new comment is answered. The reader re-reads the same
+  // post every cycle, so anything else would answer the same person once a
+  // poll, forever, in public.
+  if (result.created) {
+    await deps.dispatch({
+      queue: 'igComment.reply',
+      payload: { tenantId: payload.tenantId, commentId: result.id },
+    });
   }
   return { status: 'processed' };
 }

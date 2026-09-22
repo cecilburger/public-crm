@@ -17,6 +17,7 @@ const ICONS = {
   chats: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z" />,
   chatWa: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 7h6M9 11h6M9 15h3" /></>,
   chatIg: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><circle cx="17" cy="7" r="0.8" fill="currentColor" stroke="none" /></>,
+  igComments: <><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.7-.8L3 21l1.9-4.6A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" /></>,
   client: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6.5 7-6.5s7 2.9 7 6.5" /></>,
   clientDeal: <><circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5 5.5-5.5" /></>,
   clientProses: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 2" /></>,
@@ -156,6 +157,7 @@ const INBOX = [
   { href: '/obrolan', label: t.nav.chats, badge: true, icon: 'chats' as const },
   { href: '/chat-wa', label: t.nav.chatWa, badge: false, icon: 'chatWa' as const },
   { href: '/chat-ig', label: t.nav.chatIg, badge: false, icon: 'chatIg' as const },
+  { href: '/komentar-ig', label: t.nav.igComments, badge: false, icon: 'igComments' as const },
   { href: '/channel-wa', label: t.nav.channelWa, badge: false, icon: 'channelWa' as const },
 ];
 
