@@ -483,12 +483,50 @@ const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsern
     && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase());
 };
 
+/**
+ * Close whatever Instagram has put in front of the page before touching it.
+ *
+ * "Turn on Notifications" and its siblings are real modals: they sit over the
+ * thread and swallow the click that should land in the message box, so the
+ * text is typed into nothing, the send never happens, and the only symptom is
+ * a confirmation that times out 25s later. Confirmed live — sending broke the
+ * moment a fresh browser made Instagram ask again, while reading (which goes
+ * through the page's own API, not the DOM) carried on working and hid the
+ * cause.
+ *
+ * Locale-fragile like every other text match against instagram.com, so it
+ * tries the usual wordings and then falls back to dismissing by position:
+ * on these prompts the *last* button is consistently the decline.
+ */
+export async function dismissBlockingDialog(page: Page): Promise<void> {
+  const hasDialog = await page.evaluate(
+    `document.querySelectorAll('div[role="dialog"]').length > 0`,
+  ).catch(() => false) as boolean;
+  if (!hasDialog) return;
+
+  const declined = await clickButtonByText(
+    page, /^(not now|nanti saja|jangan sekarang|lain kali|cancel|tutup)$/i, 2500,
+  );
+  if (declined) return;
+
+  await page.evaluate(`
+    (function () {
+      var dialog = document.querySelector('div[role="dialog"]');
+      if (!dialog) return;
+      var buttons = dialog.querySelectorAll('div[role="button"], button');
+      var last = buttons[buttons.length - 1];
+      if (last) last.click();
+    })();
+  `).catch(() => {});
+}
+
 export async function sendThreadMessage(
   page: Page, threadId: string, text: string, ownUsername: string | null,
   opts: { skipDuplicateScan?: boolean } = {},
 ): Promise<void> {
   await page.goto(`https://www.instagram.com/direct/t/${threadId}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   assertLoggedIn(page);
+  await dismissBlockingDialog(page);
 
   const wanted = text.trim();
 
