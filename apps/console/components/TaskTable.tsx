@@ -41,9 +41,16 @@ type ViewMode = 'table' | 'kanban' | 'calendar';
 
 export function TaskTable({
   tasks, members, deals, taskKinds, brands, googleStatus, title = t.tasks.title, defaultView = 'table',
+  variant,
 }: {
   tasks: Task[]; members: Member[]; deals: Deal[]; taskKinds: TaskKind[]; brands: Brand[];
   googleStatus: GoogleCalendarStatus; title?: string; defaultView?: ViewMode;
+  /** `'calendar'` is the Kalender page's own reading of this same table: the
+   * add/detail drawers call themselves a schedule entry instead of a task, and
+   * drop the fields (priority, repeat, assignee, deal) that only make sense
+   * for the follow-up work the Tugas page tracks. Everything else — the table,
+   * the kanban board, the underlying `tasks` rows — is identical either way. */
+  variant?: 'calendar';
 }) {
   const pathname = usePathname();
   const [query, setQuery] = useState('');
@@ -140,7 +147,9 @@ export function TaskTable({
         </div>
         <div className="odoo-cp-bottom">
           <div className="odoo-cp-actions">
-            <button type="button" className="btn primary" onClick={() => setDrawerOpen(true)}>{t.tasks.add}</button>
+            <button type="button" className="btn primary" onClick={() => setDrawerOpen(true)}>
+              {variant === 'calendar' ? t.tasks.addSchedule : t.tasks.add}
+            </button>
             {googleStatus.connected ? (
               <form action={disconnectGoogleCalendar}>
                 <CsrfField />
@@ -197,7 +206,14 @@ export function TaskTable({
             </p>
           </div>
         ) : view === 'calendar' ? (
-          <TaskCalendar tasks={filtered} onAddTask={() => setDrawerOpen(true)} onOpenTaskDetail={setDetailTask}
+          <TaskCalendar tasks={filtered} onOpenTaskDetail={setDetailTask}
+                        // Redundant with the "Tambah Jadwal" button above on the
+                        // Kalender page — same drawer, same action, just a second
+                        // door in. `onAddTask` is optional and the button only
+                        // renders when it is passed, so omitting it here hides it
+                        // without touching Tugas, where the calendar view still
+                        // gets its own add button.
+                        onAddTask={variant === 'calendar' ? undefined : () => setDrawerOpen(true)}
                         googleStatus={googleStatus} />
         ) : view === 'kanban' ? (
           <div style={{ marginTop: 14 }}>
@@ -336,9 +352,9 @@ export function TaskTable({
       </div>
 
       <TaskDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
-                  members={members} deals={deals} taskKinds={taskKinds} brands={brands} />
+                  members={members} deals={deals} taskKinds={taskKinds} brands={brands} variant={variant} />
       <TaskDetailDrawer task={detailTask} open={detailTask !== null} onClose={() => setDetailTask(null)}
-                        members={members} deals={deals} taskKinds={taskKinds} />
+                        members={members} deals={deals} taskKinds={taskKinds} variant={variant} />
       <GoogleCalendarEventDetailDrawer event={detailGoogleEvent} onClose={() => setDetailGoogleEvent(null)} />
     </>
   );

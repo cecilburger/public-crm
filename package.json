@@ -8,7 +8,8 @@
     "apps/worker",
     "apps/console",
     "apps/wa-bridge",
-    "apps/ig-bridge"
+    "apps/ig-bridge",
+    "apps/fb-bridge"
   ],
   "engines": {
     "node": ">=22"
@@ -17,16 +18,17 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
-    "migrate": "tsx packages/db/src/cli-migrate.ts",
-    "seed": "tsx packages/db/src/cli-seed.ts",
+    "migrate": "tsx --env-file=.env packages/db/src/cli-migrate.ts",
+    "seed": "tsx --env-file=.env packages/db/src/cli-seed.ts",
     "dev:api": "tsx watch --env-file=.env apps/api/src/server.ts",
     "dev:worker": "tsx watch --env-file=.env apps/worker/src/main.ts",
     "start:api": "node --experimental-strip-types apps/api/src/server.ts",
     "dev:console": "npm run dev -w @kirana/console",
     "dev:ig-bridge": "npm run dev -w @kirana/ig-bridge",
     "dev:wa-bridge": "npm run dev -w @kirana/wa-bridge",
+    "dev:fb-bridge": "npm run dev -w @kirana/fb-bridge",
     "dev:stack": "tsx --env-file=.env tools/dev-stack.ts",
-    "rotate": "tsx packages/db/src/cli-rotate.ts"
+    "rotate": "tsx --env-file=.env packages/db/src/cli-rotate.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

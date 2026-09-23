@@ -46,6 +46,28 @@ export type LoginResult =
   | { status: 'challenge_required'; challengeType: 'two_factor' | 'checkpoint' | 'unknown' }
   | { status: 'failed'; error: string };
 
+/**
+ * The three cookies the manual paste-them-in form asks for, captured from a
+ * login the operator performed themselves in a window the bridge opened.
+ *
+ * `sessionId` is exactly as sensitive as a password — it *is* the session. It
+ * is held in memory here so the console can confirm a capture happened, and it
+ * is masked before it leaves this service. The other two are not secrets on
+ * their own: `dsUserId` is the account's public numeric id, and `csrfToken` is
+ * worthless without the session it pairs with.
+ */
+export interface CapturedCookies {
+  sessionId: string;
+  csrfToken: string | null;
+  dsUserId: string | null;
+  capturedAt: string;
+}
+
+/** How long a login window stays open before the bridge gives up on it. Long,
+ * because the operator may be waiting on a 2FA code from a phone. */
+const LOGIN_WINDOW_TIMEOUT_MS = 15 * 60_000;
+const LOGIN_POLL_INTERVAL_MS = 3_000;
+
 /** Distinct from a Playwright/network failure so the send route can tell the
  * caller "reconnect Instagram" (a permanent condition worth surfacing
  * distinctly) apart from "the send itself failed" (worth retrying). */
@@ -71,6 +93,14 @@ export class SessionManager {
   private contexts = new Map<string, Browser>();
   private pendingChallenge = new Map<string, Page>();
   private pendingUsernames = new Map<string, string>();
+  /** Browser windows a human is currently logging in to, by tenant. Their
+   * presence is what `awaiting_login` means — a second click while one is open
+   * must not launch another against the same profile. */
+  private loginWindows = new Map<string, Browser>();
+  /** What the last browser login captured, kept in memory only and read once.
+   * `sessionid` is a credential: it is never written to disk here and never
+   * reaches `apps/api`'s database. */
+  private capturedCookies = new Map<string, CapturedCookies>();
   // In-memory cache of the persisted-to-disk username below — read once per
   // tenant, not on every call.
   private ownUsernames = new Map<string, string>();
@@ -103,6 +133,49 @@ export class SessionManager {
    * nothing re-attaches it on its own. */
   isConnected(tenantId: string): boolean {
     return this.contexts.get(tenantId)?.connected ?? false;
+  }
+
+  /** One recovery attempt at a time per tenant, so a console polling every
+   * five seconds cannot stack a queue of browser tabs against one profile. */
+  private recoveringUsername = new Map<string, Promise<string | null>>();
+
+  /**
+   * Fills in a username for a session that has one on Instagram but not on
+   * disk.
+   *
+   * This exists because a login can succeed and still leave nothing behind to
+   * name the account — which is exactly what happened when the first version of
+   * `readOwnUsername` came back empty against the live site. Without this the
+   * only way out is Putuskan and log in again, for a session that is otherwise
+   * perfectly healthy.
+   *
+   * Cheap when it is not needed: the caller checks for a persisted username
+   * first, so this only ever runs for a connection that is actually missing one.
+   */
+  async recoverOwnUsername(tenantId: string): Promise<string | null> {
+    const inFlight = this.recoveringUsername.get(tenantId);
+    if (inFlight) return inFlight;
+
+    const attempt = (async () => {
+      const page = await this.newPage(tenantId);
+      if (!page) return null;
+      try {
+        const cookies = await page.cookies('https://www.instagram.com').catch(() => []);
+        const dsUserId = cookies.find((c) => c.name === 'ds_user_id')?.value ?? null;
+        const username = await this.readOwnUsername(page, dsUserId).catch(() => null);
+        if (username) await this.persistOwnUsername(tenantId, username);
+        return username;
+      } finally {
+        await page.close().catch(() => {});
+      }
+    })();
+
+    this.recoveringUsername.set(tenantId, attempt);
+    try {
+      return await attempt;
+    } finally {
+      this.recoveringUsername.delete(tenantId);
+    }
   }
 
   async getOwnUsername(tenantId: string): Promise<string | null> {
@@ -493,6 +566,207 @@ export class SessionManager {
     }
   }
 
+  /* ------------------------------------------------- login in a real window */
+
+  /**
+   * Opens Instagram's own login page in a visible browser and waits.
+   *
+   * This is the third way in, and the only one where no Instagram credential
+   * ever passes through the CRM. `login()` takes a password and types it;
+   * `loginWithCookie()` takes a `sessionid` the operator dug out of DevTools by
+   * hand. Here the operator logs in to Instagram directly, in a window on
+   * whichever machine runs this bridge, and the session lands in the same
+   * Chromium profile every other call already uses.
+   *
+   * It also sidesteps the whole challenge dance. 2FA prompts, checkpoints and
+   * "was this you?" interstitials are Instagram's own screens — the operator
+   * answers them in place, rather than the bridge classifying them and relaying
+   * a code field into the console.
+   *
+   * Returns immediately with `awaiting_login`. Logging in is minutes of human
+   * work and holding an HTTP request open for it would time out somewhere in
+   * between; the console polls `/status` instead.
+   */
+  async openLoginWindow(tenantId: string, onSettled?: (result: LoginResult) => void): Promise<LoginResult | { status: 'awaiting_login' }> {
+    // A second click must not launch a second Chrome against one `userDataDir`
+    // — Chrome's own single-instance lock rejects that outright, and the error
+    // it gives is far less useful than simply saying "a window is already open".
+    if (this.loginWindows.has(tenantId)) return { status: 'awaiting_login' };
+
+    await this.closeContext(tenantId);
+    await this.clearCrashedSessionState(tenantId);
+
+    const browser = await puppeteerExtra.launch({
+      headless: false, userDataDir: this.profileDir(tenantId), defaultViewport: null,
+    }) as unknown as Browser;
+    this.loginWindows.set(tenantId, browser);
+
+    const pages = await browser.pages();
+    const page = await this.configurePage(pages[0] ?? await browser.newPage());
+    await page.goto('https://www.instagram.com/accounts/login/', {
+      waitUntil: 'domcontentloaded', timeout: 30_000,
+    }).catch(() => {});
+
+    void this.awaitBrowserLogin(tenantId, page).then(async (result) => {
+      this.loginWindows.delete(tenantId);
+      await browser.close().catch(() => {});
+      onSettled?.(result);
+    });
+
+    return { status: 'awaiting_login' };
+  }
+
+  /** True while a human still has a login window open for this tenant. */
+  isAwaitingLogin(tenantId: string): boolean {
+    return this.loginWindows.has(tenantId);
+  }
+
+  /**
+   * What the last browser login captured, masked for display.
+   *
+   * The console shows this as proof that the three values the manual form asks
+   * for were really picked up. `sessionid` is only ever shown as its first and
+   * last few characters: it is the credential itself, and a CRM page is not
+   * where it belongs in full.
+   */
+  capturedFor(tenantId: string): { sessionIdMasked: string; csrfToken: string | null; dsUserId: string | null; capturedAt: string } | null {
+    const got = this.capturedCookies.get(tenantId);
+    if (!got) return null;
+    const s = got.sessionId;
+    const masked = s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : '……';
+    return { sessionIdMasked: masked, csrfToken: got.csrfToken, dsUserId: got.dsUserId, capturedAt: got.capturedAt };
+  }
+
+  /**
+   * Polls the operator's own window until Instagram has actually issued a
+   * session.
+   *
+   * POSITIVE PROOF, not the absence of a negative. The URL cannot answer this:
+   * Instagram serves plenty of screens that are neither the login form nor a
+   * logged-in feed — a loading skeleton, "Save your login info?", "Turn on
+   * notifications", a checkpoint. `apps/fb-bridge` shipped two versions that
+   * guessed from the URL and then from the page text, and both declared success
+   * on the first screen they did not recognise, closing the window while the
+   * operator was still typing. The `sessionid` cookie exists only once
+   * Instagram has authenticated someone, so that is what this waits for.
+   */
+  private async awaitBrowserLogin(tenantId: string, page: Page): Promise<LoginResult> {
+    const deadline = Date.now() + LOGIN_WINDOW_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+      if (page.isClosed()) {
+        // Closed by the operator. Whether they finished is decided by what the
+        // profile holds, not by assuming either way.
+        const cookies = this.capturedCookies.get(tenantId);
+        if (cookies) {
+          const username = await this.getOwnUsername(tenantId);
+          return { status: 'ready', username: username ?? '' };
+        }
+        return { status: 'failed', error: 'Jendela login ditutup sebelum login selesai' };
+      }
+
+      const cookies = await page.cookies('https://www.instagram.com').catch(() => []);
+      const sessionId = cookies.find((c) => c.name === 'sessionid' && c.value)?.value;
+
+      if (sessionId) {
+        this.capturedCookies.set(tenantId, {
+          sessionId,
+          csrfToken: cookies.find((c) => c.name === 'csrftoken')?.value ?? null,
+          dsUserId: cookies.find((c) => c.name === 'ds_user_id')?.value ?? null,
+          capturedAt: new Date().toISOString(),
+        });
+
+        // Asked of Instagram rather than of the operator. The other two login
+        // paths take the username from a form field, which is a guess the
+        // operator can get wrong — and a wrong `ownUsername` makes the DM
+        // watcher file our own replies as the customer's messages.
+        const dsUserId = cookies.find((c) => c.name === 'ds_user_id')?.value ?? null;
+        const username = await this.readOwnUsername(page, dsUserId).catch(() => null);
+        if (username) await this.persistOwnUsername(tenantId, username);
+        // A session without a username is still a session, but it is not one
+        // anything should run on: `sendDm` needs `ownUsername` to tell our own
+        // bubbles from the customer's. Said out loud rather than returned as an
+        // empty string that every screen downstream renders as "@".
+        if (!username) {
+          return {
+            status: 'failed',
+            error: 'Login berhasil tapi username Instagram tidak terbaca — coba Putuskan lalu login ulang',
+          };
+        }
+        return { status: 'ready', username };
+      }
+
+      await sleep(LOGIN_POLL_INTERVAL_MS);
+    }
+
+    return { status: 'failed', error: 'Waktu login habis — login tidak selesai dalam 15 menit' };
+  }
+
+  /**
+   * The handle of whoever just logged in.
+   *
+   * Asked of Instagram's own `/api/v1/users/<id>/info/`, keyed on the
+   * `ds_user_id` cookie that the login just set. That pairing is the reliable
+   * one: the id comes from the session itself and the endpoint answers with
+   * the account that id belongs to.
+   *
+   * An earlier version read `window._sharedData.config.viewer` and fell back to
+   * a regex over the served HTML. Both came back empty against the live site —
+   * the modern app shell ships neither — and the empty string travelled all the
+   * way to the console, which rendered "Terhubung sebagai @" and, on Chat IG,
+   * decided nothing was connected at all. The two DOM reads are kept below the
+   * API call as a fallback rather than as the primary.
+   */
+  private async readOwnUsername(page: Page, dsUserId: string | null): Promise<string | null> {
+    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
+    await sleep(1500);
+
+    if (dsUserId) {
+      // Same-origin, inside the logged-in page, so it rides the session cookie
+      // that is already there — the same trick `commentScraper` uses.
+      const raw = await page.evaluate(`
+        (async function () {
+          try {
+            var res = await fetch('/api/v1/users/' + ${JSON.stringify(dsUserId)} + '/info/', {
+              headers: { 'x-ig-app-id': '936619743392459', 'accept': 'application/json' },
+              credentials: 'include',
+            });
+            return JSON.stringify({ status: res.status, body: (await res.text()).slice(0, 100000) });
+          } catch (err) { return JSON.stringify({ status: 0, body: String(err) }); }
+        })();
+      `).catch(() => null) as string | null;
+
+      if (raw) {
+        try {
+          const { status, body } = JSON.parse(raw) as { status: number; body: string };
+          if (status === 200) {
+            const parsed = JSON.parse(body) as { user?: { username?: string } };
+            const name = parsed.user?.username?.trim();
+            if (name) return name;
+          }
+        } catch {
+          // Not JSON — a checkpoint or throttle page. Fall through to the DOM.
+        }
+      }
+    }
+
+    const fromDom = await page.evaluate(`(() => {
+      var w = window;
+      var shared = w._sharedData && w._sharedData.config && w._sharedData.config.viewer;
+      if (shared && shared.username) return shared.username;
+      var m = document.documentElement.innerHTML.match(/"viewer".{0,200}?"username":"([A-Za-z0-9._]{1,30})"/);
+      if (m) return m[1];
+      // The profile link in the nav is the last thing standing: on a logged-in
+      // shell it points at our own handle.
+      var link = document.querySelector('a[href^="/"][role="link"] img[alt*="profile picture" i]');
+      var href = link && link.closest('a') && link.closest('a').getAttribute('href');
+      var seg = href && href.split('/').filter(Boolean)[0];
+      return seg && /^[A-Za-z0-9._]{1,30}$/.test(seg) ? seg : null;
+    })()`).catch(() => null) as string | null;
+
+    return fromDom && fromDom.trim() ? fromDom.trim() : null;
+  }
+
   async submitChallenge(tenantId: string, code: string): Promise<LoginResult> {
     const page = this.pendingChallenge.get(tenantId);
     if (!page) return { status: 'failed', error: 'Tidak ada proses login yang menunggu kode' };
@@ -567,7 +841,16 @@ export class SessionManager {
 
   async logout(tenantId: string): Promise<void> {
     await this.closeContext(tenantId);
+    const window = this.loginWindows.get(tenantId);
+    if (window) {
+      // A login window left open would keep writing to the profile directory
+      // being deleted underneath it, and on the next poll would report a
+      // session for a connection the operator just revoked.
+      this.loginWindows.delete(tenantId);
+      await window.close().catch(() => {});
+    }
     this.ownUsernames.delete(tenantId);
+    this.capturedCookies.delete(tenantId);
     await fs.rm(this.profileDir(tenantId), { recursive: true, force: true }).catch(() => {});
   }
 

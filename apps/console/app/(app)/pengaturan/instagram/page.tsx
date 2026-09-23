@@ -22,8 +22,16 @@ export default async function InstagramSettingsPage() {
       <SettingsTabs />
 
       <div className="scroll pad stack">
-        <InstagramMetaCard connection={metaConnection} />
         <InstagramBridgeForm connection={bridgeConnection} />
+        {/* The Graph API card is hidden unless it is actually in use. Its form
+            asks for a hand-made access token from the Meta App dashboard, which
+            is not how this workspace connects Instagram — leaving it on screen
+            only offered a second, unused way in beside the one that works.
+            Still rendered while connected, so an existing connection stays
+            visible and can be disconnected rather than becoming invisible. */}
+        {metaConnection.status === 'connected' ? (
+          <InstagramMetaCard connection={metaConnection} />
+        ) : null}
       </div>
     </>
   );

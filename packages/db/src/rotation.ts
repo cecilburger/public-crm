@@ -17,7 +17,14 @@ import { audit } from './audit.ts';
  * or one per user — so they name the column they are actually keyed by.
  */
 export const ENCRYPTED_COLUMNS: { table: string; columns: string[]; cursor?: string }[] = [
-  { table: 'contacts', columns: ['phone_enc', 'email_enc', 'ig_psid_enc', 'ig_username_enc', 'ig_thread_id_enc'] },
+  {
+    table: 'contacts',
+    columns: [
+      'phone_enc', 'email_enc',
+      'ig_psid_enc', 'ig_username_enc', 'ig_thread_id_enc',
+      'fb_user_id_enc', 'fb_thread_id_enc',
+    ],
+  },
   { table: 'brands', columns: ['phone_enc', 'email_enc'] },
   { table: 'messages', columns: ['body_enc'] },
   { table: 'message_drafts', columns: ['body_enc'] },
@@ -26,6 +33,7 @@ export const ENCRYPTED_COLUMNS: { table: string; columns: string[]; cursor?: str
   { table: 'orders', columns: ['recipient_enc', 'address_enc'] },
   { table: 'bd_conversation_state', columns: ['email_enc'] },
   { table: 'ig_comments', columns: ['commenter_enc', 'text_enc', 'public_reply_enc'] },
+  { table: 'facebook_comments', columns: ['author_external_id_enc', 'author_name_enc', 'body_enc'] },
   { table: 'google_calendar_connections', columns: ['access_token_enc', 'refresh_token_enc'], cursor: 'user_id' },
   { table: 'ig_meta_connections', columns: ['access_token_enc'], cursor: 'tenant_id' },
   { table: 'ig_bridge_connections', columns: ['username_enc'], cursor: 'tenant_id' },

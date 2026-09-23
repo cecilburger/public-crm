@@ -8,6 +8,7 @@ import { DraftCard } from '@/components/DraftCard';
 import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 import { AddClientFromChatButton } from '@/components/AddClientFromChatButton';
+import { ScrollToLatest } from '@/components/ScrollToLatest';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,6 +102,7 @@ export default async function ChatIgThreadPage({ params }: { params: Promise<{ i
               <div className="bubble">{m.body ?? <em className="dim">{t.chats.redacted}</em>}</div>
             </div>
           ))}
+          <ScrollToLatest conversationId={conversation.id} messageCount={messages.length} />
         </div>
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}

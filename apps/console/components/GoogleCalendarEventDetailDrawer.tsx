@@ -6,7 +6,9 @@ import { formatTaskDue } from '@/lib/taskHelpers';
 import { SendCalendarEventEmailButton } from '@/components/SendCalendarEventEmailButton';
 import type { GoogleCalendarEvent } from '@/lib/api';
 
-function formatEventWhen(event: GoogleCalendarEvent): string {
+/** Shared with `TaskCalendar.tsx`'s day-detail card, the other place a
+ *  Google-only event (no CRM task behind it) gets its time shown. */
+export function formatEventWhen(event: GoogleCalendarEvent): string {
   if (event.allDay) {
     return `${t.tasks.allDay} — ${new Date(event.start).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}`;
   }

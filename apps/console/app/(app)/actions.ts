@@ -1304,8 +1304,56 @@ export async function saveEmailSettings(_prev: ActionResult | null, form: FormDa
 export interface IgBridgeResult {
   ok: boolean;
   error?: string;
-  status?: 'ready' | 'challenge_required';
+  status?: 'ready' | 'challenge_required' | 'awaiting_login';
   challengeType?: 'two_factor' | 'checkpoint' | 'unknown';
+}
+
+/**
+ * Connecting Facebook takes no credential — see `apps/fb-bridge`. All the CRM
+ * sends is which Page to watch; the operator then logs in by hand in a browser
+ * window the bridge opens on its own machine. That is why this returns
+ * `awaiting_login` rather than a success: the real work happens somewhere this
+ * request cannot see, and the page polls for the outcome.
+ */
+export interface FbBridgeResult extends ActionResult {
+  status?: 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
+}
+
+export async function connectFacebookBridge(_prev: FbBridgeResult | null, form: FormData): Promise<FbBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const pageId = String(form.get('pageId') ?? '').trim();
+  const pageName = String(form.get('pageName') ?? '').trim();
+  if (!pageId || !pageName) return { ok: false, error: t.facebookBridge.missingFields };
+
+  // Left off the request entirely when blank rather than sent as an empty
+  // string: the API reads an absent asset id as "this is a personal account",
+  // which is a different thing from one the operator typed wrongly.
+  const assetId = String(form.get('assetId') ?? '').trim();
+  if (assetId && !/^\d{6,}$/.test(assetId)) {
+    return { ok: false, error: t.facebookBridge.assetIdInvalid };
+  }
+
+  try {
+    const res = await api<{ status: FbBridgeResult['status']; lastError?: string | null }>(
+      '/v1/facebook-bridge/connect',
+      { method: 'POST', body: assetId ? { pageId, pageName, assetId } : { pageId, pageName } },
+    );
+    revalidatePath('/pengaturan/facebook');
+    return { ok: true, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.facebookBridge.failed };
+  }
+}
+
+export async function disconnectFacebookBridge(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    await api('/v1/facebook-bridge/disconnect', { method: 'POST' });
+    revalidatePath('/pengaturan/facebook');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.facebookBridge.failed };
+  }
 }
 
 export async function connectInstagramBridge(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
@@ -1321,6 +1369,30 @@ export async function connectInstagramBridge(_prev: IgBridgeResult | null, form:
     revalidatePath('/pengaturan/instagram');
     if (res.status === 'failed') return { ok: false, error: res.error ?? t.instagramBridge.failed };
     return { ok: true, status: res.status, challengeType: res.challengeType };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
+  }
+}
+
+/**
+ * The third way in, and the only one that asks the operator for nothing.
+ *
+ * `connectInstagramBridge` wants a password and `connectInstagramBridgeWithCookie`
+ * wants a `sessionid` copied out of DevTools by hand. This opens Instagram's own
+ * login page in a browser window on the bridge's machine and lets the operator
+ * log in there — so no Instagram credential is typed into the CRM at all, and
+ * 2FA or a checkpoint is answered on Instagram's own screen instead of being
+ * relayed through a code box here.
+ *
+ * Returns as soon as the window is open. The form polls for the rest.
+ */
+export async function openInstagramLoginWindow(_prev: IgBridgeResult | null, form: FormData): Promise<IgBridgeResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  try {
+    const res = await api<{ status: 'awaiting_login' }>(
+      '/v1/instagram-bridge/login-window', { method: 'POST' });
+    revalidatePath('/pengaturan/instagram');
+    return { ok: true, status: res.status };
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.instagramBridge.failed };
   }

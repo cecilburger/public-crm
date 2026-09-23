@@ -38,9 +38,119 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     | { status: 'challenge_required'; challengeType: 'two_factor' | 'checkpoint' | 'unknown' }
     | { status: 'failed'; error: string };
 
+  interface BridgeStatus {
+    hasSession: boolean;
+    awaitingLogin: boolean;
+    username: string | null;
+    captured: { sessionIdMasked: string; csrfToken: string | null; dsUserId: string | null; capturedAt: string } | null;
+  }
+
+  /**
+   * The stored row, reconciled against what the bridge can actually see.
+   *
+   * The password and cookie flows both settle inside their own request, so for
+   * them this table was always current. The browser-login flow does not: the
+   * operator is typing into Instagram on another machine, and the only thing
+   * that knows when they finish is the bridge. Without reading through to it,
+   * a connection would sit at `awaiting_login` in the console forever and the
+   * operator would conclude it had failed.
+   *
+   * When the bridge cannot be reached the stored row is returned untouched
+   * rather than overwritten — "the bridge is down" and "the session expired"
+   * are different problems, and flattening one into the other sends the
+   * operator to log in again for an outage.
+   */
   app.get('/v1/instagram-bridge/status', async (req) => {
-    ctx.guard(req, 'channel:manage');
-    return ctx.asTenant(req, (tx, actor) => getIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }));
+    const actor = ctx.guard(req, 'channel:manage');
+    const stored = await ctx.asTenant(req, (tx) =>
+      getIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }));
+
+    const live = await bridgeCall<BridgeStatus>(`/internal/sessions/${actor.tenantId}/status`, { method: 'GET' });
+    if (!live.ok || !live.body) return { ...stored, bridgeReachable: false, captured: null };
+
+    const b = live.body;
+
+    // The transition this route exists for: a login window that has since been
+    // finished. Writing it here means the console sees `ready` on its next poll
+    // without the operator having to do anything else.
+    // A session with no handle stays `awaiting_login` rather than being written
+    // down as ready: `ensureInstagramBridgeChannel` keys the channel on the
+    // username, and an empty one used to insert a second channel that split
+    // the account's conversations in half. The bridge retries the lookup on
+    // each of these polls, so this resolves itself within seconds.
+    if (stored.status === 'awaiting_login' && b.hasSession && !b.awaitingLogin && b.username) {
+      const username = b.username;
+      await ctx.asTenant(req, async (tx) => {
+        await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username });
+        await setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          status: 'ready', username, challengeType: null, lastError: null, actorId: actor.userId,
+        });
+      });
+      return { ...stored, status: 'ready' as const, username, bridgeReachable: true, captured: b.captured };
+    }
+
+    // A connection already marked ready but with no account name on it. The
+    // first version of the browser-login flow could produce exactly this: a
+    // healthy session stored with an empty username, which every screen
+    // downstream rendered as "Terhubung sebagai @" and Chat IG read as "not
+    // connected at all". Healed rather than left for the operator to notice.
+    if (stored.status === 'ready' && !stored.username && b.username) {
+      await ctx.asTenant(req, async (tx) => {
+        await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username: b.username! });
+        await setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          status: 'ready', username: b.username, challengeType: null, lastError: null, actorId: actor.userId,
+        });
+      });
+      return { ...stored, username: b.username, bridgeReachable: true, captured: b.captured };
+    }
+
+    // The window was closed, or timed out, without a session ever appearing.
+    if (stored.status === 'awaiting_login' && !b.awaitingLogin && !b.hasSession) {
+      await ctx.asTenant(req, (tx) =>
+        setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          status: 'error', challengeType: null,
+          lastError: 'Login lewat browser tidak selesai — jendelanya ditutup atau waktunya habis',
+          actorId: actor.userId,
+        }));
+      return {
+        ...stored, status: 'error' as const, bridgeReachable: true, captured: null,
+        lastError: 'Login lewat browser tidak selesai — jendelanya ditutup atau waktunya habis',
+      };
+    }
+
+    return { ...stored, bridgeReachable: true, captured: b.captured };
+  });
+
+  /**
+   * Opens Instagram's own login page in a browser window on the bridge's
+   * machine. No username, no password, no cookie: the operator authenticates
+   * with Instagram directly and the session stays in the bridge's profile.
+   *
+   * Answers as soon as the window is open, not when the login finishes — the
+   * console polls `/status` for that.
+   */
+  app.post('/v1/instagram-bridge/login-window', async (req) => {
+    const actor = ctx.guard(req, 'channel:manage');
+
+    const call = await bridgeCall<{ status: string; error?: string }>(
+      `/internal/sessions/${actor.tenantId}/login-window`, { method: 'POST' });
+    if (!call.ok || !call.body) {
+      throw invalid('Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge)');
+    }
+
+    await ctx.asTenant(req, (tx) =>
+      setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+        status: 'awaiting_login', challengeType: null, lastError: null, actorId: actor.userId,
+      }));
+
+    return {
+      status: 'awaiting_login',
+      // Said plainly because the window opens on whichever machine runs the
+      // bridge, which is not necessarily the one the operator is reading this
+      // on — confusing at exactly the wrong moment otherwise.
+      instruction: 'Jendela browser sudah dibuka di mesin yang menjalankan ig-bridge. '
+        + 'Selesaikan login Instagram di sana, termasuk 2FA atau verifikasi kalau diminta.',
+    };
   });
 
   app.post('/v1/instagram-bridge/login', async (req) => {

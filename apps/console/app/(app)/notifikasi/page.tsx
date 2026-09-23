@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { api, type ConversationSummary, type Task } from '@/lib/api';
+import { api, type ConversationSummary, type Task, type IgComment } from '@/lib/api';
 import { buildNotifications } from '@/lib/notifications';
 import { ago } from '@/lib/format';
 import { t } from '@/lib/copy';
@@ -7,17 +7,19 @@ import { t } from '@/lib/copy';
 export const dynamic = 'force-dynamic';
 
 /**
- * The bell's "Lihat semua" — every chat waiting on a reply and every task
- * whose due date has arrived, unabridged. Reachable only from the bell, not
- * from the rail: this is a detail view of what the bell already shows, not
- * a place someone starts their day.
+ * The bell's "Lihat semua" — every chat waiting on a reply, every task whose
+ * due date has arrived, and every Instagram comment still needing its public
+ * reply, unabridged. Reachable only from the bell, not from the rail: this is
+ * a detail view of what the bell already shows, not a place someone starts
+ * their day.
  */
 export default async function NotificationsPage() {
-  const [conversations, tasks] = await Promise.all([
+  const [conversations, tasks, pendingComments] = await Promise.all([
     api<ConversationSummary[]>('/v1/conversations?limit=200'),
     api<Task[]>('/v1/tasks').catch(() => [] as Task[]),
+    api<IgComment[]>('/v1/ig-comments?pending=true').catch(() => [] as IgComment[]),
   ]);
-  const items = buildNotifications(conversations, tasks);
+  const items = buildNotifications(conversations, tasks, pendingComments);
 
   return (
     <>

@@ -12,6 +12,8 @@ import type { Task, GoogleCalendarEvent, GoogleCalendarStatus } from '@/lib/api'
 import { markTaskDone } from '@/app/(app)/actions';
 import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
+import { SyncBadges } from '@/components/SyncBadges';
+import { formatEventWhen } from '@/components/GoogleCalendarEventDetailDrawer';
 
 const ROW_H = 42;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -132,11 +134,15 @@ function periodLabel(mode: CalendarMode, anchor: Date): string {
   return anchor.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
 }
 
-function EventPill({ task, compact }: { task: Task; compact?: boolean }) {
+/** `synced` means a Google Calendar event was matched to this task and its own
+ *  pill suppressed — see `googleLinkedTaskIds`. The dot is what says so. */
+function EventPill({ task, compact, synced }: { task: Task; compact?: boolean; synced?: boolean }) {
   const party = taskPartyName(task);
   const label = compact ? task.title : `${task.title}${party ? ` · ${party}` : ''}`;
   return (
-    <span className={`time-event ${pillClass(task)}`} title={`${task.title}${party ? ` — ${party}` : ''}`}>
+    <span className={`time-event ${pillClass(task)}`}
+          title={`${task.title}${party ? ` — ${party}` : ''}${synced ? ` (${t.tasks.crmAndGoogle})` : ''}`}>
+      {synced ? <span className="google-dot" aria-hidden /> : null}
       {label}
     </span>
   );
@@ -184,9 +190,10 @@ function MiniMonth({
   );
 }
 
-function DayGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
+function DayGrid({ anchor, eventsByDayHour, googleByDayHour, today, googleLinkedTaskIds }: {
   anchor: Date; eventsByDayHour: Map<string, Task[]>;
   googleByDayHour: Map<string, GoogleCalendarEvent[]>; today: Date;
+  googleLinkedTaskIds: Set<string>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { scrollRef.current?.scrollTo({ top: ROW_H * 6 }); }, [anchor]);
@@ -202,7 +209,9 @@ function DayGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
             <div key={h} className={`time-row ${isToday && h === nowHour ? 'current-hour' : ''}`}>
               <div className="time-row-label">{String(h).padStart(2, '0')}:00</div>
               <div className="time-row-slot">
-                {items.map((tk) => <EventPill key={tk.id} task={tk} />)}
+                {items.map((tk) => (
+                  <EventPill key={tk.id} task={tk} synced={googleLinkedTaskIds.has(tk.id)} />
+                ))}
                 {googleItems.map((ev) => <GooglePill key={ev.id} event={ev} />)}
               </div>
             </div>
@@ -213,9 +222,10 @@ function DayGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
   );
 }
 
-function WeekGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
+function WeekGrid({ anchor, eventsByDayHour, googleByDayHour, today, googleLinkedTaskIds }: {
   anchor: Date; eventsByDayHour: Map<string, Task[]>;
   googleByDayHour: Map<string, GoogleCalendarEvent[]>; today: Date;
+  googleLinkedTaskIds: Set<string>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const days = useMemo(() => weekDays(startOfWeek(anchor)), [anchor]);
@@ -240,7 +250,9 @@ function WeekGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
               const googleItems = googleByDayHour.get(`${d.toDateString()}#${h}`) ?? [];
               return (
                 <div key={d.toISOString()} className={`time-row-slot ${sameDay(d, today) ? 'today' : ''}`}>
-                  {items.map((tk) => <EventPill key={tk.id} task={tk} compact />)}
+                  {items.map((tk) => (
+                    <EventPill key={tk.id} task={tk} compact synced={googleLinkedTaskIds.has(tk.id)} />
+                  ))}
                   {googleItems.map((ev) => <GooglePill key={ev.id} event={ev} />)}
                 </div>
               );
@@ -260,10 +272,11 @@ function WeekGrid({ anchor, eventsByDayHour, googleByDayHour, today }: {
  * the real (stopPropagation'd) buttons inside it.
  */
 function MonthGrid({
-  anchor, eventsByDay, googleEventsByDay, today, onSelectDay, onSelectTask,
+  anchor, eventsByDay, googleEventsByDay, today, onSelectDay, onSelectTask, googleLinkedTaskIds,
 }: {
   anchor: Date; eventsByDay: Map<string, Task[]>; googleEventsByDay: Map<string, GoogleCalendarEvent[]>; today: Date;
   onSelectDay: (d: Date) => void; onSelectTask: (task: Task) => void;
+  googleLinkedTaskIds: Set<string>;
 }) {
   const month = startOfMonth(anchor);
   const days = useMemo(() => monthGrid(month), [month]);
@@ -283,13 +296,17 @@ function MonthGrid({
                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectDay(d); } }}
                className={`calendar-day ${inMonth ? '' : 'outside'} ${sameDay(d, today) ? 'today' : ''}`}>
             <span className="calendar-daynum">{d.getDate()}</span>
-            {visible.map((tk) => (
-              <button type="button" key={tk.id} className={`calendar-pill ${pillClass(tk)}`}
-                      title={`${tk.title}${taskPartyName(tk) ? ` — ${taskPartyName(tk)}` : ''}`}
-                      onClick={(e) => { e.stopPropagation(); onSelectTask(tk); }}>
-                {tk.title}
-              </button>
-            ))}
+            {visible.map((tk) => {
+              const synced = googleLinkedTaskIds.has(tk.id);
+              return (
+                <button type="button" key={tk.id} className={`calendar-pill ${pillClass(tk)}`}
+                        title={`${tk.title}${taskPartyName(tk) ? ` — ${taskPartyName(tk)}` : ''}${synced ? ` (${t.tasks.crmAndGoogle})` : ''}`}
+                        onClick={(e) => { e.stopPropagation(); onSelectTask(tk); }}>
+                  {synced ? <span className="google-dot" aria-hidden /> : null}
+                  {tk.title}
+                </button>
+              );
+            })}
             {extra > 0 ? <span className="calendar-more">{t.tasks.moreCount(extra)}</span> : null}
             {googleVisible.map((ev) => (
               <a key={ev.id} href={ev.htmlLink} target="_blank" rel="noreferrer" className="calendar-pill google"
@@ -308,8 +325,11 @@ function MonthGrid({
 /** Full detail for one day's tasks — the month grid only has room for a
  *  couple of truncated pills, so clicking a date opens this instead. */
 function DayDetailModal({
-  date, tasks, onClose, onOpenTaskDetail,
-}: { date: Date | null; tasks: Task[]; onClose: () => void; onOpenTaskDetail: (task: Task) => void }) {
+  date, tasks, googleEvents, onClose, onOpenTaskDetail, googleLinkedTaskIds,
+}: {
+  date: Date | null; tasks: Task[]; googleEvents: GoogleCalendarEvent[]; onClose: () => void;
+  onOpenTaskDetail: (task: Task) => void; googleLinkedTaskIds: Set<string>;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -328,7 +348,7 @@ function DayDetailModal({
         <button type="button" className="btn ghost sm" onClick={onClose}>{t.tasks.close}</button>
       </header>
       <div className="modal-body">
-        {tasks.length === 0 ? (
+        {tasks.length === 0 && googleEvents.length === 0 ? (
           <p className="empty" style={{ padding: '12px 0' }}>{t.tasks.calendarEmpty}</p>
         ) : (
           <div className="day-detail-list">
@@ -349,6 +369,10 @@ function DayDetailModal({
                     <span className={STATUS_CHIP[tk.status]}>{t.tasks.statusLabel[tk.status] ?? tk.status}</span>
                     {isTaskOverdue(tk) ? <span className="chip danger">{t.tasks.overdue}</span> : null}
                     <span className={PRIORITY_CHIP[tk.priority]}>{t.tasks.priorityLabel[tk.priority] ?? tk.priority}</span>
+                    {/* Same reasoning as the pill's own dot: the day list only
+                        ever shows the task's own row for a synced meeting, so
+                        this is what says a Google event sits behind it too. */}
+                    {googleLinkedTaskIds.has(tk.id) ? <SyncBadges googleLink={tk.calendarEventLink} /> : null}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flex: 'none' }}>
@@ -365,6 +389,34 @@ function DayDetailModal({
                       <CancelTaskButton task={tk} />
                     </>
                   ) : null}
+                </div>
+              </div>
+            ))}
+            {/* Genuinely Google-only — nothing in this database, so no
+                Detail/Tandai Selesai/Hapus and no status/priority chips to
+                show. Confirmed live: a day holding one of these alongside
+                real tasks showed only the tasks here, while its own pill sat
+                right there in the month cell behind this modal — this list
+                was reading `tasks` alone and had no idea the event existed. */}
+            {googleEvents.map((ev) => (
+              <div key={ev.id} className="day-detail-row">
+                <div style={{ minWidth: 0 }}>
+                  <b>{ev.title}</b>
+                  <div style={{ fontSize: 12, marginTop: 3 }}>{formatEventWhen(ev)}</div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+                    <span className="chip good">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                           strokeLinejoin="round" width="11" height="11" aria-hidden>
+                        <rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" />
+                      </svg>
+                      {t.tasks.googleSource}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flex: 'none' }}>
+                  <a href={ev.htmlLink} target="_blank" rel="noreferrer" className="btn ghost sm">
+                    {t.tasks.openInGoogle}
+                  </a>
                 </div>
               </div>
             ))}
@@ -427,8 +479,53 @@ export function TaskCalendar({
     return () => controller.abort();
   }, [mode, anchor, googleStatus.connected]);
 
-  const googleByDay = useMemo(() => groupGoogleByDay(googleEvents), [googleEvents]);
-  const googleByDayHour = useMemo(() => groupGoogleByDayHour(googleEvents), [googleEvents]);
+  // A meeting task that has been pushed to Google comes back from Google's own
+  // events fetch too — same meeting, two pills, purple and yellow, right next
+  // to each other.
+  //
+  // Matched on two keys, both exact. `calendarEventId` is the proper link, but
+  // it is null on everything the BD chatbot booked: that path creates the
+  // Google event through `trained-cb` and the event id is dropped before the
+  // task row is written. The Meet link survives that trip and is unique per
+  // event, so it closes the same join. Titles deliberately are NOT used —
+  // confirmed live, the CRM writes "Meeting wilson x MCN Asia" while Google
+  // holds "Meeting Online wilson X MCN Asia" for that very meeting.
+  //
+  // Follows the status filter rather than every task the tenant has: hiding
+  // "Selesai" hides its pill, and the Google pill for that same meeting should
+  // reappear rather than vanish with nothing left standing in for it.
+  const { dedupedGoogleEvents, googleLinkedTaskIds } = useMemo(() => {
+    // Lists, not single ids: the same meeting can legitimately sit on more
+    // than one task row, and when it does every one of them is on Google and
+    // should say so. Keying to one id labelled whichever happened to be last.
+    const push = (map: Map<string, string[]>, key: string, id: string) => {
+      const existing = map.get(key);
+      if (existing) existing.push(id);
+      else map.set(key, [id]);
+    };
+
+    const byEventId = new Map<string, string[]>();
+    const byMeetLink = new Map<string, string[]>();
+    for (const tk of visibleTasks) {
+      if (tk.calendarEventId) push(byEventId, tk.calendarEventId, tk.id);
+      if (tk.meetingLink) push(byMeetLink, tk.meetingLink, tk.id);
+    }
+
+    const linked = new Set<string>();
+    const kept: GoogleCalendarEvent[] = [];
+    for (const ev of googleEvents) {
+      const taskIds = byEventId.get(ev.id) ?? (ev.meetingLink ? byMeetLink.get(ev.meetingLink) : undefined);
+      if (taskIds?.length) for (const id of taskIds) linked.add(id);
+      else kept.push(ev);
+    }
+    return { dedupedGoogleEvents: kept, googleLinkedTaskIds: linked };
+  }, [visibleTasks, googleEvents]);
+
+  const googleByDay = useMemo(() => groupGoogleByDay(dedupedGoogleEvents), [dedupedGoogleEvents]);
+  const googleByDayHour = useMemo(() => groupGoogleByDayHour(dedupedGoogleEvents), [dedupedGoogleEvents]);
+  // Already excludes anything matched to a task above — the day card's own
+  // list, same as the month cell's own pills.
+  const detailGoogleEvents = detailDay ? googleByDay.get(detailDay.toDateString()) ?? [] : [];
 
   // Counts Google's events too, or a day carrying nothing but those would
   // show them *and* the "nothing here" line underneath at the same time.
@@ -443,8 +540,8 @@ export function TaskCalendar({
     const inThisMonth = (d: Date) =>
       d.getMonth() === anchor.getMonth() && d.getFullYear() === anchor.getFullYear();
     return visibleTasks.some((tk) => inThisMonth(new Date(tk.dueAt)))
-      || googleEvents.some((ev) => inThisMonth(new Date(ev.start)));
-  }, [mode, anchor, byDay, googleByDay, visibleTasks, googleEvents]);
+      || dedupedGoogleEvents.some((ev) => inThisMonth(new Date(ev.start)));
+  }, [mode, anchor, byDay, googleByDay, visibleTasks, dedupedGoogleEvents]);
 
   return (
     <div className="panel" style={{ marginTop: 14 }}>
@@ -476,15 +573,18 @@ export function TaskCalendar({
           <div className="calendar-main">
             {mode === 'day' ? (
               <DayGrid anchor={anchor} eventsByDayHour={byDayHour}
-                       googleByDayHour={googleByDayHour} today={today} />
+                       googleByDayHour={googleByDayHour} today={today}
+                       googleLinkedTaskIds={googleLinkedTaskIds} />
             ) : null}
             {mode === 'week' ? (
               <WeekGrid anchor={anchor} eventsByDayHour={byDayHour}
-                        googleByDayHour={googleByDayHour} today={today} />
+                        googleByDayHour={googleByDayHour} today={today}
+                        googleLinkedTaskIds={googleLinkedTaskIds} />
             ) : null}
             {mode === 'month' ? (
               <MonthGrid anchor={anchor} eventsByDay={byDay} googleEventsByDay={googleByDay} today={today}
-                         onSelectDay={setDetailDay} onSelectTask={onOpenTaskDetail} />
+                         onSelectDay={setDetailDay} onSelectTask={onOpenTaskDetail}
+                         googleLinkedTaskIds={googleLinkedTaskIds} />
             ) : null}
             {mode === 'year' ? (
               <YearGrid anchor={anchor} eventsByDay={byDay} today={today}
@@ -514,8 +614,9 @@ export function TaskCalendar({
         </div>
       </div>
 
-      <DayDetailModal date={detailDay} tasks={detailTasks} onClose={() => setDetailDay(null)}
-                      onOpenTaskDetail={onOpenTaskDetail} />
+      <DayDetailModal date={detailDay} tasks={detailTasks} googleEvents={detailGoogleEvents}
+                      onClose={() => setDetailDay(null)}
+                      onOpenTaskDetail={onOpenTaskDetail} googleLinkedTaskIds={googleLinkedTaskIds} />
     </div>
   );
 }

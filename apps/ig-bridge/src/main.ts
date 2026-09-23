@@ -127,6 +127,24 @@ app.post<{ Params: { tenantId: string }; Body: { username: string; sessionId: st
     return reply.send(result);
   });
 
+/**
+ * Opens Instagram's own login page in a real window on this machine.
+ *
+ * Returns `awaiting_login` straight away — a person has to type a password and
+ * very likely fetch a 2FA code, which is minutes, not seconds. The CRM polls
+ * `/status`. Attaching the watcher happens here rather than in the CRM, because
+ * the login settles long after the request that started it has been answered.
+ */
+app.post<{ Params: { tenantId: string } }>(
+  '/internal/sessions/:tenantId/login-window', async (req, reply) => {
+    const result = await sessions.openLoginWindow(req.params.tenantId, (settled) => {
+      if (settled.status !== 'ready') return;
+      void watcher.attachTenant(req.params.tenantId)
+        .catch((err) => app.log.warn({ err }, 'ig-bridge: failed to attach after browser login'));
+    });
+    return reply.send(result);
+  });
+
 app.post<{ Params: { tenantId: string }; Body: { code: string } }>(
   '/internal/sessions/:tenantId/challenge', async (req, reply) => {
     const { code } = req.body ?? {};
@@ -285,7 +303,25 @@ app.get<{ Params: { tenantId: string } }>(
 
 app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status', async (req, reply) => {
   const hasSession = await sessions.hasSession(req.params.tenantId);
-  return reply.send({ hasSession });
+
+  // A live session that never recorded whose it is. Recoverable, and worth
+  // recovering here rather than making the operator disconnect and log in
+  // again for a session that works. Only ever runs when one is missing.
+  let username = await sessions.getOwnUsername(req.params.tenantId);
+  if (hasSession && !username && !sessions.isAwaitingLogin(req.params.tenantId)) {
+    username = await sessions.recoverOwnUsername(req.params.tenantId).catch(() => null);
+  }
+
+  return reply.send({
+    hasSession,
+    // Only meaningful for the browser-login flow: a window is open on this
+    // machine and a person is part-way through it. The CRM shows that rather
+    // than "disconnected", which would invite them to start a second one.
+    awaitingLogin: sessions.isAwaitingLogin(req.params.tenantId),
+    username,
+    // Masked. See `capturedFor` — `sessionid` is the credential itself.
+    captured: sessions.capturedFor(req.params.tenantId),
+  });
 });
 
 app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string; username?: string } }>(

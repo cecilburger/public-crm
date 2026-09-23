@@ -6,6 +6,8 @@ import {
 } from '@kirana/db';
 import { isBdConversation } from './bdDraft.ts';
 
+import { processFbBridgeEvent, type FbBridgeEventPayload } from './facebookInbound.ts';
+
 const IG_GRAPH_URL = 'https://graph.instagram.com';
 
 export interface NormaliseDeps {
@@ -50,6 +52,19 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
   }
   if (claimed[0].provider === 'ig_comment') {
     return processIgCommentEvent(deps, claimed[0].payload as unknown as IgCommentEventPayload);
+  }
+  // Facebook lives in its own file: unlike every branch around it, it never
+  // needs to resolve a channel to a tenant through the control pool, because
+  // `apps/fb-bridge` states the tenant in its payload. `fail` is handed over as
+  // a callback so that marking a payload unprocessable — the one thing there
+  // that does need the control pool — stays in this file, which is the one
+  // allowed to reach outside a tenant context.
+  if (claimed[0].provider === 'fb_bridge') {
+    return processFbBridgeEvent(
+      deps,
+      claimed[0].payload as unknown as FbBridgeEventPayload,
+      (reason) => fail(deps, webhookEventId, reason),
+    );
   }
   if ((claimed[0].payload as { platform?: string }).platform === 'instagram') {
     return processInstagramEvent(deps, webhookEventId, claimed[0].payload as unknown as InstagramEventPayload);

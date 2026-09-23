@@ -257,8 +257,14 @@ export function Rail({
     router.replace('/masuk');
   };
 
-  const item = (href: string, label: string, icon: keyof typeof ICONS, badge?: number) => {
-    const active = pathname === href || pathname.startsWith(`${href}/`);
+  // `matchPrefix` exists for a link whose destination is not the root of the
+  // section it represents: Settings opens on the first tab that is actually
+  // shown, but must still light up on every other tab under /pengaturan.
+  const item = (
+    href: string, label: string, icon: keyof typeof ICONS, badge?: number, matchPrefix?: string,
+  ) => {
+    const base = matchPrefix ?? href;
+    const active = pathname === base || pathname.startsWith(`${base}/`);
     return (
       <Link key={href} href={href} className="navitem" aria-current={active ? 'page' : undefined}
             title={collapsed ? label : undefined}>
@@ -362,7 +368,7 @@ export function Rail({
                strokeLinecap="round" strokeLinejoin="round">{ICONS[THEME_ICON[theme]]}</svg>
           <span className="navitem-label">{THEME_LABEL[theme]}</span>
         </button>
-        {item('/pengaturan', t.nav.settings, 'settings')}
+        {item('/pengaturan/email', t.nav.settings, 'settings', undefined, '/pengaturan')}
         <div className="whoami" title={collapsed ? me.user.name : undefined}>
           <span className="avatar" aria-hidden>{initials(me.user.name)}</span>
           <span className="whoami-info" style={{ minWidth: 0 }}>

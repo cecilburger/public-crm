@@ -1,0 +1,68 @@
+<!--
+  The shape Messenger actually renders, captured from a real logged-in session
+  and then rewritten with synthetic names and wording.
+
+  Everything the parser depends on is here and nothing else: the transcript is
+  an ARIA live region (`role="log"`), each message is a sibling
+  `div[data-scope="messages_table"]`, and the sender and the body arrive
+  together inside one aria-label rather than in nodes of their own.
+
+  The three things that broke the original guesswork are all represented:
+    - the thread header, which is also `data-scope="messages_table"` but
+      carries no message label (it was being read as a message whose body was
+      the date stamp);
+    - a date break;
+    - the connected account writing as "Anda" ("You"), never as the Page name.
+
+  Message ids are carried the way the live site carries them: on the row, as
+  both `data-message-id` and `id`, reading `mid.$cAAAB...`. The values here are
+  synthetic; the structure is not. The last inbound message deliberately has no
+  id at all, so the fallback path stays covered.
+-->
+<div role="log" aria-label="Pesan dalam percakapan dengan Budi Santoso">
+
+  <div role="button" aria-label="Masukkan, Detail percakapan">
+    <span dir="auto">Masukkan, Detail percakapan</span>
+  </div>
+
+  <div data-scope="date_break"><span dir="auto">19 September 2026</span></div>
+
+  <!-- Thread header: same data-scope, no message label. Not a message. -->
+  <div data-scope="messages_table">
+    <img alt="Budi Santoso" src="avatar.png" />
+    <span dir="auto">19/09/26 14.26</span>
+  </div>
+
+  <div data-scope="messages_table" data-message-id="mid.$cAAABsynthetic001"
+       id="mid.$cAAABsynthetic001"
+       aria-label="Pukul 19 September 2026 14.26, Budi Santoso: Sis, ini masih ready?">
+    <div role="toolbar" aria-label="Tindakan pesan"></div>
+    <div role="button" aria-label="Masukkan, Pesan dikirim pukul 19 September 2026 14.26 oleh Budi Santoso: Sis, ini masih ready?">
+      <span dir="auto">Sis, ini masih ready?</span>
+      <span dir="auto">Terkirim</span>
+    </div>
+  </div>
+
+  <div data-scope="messages_table" id="mid.$cAAABsynthetic002"
+       aria-label="Pukul 19 September 2026 14.27, Budi Santoso: Yang warna hitam ada?">
+    <div role="button" aria-label="Masukkan, Pesan dikirim pukul 19 September 2026 14.27 oleh Budi Santoso: Yang warna hitam ada?">
+      <span dir="auto">Yang warna hitam ada?</span>
+    </div>
+  </div>
+
+  <!-- No id of any kind: the live watcher's own fallback still has to cover it. -->
+  <div data-scope="messages_table" aria-label="Pukul 19 September 2026 14.29, Budi Santoso: oke sip">
+    <div role="button" aria-label="Masukkan, Pesan dikirim pukul 19 September 2026 14.29 oleh Budi Santoso: oke sip">
+      <span dir="auto">oke sip</span>
+    </div>
+  </div>
+
+  <div data-scope="messages_table" data-message-id="mid.$cAAABsynthetic003"
+       id="mid.$cAAABsynthetic003"
+       aria-label="Pukul 19 September 2026 14.28, Anda: Halo kak, masih ada ya">
+    <div role="button" aria-label="Masukkan, Pesan dikirim pukul 19 September 2026 14.28 oleh Anda: Halo kak, masih ada ya">
+      <span dir="auto">Halo kak, masih ada ya</span>
+    </div>
+  </div>
+
+</div>

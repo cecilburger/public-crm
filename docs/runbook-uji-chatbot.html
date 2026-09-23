@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>Runbook Uji Chatbot BD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+  :root {
+    --paper: #faf9f7;
+    --panel: #ffffff;
+    --ink: #1c1b19;
+    --ink-2: #4a4640;
+    --muted: #6f6a63;
+    --rule: #e4e1da;
+    --accent: #2f5d50;
+    --accent-soft: #e4ede9;
+    --good: #2f6b3f;
+    --good-soft: #e3efe5;
+    --warn: #8a6318;
+    --warn-soft: #f5ecd9;
+    --bad: #9c3328;
+    --bad-soft: #f6e4e1;
+    --code-bg: #f1efea;
+
+    --step: clamp(1.05rem, 0.98rem + 0.3vw, 1.2rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #15171a;
+      --panel: #1c1f23;
+      --ink: #e9e7e2;
+      --ink-2: #c3bfb8;
+      --muted: #918b83;
+      --rule: #2c3036;
+      --accent: #7fc0ad;
+      --accent-soft: #1e2b28;
+      --good: #82c191;
+      --good-soft: #1b2a20;
+      --warn: #d9ab5c;
+      --warn-soft: #2c2419;
+      --bad: #e0857a;
+      --bad-soft: #2e1e1c;
+      --code-bg: #14171a;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #15171a;
+    --panel: #1c1f23;
+    --ink: #e9e7e2;
+    --ink-2: #c3bfb8;
+    --muted: #918b83;
+    --rule: #2c3036;
+    --accent: #7fc0ad;
+    --accent-soft: #1e2b28;
+    --good: #82c191;
+    --good-soft: #1b2a20;
+    --warn: #d9ab5c;
+    --warn-soft: #2c2419;
+    --bad: #e0857a;
+    --bad-soft: #2e1e1c;
+    --code-bg: #14171a;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .wrap {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+  }
+
+  h1, h2, h3, .eyebrow, .num {
+    font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  h1 {
+    font-size: clamp(1.9rem, 1.5rem + 1.8vw, 2.6rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.12;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+
+  .lede {
+    color: var(--ink-2);
+    max-width: 44rem;
+    margin: 0 0 6px;
+  }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+
+  .meta {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin-top: 18px;
+  }
+
+  hr.rule {
+    border: 0;
+    border-top: 1px solid var(--rule);
+    margin: 36px 0;
+  }
+
+  h2 {
+    font-size: 1.32rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+
+  .section-note {
+    color: var(--muted);
+    font-size: 0.92rem;
+    margin: 0 0 20px;
+  }
+
+  /* ---- prerequisites ---- */
+  h3.sub {
+    font-size: 1rem;
+    font-weight: 650;
+    margin: 28px 0 10px;
+    letter-spacing: -0.005em;
+  }
+
+  .port {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  td code { white-space: nowrap; }
+
+  /* ---- scenarios ---- */
+  .scenario {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 22px;
+    margin-bottom: 20px;
+  }
+
+  .scenario-head {
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+
+  .num {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+
+  .scenario h3 {
+    font-size: 1.08rem;
+    font-weight: 650;
+    margin: 0;
+    letter-spacing: -0.005em;
+  }
+
+  .goal {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin: 0 0 18px 30px;
+  }
+
+  ol.steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  ol.steps > li {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .tick {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 17px;
+    height: 17px;
+    margin: 4px 0 0;
+    border: 1.5px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper);
+    cursor: pointer;
+    display: grid;
+    place-content: center;
+  }
+
+  .tick:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .tick:checked::after {
+    content: "";
+    width: 9px;
+    height: 5px;
+    border-left: 2px solid var(--panel);
+    border-bottom: 2px solid var(--panel);
+    transform: rotate(-45deg) translate(1px, -1px);
+  }
+
+  .tick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .step-body p {
+    margin: 0;
+  }
+
+  .say {
+    display: block;
+    margin: 8px 0 0;
+    padding: 9px 12px;
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 5px 5px 0;
+    font-size: 0.95rem;
+  }
+
+  .expect {
+    margin: 8px 0 0;
+    font-size: 0.9rem;
+    color: var(--ink-2);
+  }
+
+  .expect b {
+    color: var(--good);
+    font-weight: 600;
+  }
+
+  code, kbd {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.85em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    margin: 10px 0 0;
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+
+  /* ---- verify block ---- */
+  .verify {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+
+  .verify-label {
+    font-family: Archivo, sans-serif;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+
+  .verify ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 0.92rem;
+    color: var(--ink-2);
+  }
+
+  .verify li { margin-bottom: 4px; }
+
+  /* ---- pitfalls ---- */
+  .table-scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: 0.92rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  th {
+    font-family: Archivo, sans-serif;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  .chip {
+    display: inline-block;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    padding: 2px 7px;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+
+  .chip.warn { background: var(--warn-soft); color: var(--warn); }
+  .chip.bad { background: var(--bad-soft); color: var(--bad); }
+  .chip.good { background: var(--good-soft); color: var(--good); }
+
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--warn);
+    background: var(--panel);
+    border-radius: 0 8px 8px 0;
+    padding: 14px 16px;
+    margin: 20px 0 0;
+  }
+
+  .callout p { margin: 0; font-size: 0.94rem; color: var(--ink-2); }
+  .callout p + p { margin-top: 8px; }
+  .callout strong { color: var(--ink); }
+
+  @media (max-width: 560px) {
+    .scenario { padding: 18px 15px; }
+    .goal { margin-left: 0; }
+  }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">CRM MCNAsia · QA</p>
+  <h1>Runbook Uji Chatbot BD</h1>
+  <p class="lede">
+    Empat skenario untuk memastikan pesan masuk terbaca, chatbot membalas, dan meeting
+    benar-benar terbentuk di Google Calendar serta CRM. Jalankan berurutan — tiap skenario
+    memakai kondisi yang ditinggalkan sebelumnya.
+  </p>
+  <p class="meta">Diperbarui 22 September 2026 · centang tersimpan di browser ini saja</p>
+
+  <hr class="rule">
+
+  <h2>Sebelum mulai</h2>
+  <p class="section-note">Tujuh servis harus hidup. Masing-masing punya tugas berbeda, dan kalau satu mati gejalanya sering tidak menunjuk ke servis yang sebenarnya bermasalah.</p>
+
+  <pre><code>npm run dev:api
+npm run dev:worker
+npm run dev:console
+npm run dev:ig-bridge
+npm run dev:wa-bridge
+
+cd "D:\project\PT Miss Spicy Internatonal\trained-cb"
+python -m bd_bot brain-serve</code></pre>
+
+  <h3 class="sub">Apa tugas masing-masing</h3>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Servis</th><th>Tugasnya</th><th>Kalau mati</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>dev:api</code><br><span class="port">:8080</span></td>
+          <td>Pintu masuk semua data. Menerima pesan dari bridge, menyimpannya, dan melayani halaman CRM.</td>
+          <td>Seluruh CRM mati — halaman tidak bisa dibuka, pesan masuk hilang begitu saja</td>
+        </tr>
+        <tr>
+          <td><code>dev:worker</code><br><span class="port">tanpa port</span></td>
+          <td>Mesin latar. Mengubah pesan mentah jadi percakapan, memanggil chatbot untuk menyusun balasan, mengirim balasan, membalas komentar IG, memesan meeting.</td>
+          <td><strong>Pesan tetap masuk dan terlihat di CRM, tapi tidak ada balasan sama sekali.</strong> Pekerjaan menumpuk di antrean dan dikerjakan sekaligus saat dinyalakan lagi</td>
+        </tr>
+        <tr>
+          <td><code>dev:console</code><br><span class="port">:3000</span></td>
+          <td>Halaman CRM yang Anda buka di browser.</td>
+          <td>Halaman tidak bisa dibuka — tapi bot tetap membalas klien seperti biasa</td>
+        </tr>
+        <tr>
+          <td><code>dev:wa-bridge</code><br><span class="port">:8090</span></td>
+          <td>Memegang sesi WhatsApp Web. Membaca pesan masuk dan mengirim balasan ke WhatsApp.</td>
+          <td>WhatsApp berhenti total — masuk maupun keluar. Instagram tidak terpengaruh</td>
+        </tr>
+        <tr>
+          <td><code>dev:ig-bridge</code><br><span class="port">:8091</span></td>
+          <td>Memegang sesi Instagram. Membaca DM dan komentar postingan, mengirim balasan dan DM.</td>
+          <td>Instagram berhenti total. WhatsApp tidak terpengaruh</td>
+        </tr>
+        <tr>
+          <td><code>brain-serve</code><br><span class="port">:4321</span></td>
+          <td>Chatbot-nya sendiri — yang memutuskan apa yang dikatakan, memilih slot meeting, dan memesan ke Google Calendar.</td>
+          <td>Pesan masuk tercatat, tapi tidak ada yang menyusun balasannya</td>
+        </tr>
+        <tr>
+          <td><code>postgres</code> + <code>redis</code><br><span class="port">:5432 · :6379</span></td>
+          <td>Postgres menyimpan semua data; Redis menampung antrean pekerjaan.</td>
+          <td>Postgres mati: semuanya mati. Redis mati: pesan tercatat tapi tidak pernah diproses</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <p><strong>Gejala yang paling sering menipu:</strong> pesan masuk terlihat di halaman Chat, tapi bot tidak membalas. Yang mati biasanya <code>worker</code> atau <code>brain-serve</code> — bukan bridge-nya, karena pesannya jelas berhasil sampai.</p>
+    <p><strong>Cek cepat:</strong> halaman Channel WhatsApp harus berstatus tersambung, bukan <code>MEMULAI…</code>. Status yang menggantung di <code>MEMULAI…</code> berarti sesi tidak pernah naik — restart wa-bridge.</p>
+    <p><strong>Dua proses per servis itu normal.</strong> Tiap <code>npm run dev:*</code> memunculkan dua proses node: satu pengawas perubahan file, satu aplikasinya. Satu servis, dua proses.</p>
+  </div>
+
+  <hr class="rule">
+
+  <h2>Skenario</h2>
+  <p class="section-note">Tiap langkah punya “yang harus terjadi”. Kalau tidak terjadi, berhenti di situ — jangan lanjut, karena skenario berikutnya menumpang kondisi ini.</p>
+
+  <!-- 1 -->
+  <section class="scenario">
+    <div class="scenario-head"><span class="num">01</span><h3>Pesan masuk WhatsApp dibalas bot</h3></div>
+    <p class="goal">Membuktikan jalur paling dasar: pesan sampai ke CRM, chatbot memproses, balasan kembali ke WhatsApp.</p>
+
+    <ol class="steps">
+      <li>
+        <input type="checkbox" class="tick" id="s1a">
+        <div class="step-body">
+          <p>Dari HP lain, kirim ke nomor yang tersambung:</p>
+          <span class="say">Halo, saya dari brand skincare. Mau tanya soal campaign affiliate TikTok</span>
+          <p class="expect">Harus terjadi: <b>bot membalas dalam hitungan detik</b> dengan form data brand.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s1b">
+        <div class="step-body">
+          <p>Buka halaman <strong>Chat WA</strong> di CRM.</p>
+          <p class="expect">Harus terjadi: <b>percakapan muncul</b> dengan pesan masuk dan balasan bot, keduanya tercatat.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="verify">
+      <p class="verify-label">Kalau gagal</p>
+      <ul>
+        <li>Tidak ada balasan sama sekali → sesi WhatsApp kemungkinan mati diam-diam. Restart <code>dev:wa-bridge</code>, tunggu status <code>connected</code>, lalu kirim ulang.</li>
+        <li>Pesan lama tidak ikut muncul setelah restart — itu normal. Riwayat tidak pernah diputar ulang; hanya pesan baru yang terbaca.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="scenario">
+    <div class="scenario-head"><span class="num">02</span><h3>Isi form → data brand masuk CRM</h3></div>
+    <p class="goal">Membuktikan bot menangkap nama brand dari obrolan dan CRM menyimpannya tanpa admin mengetik ulang.</p>
+
+    <ol class="steps">
+      <li>
+        <input type="checkbox" class="tick" id="s2a">
+        <div class="step-body">
+          <p>Balas form itu dengan data lengkap. Baris <code>Nama Brand:</code> wajib ditulis persis:</p>
+          <span class="say">Nama Brand: Skincare Glow<br>Posisi di Brand: Owner<br>Link TikTok Shop: tiktok.com/@skincareglow<br>Link Shopee: shopee.co.id/skincareglow</span>
+          <p class="expect">Harus terjadi: <b>bot menjelaskan layanan</b> dan menawarkan meeting.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s2b">
+        <div class="step-body">
+          <p>Buka halaman <strong>Client On Proses</strong>.</p>
+          <p class="expect">Harus terjadi: kolom <b>Nama Toko</b> terisi “Skincare Glow” dan <b>Status Toko</b> terisi “Aktif”, tanpa diketik siapa pun.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="verify">
+      <p class="verify-label">Kalau gagal</p>
+      <ul>
+        <li>Nama Toko kosong → kemungkinan kontak itu sudah punya brand sebelumnya. Penangkap sengaja tidak pernah menimpa data yang sudah ada.</li>
+        <li>Kolom <strong>Nama</strong> tetap nama kontak WhatsApp — itu memang disengaja, bukan bug.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="scenario">
+    <div class="scenario-head"><span class="num">03</span><h3>Meeting dipesan otomatis</h3></div>
+    <p class="goal">Skenario terpenting: bot memilih slot kosong dari kalender, memesannya, dan menuliskannya ke CRM.</p>
+
+    <ol class="steps">
+      <li>
+        <input type="checkbox" class="tick" id="s3a">
+        <div class="step-body">
+          <p>Setujui ajakan meeting. Pakai kalimat yang menyebut waktu — itu yang paling andal dikenali:</p>
+          <span class="say">jumat jam 10 ya, email saya nama@contoh.com</span>
+          <p class="expect">Harus terjadi: <b>bot mengonfirmasi jadwal</b> beserta tanggal, jam, dan link Google Meet.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s3b">
+        <div class="step-body">
+          <p>Buka Google Calendar di akun yang tersambung.</p>
+          <p class="expect">Harus terjadi: <b>event nyata pada hari dan jam yang Anda sebut</b>, dengan ruang Meet dan undangan ke email tadi.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s3c">
+        <div class="step-body">
+          <p>Buka halaman <strong>Calendar</strong> di CRM, pilih tampilan <strong>Hari</strong> pada tanggal itu.</p>
+          <p class="expect">Harus terjadi: <b>tugas meeting CRM</b> dan <b>event Google</b> keduanya tampil, dengan warna berbeda.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s3d">
+        <div class="step-body">
+          <p>Buka <strong>Client On Proses</strong>.</p>
+          <p class="expect">Harus terjadi: client itu punya <b>Jadwal Meeting</b> terisi sesuai booking.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="verify">
+      <p class="verify-label">Kalau gagal</p>
+      <ul>
+        <li>Bot menawarkan slot lagi, bukan memesan → jam yang Anda sebut tidak terbaca. Ulangi dengan format sederhana: <code>jumat jam 10</code>.</li>
+        <li>Bot menjawab “jadwalnya sedang saya siapkan” → kalender tidak terjangkau. Cek <code>python -m bd_bot gcal-check</code>.</li>
+        <li>Slot yang Anda minta sudah terisi → bot menawarkan jam terdekat. Itu perilaku benar, bukan kegagalan.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="scenario">
+    <div class="scenario-head"><span class="num">04</span><h3>Komentar Instagram dibalas</h3></div>
+    <p class="goal">Membuktikan komentar terbaca, dibalas singkat di publik, dan penjelasan panjangnya dikirim lewat DM.</p>
+
+    <ol class="steps">
+      <li>
+        <input type="checkbox" class="tick" id="s4a">
+        <div class="step-body">
+          <p>Dari akun Instagram lain, komentari salah satu postingan. Pakai akun yang profilnya punya tombol <strong>Message</strong>, supaya sisi DM ikut teruji.</p>
+          <span class="say">Kak mau tau info lebih lanjut dong</span>
+          <p class="expect">Harus terjadi: dalam <b>≤5 menit</b> komentar muncul di halaman Komentar IG.</p>
+        </div>
+      </li>
+      <li>
+        <input type="checkbox" class="tick" id="s4b">
+        <div class="step-body">
+          <p>Lihat postingannya di Instagram.</p>
+          <p class="expect">Harus terjadi: <b>satu balasan publik singkat</b> — satu, bukan dua — dan <b>DM pembuka</b> masuk ke akun pengomentar.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="verify">
+      <p class="verify-label">Kalau gagal</p>
+      <ul>
+        <li>Komentar belum muncul → poller berjeda 5 menit, bukan instan. Tunggu satu siklus penuh sebelum menyimpulkan.</li>
+        <li>DM tercatat <code>skipped</code> → akun itu sudah pernah menerima pembuka. Itu penjaga anti-spam bekerja, bukan kegagalan.</li>
+      </ul>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <h2>Hal yang sering disalahpahami</h2>
+  <p class="section-note">Semua baris di bawah ini pernah terlihat seperti kerusakan, padahal perilaku yang benar — atau sebaliknya.</p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Yang terlihat</th><th>Artinya</th><th>Tindakan</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Bot berhenti membalas sama sekali</td>
+          <td><span class="chip warn">handover</span> Dua pesan berturut-turut tidak dipahami, percakapan diserahkan ke manusia</td>
+          <td>Minta reset percakapan; bot tidak akan bicara lagi sampai statusnya dikembalikan</td>
+        </tr>
+        <tr>
+          <td>“Boleh, saya setuju meeting” tidak dimengerti</td>
+          <td><span class="chip good">disengaja</span> LLM dilarang memutuskan label yang menentukan — salah tebak berarti memesan slot untuk orang yang tidak setuju</td>
+          <td>Pakai kalimat yang menyebut waktu: <code>jumat jam 10</code></td>
+        </tr>
+        <tr>
+          <td>Pesan lama tidak muncul setelah restart</td>
+          <td><span class="chip good">normal</span> Riwayat tidak pernah diputar ulang</td>
+          <td>Kirim pesan baru</td>
+        </tr>
+        <tr>
+          <td>Status “terkirim” tapi tidak ada di HP</td>
+          <td><span class="chip bad">periksa</span> Pernah terjadi dan sudah diperbaiki, tapi jangan percaya status begitu saja</td>
+          <td>Hitung langsung di WhatsApp/Instagram, bukan dari CRM</td>
+        </tr>
+        <tr>
+          <td>Balasan komentar muncul dua kali</td>
+          <td><span class="chip bad">laporkan</span> Penjaga anti-dobel gagal</td>
+          <td>Hapus salah satunya, catat jam kejadiannya</td>
+        </tr>
+        <tr>
+          <td>Pindah menu terasa lambat di menu yang baru pertama dibuka</td>
+          <td><span class="chip good">normal</span> Mode pengembangan mengompilasi tiap halaman saat pertama diakses</td>
+          <td>Kunjungan kedua jauh lebih cepat</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <p><strong>Aturan paling berguna dari pengujian sejauh ini:</strong> jangan percaya status di CRM begitu saja. Beberapa kali status berkata “gagal” untuk pesan yang sudah sampai, dan sekali berkata “terkirim” untuk pesan yang tidak pernah keluar.</p>
+    <p>Kalau ragu, buka WhatsApp atau Instagram-nya langsung dan hitung berapa pesan yang benar-benar ada di sana. Itu yang berkali-kali menyelamatkan dari memperbaiki masalah yang salah.</p>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    var ticks = document.querySelectorAll('.tick');
+    var KEY = 'runbook-bd-v1';
+    var saved = {};
+
+    try {
+      saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
+    } catch (e) {
+      saved = {};
+    }
+
+    ticks.forEach(function (box) {
+      if (saved[box.id]) box.checked = true;
+      box.addEventListener('change', function () {
+        saved[box.id] = box.checked;
+        try {
+          localStorage.setItem(KEY, JSON.stringify(saved));
+        } catch (e) {
+          /* private window or blocked storage — the page still works, the
+             ticks just won't survive a reload. */
+        }
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>

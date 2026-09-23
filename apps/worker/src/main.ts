@@ -5,6 +5,7 @@ import { connectPostgres, withTenant, rotateTenantDek } from '@kirana/db';
 import { GraphMetaClient } from './meta.ts';
 import { WaBridgeClient } from './waBridge.ts';
 import { IgBridgeClient } from './igBridgeClient.ts';
+import { FbBridgeClient } from './fbBridgeClient.ts';
 import { resolveSender, sendBillingEmail } from './email/send.ts';
 import { processInboundWebhook } from './processors/inboundNormalise.ts';
 import { processOutbound } from './processors/outboundSend.ts';
@@ -51,6 +52,7 @@ const publish = (tenantId: string, event: { type: 'message'; conversationId: str
 const meta = new GraphMetaClient(e.META_GRAPH_URL);
 const waBridge = new WaBridgeClient(e.WA_BRIDGE_URL, e.WA_BRIDGE_SECRET);
 const igBridge = new IgBridgeClient(e.IG_BRIDGE_URL, e.IG_BRIDGE_SECRET);
+const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 const emailSender = resolveSender(e);
 const email = { db, sender: emailSender };
 
@@ -125,7 +127,7 @@ const workers = [
     processInboundWebhook({ db, control, kek, dispatch, publish }, job.data.webhookEventId), { connection, concurrency: 16 }),
 
   new Worker('outbound.send', async (job: Job) =>
-    processOutbound({ db, kek, meta, waBridge, igBridge, accessTokenFor }, job.data), { connection, concurrency: 8 }),
+    processOutbound({ db, kek, meta, waBridge, igBridge, fbBridge, accessTokenFor }, job.data), { connection, concurrency: 8 }),
 
   new Worker('autopilot.draft', async (job: Job) =>
     processAutopilotDraft({ db, kek, model: autopilot, dispatch }, job.data), { connection, concurrency: 6 }),
@@ -137,7 +139,20 @@ const workers = [
       throw err;
     }
     return processBdDraft({ db, kek, brain: bdBrain, dispatch }, job.data);
-  }, { connection, concurrency: 6 }),
+  }, {
+    connection, concurrency: 6,
+    // `BdBrainClient.book()` (apps/worker/src/bdBrain.ts) gives Google
+    // Calendar and an LLM read up to 45s to answer, comfortably past
+    // BullMQ's 30s default lock. A job that outlives its lock gets marked
+    // stalled and handed to a second worker while the first is still
+    // running — confirmed live: two "Meeting wilson x MCN Asia" tasks, same
+    // due date, same Meet link, created 43 seconds apart, because one
+    // in-flight booking call ran under two workers at once. `createTask`'s
+    // own conflict guard (packages/db/src/tasks.ts) is the second half of
+    // this fix and is what actually stops the duplicate row; this half is
+    // what stops the duplicate run from happening to begin with.
+    lockDuration: 60_000,
+  }),
 
   new Worker('igComment.reply', async (job: Job) => {
     // Off by default is the wrong default for a feature someone turned on,

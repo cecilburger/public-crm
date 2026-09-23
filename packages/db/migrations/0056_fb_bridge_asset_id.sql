@@ -1,0 +1,25 @@
+-- The Business Suite asset id for a connected Page.
+--
+-- A Page's conversations are not on facebook.com/messages/t/ at all. They live
+-- in Meta Business Suite, and every URL there is keyed by an `asset_id` —
+-- which is a DIFFERENT NUMBER from the Page id. Confirmed live on the same
+-- Page: `61594393176093` in a profile URL, `1225922357281590` as the asset.
+--
+-- WHY A SEPARATE COLUMN RATHER THAN REUSING page_id. They are two identifiers
+-- for two different systems, and the failure when they are confused is silent:
+-- a Business Suite URL built from a Page id loads a perfectly valid-looking
+-- inbox that contains none of this tenant's conversations, with no error
+-- anywhere. A column that sometimes holds one kind of id and sometimes another
+-- makes that mistake permanently available.
+--
+-- NULLABLE, AND NULL MEANS SOMETHING. A connection with no asset id is a
+-- personal-account connection, read from messenger.com by the existing
+-- transport. That is also what every connection made before this migration is,
+-- so backfilling a value would be inventing a fact about them.
+--
+-- NOT ENCRYPTED, for the same reason `page_id` is not: an asset id names a
+-- business Page that is already public. `fb_bridge_connections` deliberately
+-- holds no encrypted columns, and adding the first one here would drag this
+-- table into the rotation walker for a value that is not a secret.
+
+alter table fb_bridge_connections add column if not exists asset_id text;

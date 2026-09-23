@@ -24,7 +24,7 @@ export default async function CalendarPage({
       {params.gcal === 'error' ? <GcalNotice variant="error" detail={params.detail} /> : null}
       <TaskTable tasks={tasks} members={members} deals={deals} taskKinds={taskKinds}
                  brands={brands} googleStatus={googleStatus}
-                 title={t.nav.calendar} defaultView="calendar" />
+                 title={t.nav.calendar} defaultView="calendar" variant="calendar" />
     </div>
   );
 }

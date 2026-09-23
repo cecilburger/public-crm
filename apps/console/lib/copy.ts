@@ -35,6 +35,8 @@ export const t = {
     needsReply: 'menunggu balasan',
     taskOverdue: 'lewat jatuh tempo',
     taskDueToday: 'jatuh tempo hari ini',
+    commentPending: 'komentar IG perlu dibalas',
+    commentFailed: 'balasan komentar IG gagal terkirim',
     seeAll: 'Lihat semua',
   },
 
@@ -475,6 +477,7 @@ export const t = {
     tabBill: 'Tagihan',
     tabEmail: 'Email',
     tabInstagram: 'Instagram',
+    tabFacebook: 'Facebook',
     tabHistory: 'Riwayat',
 
     usageTitle: 'Pemakaian bulan ini',
@@ -559,13 +562,65 @@ export const t = {
     lastUpdated: (when: string) => `Terakhir diubah ${when}`,
   },
 
+  facebookBridge: {
+    title: 'Facebook',
+    sectionTitle: 'Facebook Messenger & Komentar (Tidak Resmi)',
+    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Pesan Messenger bisa dibaca dan dibalas dari sini; komentar Halaman hanya tercatat.',
+    inboundOnly: 'Balasan Messenger dikirim lewat bridge ini. Komentar Halaman hanya tercatat — balasan komentar dan chatbot belum tersedia untuk Facebook.',
+    pageId: 'ID Halaman',
+    pageIdPlaceholder: 'mis. 61594393176093',
+    pageIdHint: 'Angka di URL Halaman Anda. Buka Halaman di Facebook, lihat bagian profile.php?id=… atau Pengaturan Halaman.',
+    pageName: 'Nama Halaman',
+    pageNamePlaceholder: 'mis. Red Panda Test',
+    pageNameHint: 'Harus persis sama dengan yang Facebook tampilkan. Nama ini yang dipakai untuk membedakan balasan Anda sendiri dari pesan pelanggan.',
+    assetId: 'Asset ID Business Suite',
+    assetIdPlaceholder: 'mis. 1225922357281590',
+    assetIdHint: 'Isi ini kalau yang dihubungkan Halaman bisnis — pesannya ada di Meta Business Suite, bukan di Messenger biasa. Buka business.facebook.com/latest/inbox, lihat angka setelah asset_id= di URL. Angkanya BERBEDA dari ID Halaman. Kosongkan kalau yang dihubungkan akun pribadi.',
+    assetIdInvalid: 'Asset ID harus berupa angka saja, minimal 6 digit. Salin persis dari asset_id= di URL Business Suite.',
+    surfaceBusinessSuite: (assetId: string) => `Pesan dibaca dari Meta Business Suite (asset ${assetId}).`,
+    surfaceMessenger: 'Pesan dibaca dari Messenger biasa (akun pribadi). Kalau ini sebenarnya Halaman bisnis, putuskan lalu hubungkan ulang sambil mengisi Asset ID — kalau tidak, pesan pelanggan tidak akan terbaca sama sekali.',
+    connect: 'Hubungkan Halaman',
+    connecting: 'Membuka jendela login…',
+    disconnect: 'Putuskan',
+    disconnecting: 'Memutuskan…',
+    connectedAs: (page: string) => `Terhubung sebagai ${page}`,
+    awaitingTitle: 'Menunggu login manual',
+    awaitingBody: 'Jendela browser sudah dibuka di mesin yang menjalankan fb-bridge. Selesaikan login Facebook di sana, termasuk 2FA atau checkpoint kalau diminta. Halaman ini akan memperbarui sendiri.',
+    checkpointTitle: 'Facebook minta verifikasi',
+    checkpointBody: 'Facebook menahan sesi dan menunggu orang. Buka jendela login lagi lewat tombol di bawah, lalu selesaikan verifikasinya secara manual.',
+    noCredentialNote: 'CRM tidak pernah menerima atau menyimpan password Facebook Anda. Login dilakukan sendiri di jendela browser, dan yang tersimpan hanya sesi di disk layanan bridge.',
+    bridgeUnreachable: 'Layanan Facebook Bridge tidak bisa dihubungi. Pastikan sudah dijalankan (npm run dev:fb-bridge).',
+    missingFields: 'Isi ID dan nama Halaman Facebook',
+    failed: 'Gagal menghubungkan Facebook',
+    lastUpdated: (at: string) => `Diperbarui ${at}`,
+    statusLabel: 'Status',
+    statusReady: 'Aktif',
+    statusAwaiting: 'Menunggu login',
+    statusCheckpoint: 'Perlu verifikasi',
+    statusError: 'Bermasalah',
+    statusDisconnected: 'Belum terhubung',
+    commentsTitle: 'Komentar Masuk',
+    commentsEmpty: 'Belum ada komentar yang masuk.',
+    commentsHint: 'Komentar ditarik berkala dari post Halaman. Tidak ada balasan otomatis.',
+    commentOnPost: (postId: string) => `Post ${postId}`,
+  },
+
   instagramBridge: {
     title: 'Instagram',
     sectionTitle: 'Login Otomatis (Tidak Resmi)',
     subtitle: 'Login Instagram lewat browser otomatis di server (bukan API resmi buat developer) — cara ini tetap melanggar Ketentuan Layanan Instagram dan berisiko akun kena checkpoint atau terkunci. Pakai akun cadangan dulu kalau belum yakin.',
     methodLabel: 'Metode Login',
+    methodBrowser: 'Login lewat Browser (paling mudah)',
     methodPassword: 'Username & Password',
     methodCookie: 'Session Cookie',
+    loginWithBrowser: 'Buka Halaman Login Instagram',
+    openingWindow: 'Membuka jendela login…',
+    browserHint: 'Cara paling gampang dan paling aman: klik tombol di bawah, lalu jendela Instagram akan terbuka di komputer yang menjalankan ig-bridge. Login sendiri di sana seperti biasa — termasuk kode 2FA atau verifikasi kalau diminta. Sessionid, csrftoken, dan ds_user_id akan terambil otomatis, jadi Anda tidak perlu menyalinnya sendiri dari DevTools. Password Instagram Anda tidak pernah masuk ke CRM ini.',
+    awaitingTitle: 'Menunggu login manual',
+    awaitingBody: 'Jendela Instagram sudah terbuka di komputer yang menjalankan ig-bridge. Selesaikan login di sana — halaman ini akan memperbarui sendiri begitu berhasil. Jendelanya menunggu sampai 15 menit.',
+    bridgeUnreachable: 'Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge).',
+    capturedTitle: 'Diambil otomatis dari login tadi',
+    usernameMissing: 'Sesi aktif, tapi username Instagram belum terbaca. Halaman ini sedang mencoba membacanya ulang — kalau tetap kosong, Putuskan lalu login lagi.',
     username: 'Username Instagram',
     usernamePlaceholder: 'namaakun',
     password: 'Password',
@@ -666,6 +721,7 @@ export const t = {
 
   channels: {
     whatsapp: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger',
+    messenger_bridge: 'Facebook',
     tiktok: 'TikTok', telegram: 'Telegram', tokopedia: 'Tokopedia',
     shopee: 'Shopee', email: 'Email', webchat: 'Chat web', whatsapp_web: 'WhatsApp (manual)',
     instagram_bridge: 'Instagram (tidak resmi)',
@@ -703,7 +759,7 @@ export const t = {
 
   chatIg: {
     title: 'Chat IG',
-    subtitle: 'Chat langsung dari akun Instagram yang terhubung lewat API resmi Meta.',
+    subtitle: 'Chat langsung dari akun Instagram yang terhubung — lewat API resmi Meta atau lewat login browser di server.',
     notConnected: 'Instagram belum terhubung.',
     goToSettings: 'Hubungkan di Pengaturan → Instagram',
   },
@@ -1362,6 +1418,12 @@ export const t = {
     newTitle: 'Tugas Baru',
     detail: 'Detail',
     detailTitle: 'Detail Tugas',
+    // The Kalender page's own wording for the same add/detail drawers — Tugas
+    // keeps calling them tasks, Kalender calls them schedule entries. Same
+    // form, same server action, just a label a person reads.
+    addSchedule: 'Tambah Jadwal',
+    newScheduleTitle: 'Jadwal Baru',
+    detailScheduleTitle: 'Detail Jadwal',
     sendEmail: 'Kirim Email',
     sendEmailTitle: 'Kirim undangan meeting lewat email',
     sendEmailTo: 'Alamat email',
@@ -1408,7 +1470,19 @@ export const t = {
     googleConnectFailed: 'Gagal menyambungkan Google Calendar.',
     googleUpcomingEmpty: 'Tidak ada acara dalam 30 hari ke depan.',
     googleColumn: 'Google Calendar',
+    // `googleSource` labels a row that has no task behind it at all — an
+    // event pulled straight from Google, read-only, nothing in this
+    // database. A task that is ALSO on Google gets two chips instead of one
+    // ("Tersambung Google Calendar" read as if the row itself were sourced
+    // from Google, next to its own Detail/Tandai Selesai/Hapus buttons,
+    // confirmed confusing live) — `crmLabel` for the row that lives here,
+    // `googleSource` reused for the event that also lives there. See
+    // `SyncBadges`.
     googleSource: 'Google Calendar',
+    crmLabel: 'CRM',
+    /** Plain-text equivalent for a native `title` tooltip, which cannot
+     *  render two coloured chips — the pills in Bulan/Hari/Minggu use this. */
+    crmAndGoogle: 'CRM + Google Calendar',
     openInGoogle: 'Buka di Google',
     googleEventDetailTitle: 'Detail Acara Google Calendar',
     source: 'Sumber',

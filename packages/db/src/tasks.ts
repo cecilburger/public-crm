@@ -116,23 +116,47 @@ export async function createTask(
     kind?: string; meetingLink?: string | null; priority?: string;
     repeatUnit?: string | null; repeatInterval?: number; repeatUntil?: Date | null;
   },
-): Promise<{ id: string }> {
+): Promise<{ id: string; deduped: boolean }> {
+  // `on conflict ... do nothing` targets `tasks_meeting_booking_key`
+  // (0058_tasks_meeting_booking_key.sql) — one row per (conversation, Meet
+  // link, due date) for a booked meeting. Everything that isn't a meeting
+  // with both a conversation and a link never matches the index's own
+  // partial predicate, so this is a plain insert for every other kind of
+  // task, same as before.
   const rows = await ctx.tx.query<{ id: string }>(
     `insert into tasks (tenant_id, contact_id, brand_id, deal_id, conversation_id, title, notes, due_at,
                          assignee_id, created_by, kind, meeting_link, priority, repeat_unit, repeat_interval, repeat_until)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     on conflict (tenant_id, conversation_id, meeting_link, due_at)
+       where kind = 'meeting' and conversation_id is not null and meeting_link is not null
+       do nothing
+     returning id`,
     [ctx.tenantId, args.contactId ?? null, args.brandId ?? null, args.dealId ?? null, args.conversationId ?? null,
      args.title, args.notes ?? null, args.dueAt, args.assigneeId ?? null, args.createdBy,
      args.kind ?? 'follow_up', args.meetingLink ?? null, args.priority ?? 'medium',
      args.repeatUnit ?? null, args.repeatInterval ?? 1, args.repeatUntil ?? null],
   );
-  const id = rows[0]!.id;
-  await audit(ctx.tx, ctx.tenantId, {
-    actorType: args.createdBy ? 'user' : 'system', actorId: args.createdBy, action: 'task.created',
-    resourceType: 'task', resourceId: id,
-    meta: { contactId: args.contactId ?? null, brandId: args.brandId ?? null, dueAt: args.dueAt.toISOString() },
-  });
-  return { id };
+
+  if (rows[0]) {
+    await audit(ctx.tx, ctx.tenantId, {
+      actorType: args.createdBy ? 'user' : 'system', actorId: args.createdBy, action: 'task.created',
+      resourceType: 'task', resourceId: rows[0].id,
+      meta: { contactId: args.contactId ?? null, brandId: args.brandId ?? null, dueAt: args.dueAt.toISOString() },
+    });
+    return { id: rows[0].id, deduped: false };
+  }
+
+  // The insert was a no-op against an existing booking for this exact
+  // meeting. Every caller still needs a real id back — `POST /v1/tasks`
+  // reads the row straight back through it — so this hands back the one
+  // that already exists rather than the one that was refused. There is
+  // nothing to audit a second time: nothing was created.
+  const existing = await ctx.tx.query<{ id: string }>(
+    `select id from tasks
+      where tenant_id = $1 and conversation_id = $2 and meeting_link = $3 and due_at = $4 and kind = 'meeting'`,
+    [ctx.tenantId, args.conversationId, args.meetingLink, args.dueAt],
+  );
+  return { id: existing[0]!.id, deduped: true };
 }
 
 /**

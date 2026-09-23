@@ -29,6 +29,66 @@ export interface BridgeEvent {
 }
 
 /**
+ * A session whose stored login is gone: WhatsApp is serving the QR page, not
+ * the app.
+ *
+ * Its own type because the only cure is a person scanning a code. Retrying is
+ * not merely useless here, it is harmful — each attempt opens another tab
+ * against the same profile, and the failure that arrives is a `TypeError` deep
+ * inside `whatsapp-web.js` rather than anything naming the real problem.
+ */
+export class NotAuthenticatedError extends Error {}
+
+/**
+ * How a logged-out session announces itself, which is not by saying so.
+ *
+ * `whatsapp-web.js` probes `window.require('WAWebSocketModel')` during
+ * `initialize()`. That module belongs to the WhatsApp Web *app* bundle;
+ * the logged-out `/login/` route serves a different bundle without it, so the
+ * lookup returns null and the library dereferences it. Confirmed live against
+ * web.whatsapp.com/login/: `window.require` is a function, `window.Store` is
+ * undefined, and the module resolves to null while the page reads
+ * "Scan to log in".
+ *
+ * Matched on the message because the library throws a bare `TypeError` — there
+ * is no code or flag on it to key off, and it is the same string every time.
+ */
+function looksLoggedOut(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /reading 'Socket'/.test(message)
+    || /WAWebSocketModel/.test(message)
+    || /Cannot read properties of null \(reading 'Store'\)/.test(message);
+}
+
+/**
+ * The WhatsApp Web build to load, when one is pinned.
+ *
+ * Unset by default, which keeps the behaviour this bridge has always had:
+ * whatever WhatsApp serves today. That is also the exposure — WhatsApp ships a
+ * new bundle whenever it likes, and a rename inside it breaks the library
+ * without a line of our code changing.
+ *
+ * Pinning is deliberately opt-in rather than a hard-coded default: a version
+ * chosen today goes stale, and WhatsApp eventually refuses builds it considers
+ * too old, which would turn a working bridge into a broken one on a timetable
+ * nobody is watching. Set `WA_WEB_VERSION` (e.g. `2.3000.1025091234`) when a
+ * WhatsApp-side change breaks things and a known-good build is needed to get
+ * back to work.
+ */
+const WA_WEB_VERSION = process.env.WA_WEB_VERSION?.trim();
+
+function webVersionCache(): Record<string, unknown> | undefined {
+  if (!WA_WEB_VERSION) return undefined;
+  return {
+    webVersion: WA_WEB_VERSION,
+    webVersionCache: {
+      type: 'remote',
+      remotePath: `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`,
+    },
+  };
+}
+
+/**
  * One Puppeteer-backed Client per channel, keyed by `channelId`. `LocalAuth`'s
  * own `clientId` option namespaces each session's files under one shared
  * `dataPath`, which is what lets one process hold several tenants' WhatsApp
@@ -154,6 +214,7 @@ export class SessionManager {
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: channelId, dataPath: this.authDir }),
       puppeteer: await this.puppeteerFor(channelId),
+      ...webVersionCache(),
     });
     this.clients.set(channelId, client);
 
@@ -268,7 +329,31 @@ export class SessionManager {
       });
     });
 
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (err) {
+      // Nothing is left half-alive: the client comes out of the map and its
+      // browser page is closed. Without this each failed attempt left another
+      // tab open against the same profile — three of them, on the session that
+      // led to this code being written.
+      this.clients.delete(channelId);
+      await client.destroy().catch(() => {});
+
+      if (looksLoggedOut(err)) {
+        // Stop advertising it as resumable, or every restart retries a session
+        // that can only fail and the QR the operator actually needs is never
+        // asked for. Same reasoning as the `auth_failure` handler above, for a
+        // case the library never gets far enough to report.
+        await fs.rm(this.activeMarker(channelId), { force: true }).catch(() => {});
+        this.onEvent({
+          channelId, event: 'auth_failure', at: new Date().toISOString(),
+          disconnected: { reason: 'Sesi WhatsApp sudah tidak tertaut — pindai ulang QR untuk nomor ini' },
+        });
+        throw new NotAuthenticatedError(
+          'Sesi WhatsApp sudah tidak tertaut — WhatsApp menyajikan halaman QR, bukan aplikasinya');
+      }
+      throw err;
+    }
   }
 
   async send(channelId: string, to: string, body: string): Promise<{ providerMessageId: string }> {

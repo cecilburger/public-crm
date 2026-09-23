@@ -7,6 +7,7 @@ import { Composer } from '@/components/Composer';
 import { DraftCard } from '@/components/DraftCard';
 import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
+import { ScrollToLatest } from '@/components/ScrollToLatest';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,6 +99,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
               <div className="bubble">{m.body ?? <em className="dim">{t.chats.redacted}</em>}</div>
             </div>
           ))}
+          <ScrollToLatest conversationId={conversation.id} messageCount={messages.length} />
         </div>
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}

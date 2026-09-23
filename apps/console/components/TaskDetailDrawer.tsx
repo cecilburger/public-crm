@@ -7,6 +7,7 @@ import { toDatetimeLocal } from '@/lib/format';
 import { CsrfField } from '@/components/Csrf';
 import { TaskKindField } from '@/components/TaskKindField';
 import { SendMeetingEmailButton } from '@/components/SendMeetingEmailButton';
+import { SyncBadges } from '@/components/SyncBadges';
 import { taskPartyName } from '@/lib/taskHelpers';
 import type { Task, Member, Deal, TaskKind } from '@/lib/api';
 
@@ -17,7 +18,7 @@ import type { Task, Member, Deal, TaskKind } from '@/lib/api';
  * than this view offers.
  */
 export function TaskDetailDrawer({
-  task: incoming, open, onClose, members, deals, taskKinds,
+  task: incoming, open, onClose, members, deals, taskKinds, variant,
 }: {
   task: Task | null;
   open: boolean;
@@ -25,7 +26,10 @@ export function TaskDetailDrawer({
   members: Member[];
   deals: Deal[];
   taskKinds: TaskKind[];
+  /** See `TaskTable`'s own doc on this prop. */
+  variant?: 'calendar';
 }) {
+  const isSchedule = variant === 'calendar';
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(updateTask, null);
   const [kind, setKind] = useState(incoming?.kind ?? 'follow_up');
   const [repeatUnit, setRepeatUnit] = useState(incoming?.repeatUnit ?? '');
@@ -57,10 +61,14 @@ export function TaskDetailDrawer({
     <>
       <div className={`drawer-backdrop ${open ? 'open' : ''}`} onClick={onClose} aria-hidden="true" />
       <div className={`drawer-panel ${open ? 'open' : ''}`} role="dialog" aria-modal="true"
-           aria-label={t.tasks.detailTitle} aria-hidden={!open}>
+           aria-label={isSchedule ? t.tasks.detailScheduleTitle : t.tasks.detailTitle} aria-hidden={!open}>
         <div className="drawer-head">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <h2>{t.tasks.detailTitle}</h2>
+            <h2>{isSchedule ? t.tasks.detailScheduleTitle : t.tasks.detailTitle}</h2>
+            {/* Same "this exists both here and on Google" mark the calendar
+                pills carry — without it, opening the detail of a synced
+                meeting gave no sign of the linked event at all. */}
+            {task.calendarEventId ? <SyncBadges googleLink={task.calendarEventLink} /> : null}
             {/* Outside the edit form below on purpose — its own dialog holds
                 its own <form>, and a form cannot nest inside another form. */}
             {kind === 'meeting' ? <SendMeetingEmailButton taskId={task.id} /> : null}
@@ -96,41 +104,63 @@ export function TaskDetailDrawer({
 
               <TaskKindField id="e-kind" name="kind" value={kind} onChange={setKind} initialCustomKinds={taskKinds} />
 
-              <div className="record-field">
-                <label htmlFor="e-priority">{t.tasks.formPriority}</label>
-                <select className="line-input" id="e-priority" name="priority" defaultValue={task.priority}>
-                  {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
-                    <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="record-field">
-                <label htmlFor="e-repeatUnit">{t.tasks.repeat}</label>
-                <select className="line-input" id="e-repeatUnit" name="repeatUnit" value={repeatUnit}
-                        onChange={(e) => setRepeatUnit(e.target.value)}>
-                  <option value="">{t.tasks.repeatNone}</option>
-                  {(['day', 'week', 'month', 'year'] as const).map((u) => (
-                    <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
-                  ))}
-                </select>
-              </div>
-
-              {repeatUnit ? (
+              {/* Priority, repeat, assignee and deal are all about following up
+                  on a lead — the Tugas page's job, not a schedule entry's.
+                  `updateTask` overwrites all four on every save (there is no
+                  partial-patch semantics on this row, and `priority` is a
+                  required field on the API besides), so hiding the interactive
+                  controls carries their current values through as hidden
+                  inputs instead of simply omitting them — omitting them would
+                  silently wipe whatever a task already had the next time
+                  someone edited its title from Kalender. */}
+              {isSchedule ? (
+                <>
+                  <input type="hidden" name="priority" value={task.priority} />
+                  <input type="hidden" name="repeatUnit" value={task.repeatUnit ?? ''} />
+                  <input type="hidden" name="repeatInterval" value={task.repeatInterval} />
+                  <input type="hidden" name="repeatUntil" value={task.repeatUntil ? task.repeatUntil.slice(0, 10) : ''} />
+                  <input type="hidden" name="assigneeId" value={task.assigneeId ?? ''} />
+                  <input type="hidden" name="dealId" value={task.dealId ?? ''} />
+                </>
+              ) : (
                 <>
                   <div className="record-field">
-                    <label htmlFor="e-repeatInterval">{t.tasks.repeatEvery}</label>
-                    <input className="line-input" id="e-repeatInterval" name="repeatInterval" type="number"
-                           min={1} max={365} defaultValue={task.repeatInterval} />
+                    <label htmlFor="e-priority">{t.tasks.formPriority}</label>
+                    <select className="line-input" id="e-priority" name="priority" defaultValue={task.priority}>
+                      {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
+                        <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
+                      ))}
+                    </select>
                   </div>
+
                   <div className="record-field">
-                    <label htmlFor="e-repeatUntil">{t.tasks.repeatUntil}</label>
-                    <input className="line-input" id="e-repeatUntil" name="repeatUntil" type="date"
-                           defaultValue={task.repeatUntil ? task.repeatUntil.slice(0, 10) : ''} />
-                    <p className="record-hint">{t.tasks.repeatUntilHint}</p>
+                    <label htmlFor="e-repeatUnit">{t.tasks.repeat}</label>
+                    <select className="line-input" id="e-repeatUnit" name="repeatUnit" value={repeatUnit}
+                            onChange={(e) => setRepeatUnit(e.target.value)}>
+                      <option value="">{t.tasks.repeatNone}</option>
+                      {(['day', 'week', 'month', 'year'] as const).map((u) => (
+                        <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
+                      ))}
+                    </select>
                   </div>
+
+                  {repeatUnit ? (
+                    <>
+                      <div className="record-field">
+                        <label htmlFor="e-repeatInterval">{t.tasks.repeatEvery}</label>
+                        <input className="line-input" id="e-repeatInterval" name="repeatInterval" type="number"
+                               min={1} max={365} defaultValue={task.repeatInterval} />
+                      </div>
+                      <div className="record-field">
+                        <label htmlFor="e-repeatUntil">{t.tasks.repeatUntil}</label>
+                        <input className="line-input" id="e-repeatUntil" name="repeatUntil" type="date"
+                               defaultValue={task.repeatUntil ? task.repeatUntil.slice(0, 10) : ''} />
+                        <p className="record-hint">{t.tasks.repeatUntilHint}</p>
+                      </div>
+                    </>
+                  ) : null}
                 </>
-              ) : null}
+              )}
 
               {kind === 'meeting' ? (
                 <div className="record-field">
@@ -140,23 +170,27 @@ export function TaskDetailDrawer({
                 </div>
               ) : null}
 
-              <div className="record-field">
-                <label htmlFor="e-assigneeId">{t.tasks.formAssignee}</label>
-                <select className="line-input" id="e-assigneeId" name="assigneeId" defaultValue={task.assigneeId ?? ''}>
-                  <option value="">{t.tasks.unassigned}</option>
-                  {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              </div>
+              {!isSchedule ? (
+                <div className="record-field">
+                  <label htmlFor="e-assigneeId">{t.tasks.formAssignee}</label>
+                  <select className="line-input" id="e-assigneeId" name="assigneeId" defaultValue={task.assigneeId ?? ''}>
+                    <option value="">{t.tasks.unassigned}</option>
+                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+              ) : null}
 
-              <div className="record-field">
-                <label htmlFor="e-dealId">{t.tasks.formDeal}</label>
-                <select className="line-input" id="e-dealId" name="dealId" defaultValue={task.dealId ?? ''}>
-                  <option value="">{t.tasks.noDeal}</option>
-                  {deals.map((d) => (
-                    <option key={d.id} value={d.id}>{d.title}{d.contact_name ? ` — ${d.contact_name}` : ''}</option>
-                  ))}
-                </select>
-              </div>
+              {!isSchedule ? (
+                <div className="record-field">
+                  <label htmlFor="e-dealId">{t.tasks.formDeal}</label>
+                  <select className="line-input" id="e-dealId" name="dealId" defaultValue={task.dealId ?? ''}>
+                    <option value="">{t.tasks.noDeal}</option>
+                    {deals.map((d) => (
+                      <option key={d.id} value={d.id}>{d.title}{d.contact_name ? ` — ${d.contact_name}` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
 
               <div className="record-field">
                 <label htmlFor="e-notes">{t.tasks.formNotes}</label>

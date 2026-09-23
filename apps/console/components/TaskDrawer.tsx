@@ -14,7 +14,7 @@ import type { Brand, Member, Deal, TaskKind } from '@/lib/api';
  * a replacement for it.
  */
 export function TaskDrawer({
-  open, onClose, members, deals, taskKinds, brands,
+  open, onClose, members, deals, taskKinds, brands, variant,
 }: {
   open: boolean;
   onClose: () => void;
@@ -22,7 +22,13 @@ export function TaskDrawer({
   deals: Deal[];
   taskKinds: TaskKind[];
   brands: Brand[];
+  /** See `TaskTable`'s own doc on this prop. Priority, repeat, assignee and
+   * deal are all still submitted with sensible defaults by the server action
+   * when the form never mentions them, so hiding the fields here needs no
+   * change on that side. */
+  variant?: 'calendar';
 }) {
+  const isSchedule = variant === 'calendar';
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(createTaskInline, null);
   const formRef = useRef<HTMLFormElement>(null);
   const [kind, setKind] = useState('follow_up');
@@ -50,9 +56,9 @@ export function TaskDrawer({
     <>
       <div className={`drawer-backdrop ${open ? 'open' : ''}`} onClick={onClose} aria-hidden="true" />
       <div className={`drawer-panel ${open ? 'open' : ''}`} role="dialog" aria-modal="true"
-           aria-label={t.tasks.newTitle} aria-hidden={!open}>
+           aria-label={isSchedule ? t.tasks.newScheduleTitle : t.tasks.newTitle} aria-hidden={!open}>
         <div className="drawer-head">
-          <h2>{t.tasks.newTitle}</h2>
+          <h2>{isSchedule ? t.tasks.newScheduleTitle : t.tasks.newTitle}</h2>
           <button type="button" className="drawer-close" onClick={onClose} aria-label={t.tasks.close}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -98,27 +104,33 @@ export function TaskDrawer({
                   </div>
                 ) : null}
 
-                <div className="record-field">
-                  <label htmlFor="d-priority">{t.tasks.formPriority}</label>
-                  <select className="line-input" id="d-priority" name="priority" defaultValue="medium">
-                    {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
-                      <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
-                    ))}
-                  </select>
-                </div>
+                {/* Priority, repeat, assignee and deal are all about following up
+                    on a lead — the Tugas page's job, not a schedule entry's. */}
+                {!isSchedule ? (
+                  <div className="record-field">
+                    <label htmlFor="d-priority">{t.tasks.formPriority}</label>
+                    <select className="line-input" id="d-priority" name="priority" defaultValue="medium">
+                      {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
+                        <option key={p} value={p}>{t.tasks.priorityLabel[p]}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
 
-                <div className="record-field">
-                  <label htmlFor="d-repeatUnit">{t.tasks.repeat}</label>
-                  <select className="line-input" id="d-repeatUnit" name="repeatUnit" value={repeatUnit}
-                          onChange={(e) => setRepeatUnit(e.target.value)}>
-                    <option value="">{t.tasks.repeatNone}</option>
-                    {(['day', 'week', 'month', 'year'] as const).map((u) => (
-                      <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
-                    ))}
-                  </select>
-                </div>
+                {!isSchedule ? (
+                  <div className="record-field">
+                    <label htmlFor="d-repeatUnit">{t.tasks.repeat}</label>
+                    <select className="line-input" id="d-repeatUnit" name="repeatUnit" value={repeatUnit}
+                            onChange={(e) => setRepeatUnit(e.target.value)}>
+                      <option value="">{t.tasks.repeatNone}</option>
+                      {(['day', 'week', 'month', 'year'] as const).map((u) => (
+                        <option key={u} value={u}>{t.tasks.repeatUnitLabel[u]}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
 
-                {repeatUnit ? (
+                {!isSchedule && repeatUnit ? (
                   <>
                     <div className="record-field">
                       <label htmlFor="d-repeatInterval">{t.tasks.repeatEvery}</label>
@@ -133,23 +145,27 @@ export function TaskDrawer({
                   </>
                 ) : null}
 
-                <div className="record-field">
-                  <label htmlFor="d-assigneeId">{t.tasks.formAssignee}</label>
-                  <select className="line-input" id="d-assigneeId" name="assigneeId" defaultValue="">
-                    <option value="">{t.tasks.unassigned}</option>
-                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                </div>
+                {!isSchedule ? (
+                  <div className="record-field">
+                    <label htmlFor="d-assigneeId">{t.tasks.formAssignee}</label>
+                    <select className="line-input" id="d-assigneeId" name="assigneeId" defaultValue="">
+                      <option value="">{t.tasks.unassigned}</option>
+                      {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </div>
+                ) : null}
 
-                <div className="record-field">
-                  <label htmlFor="d-dealId">{t.tasks.formDeal}</label>
-                  <select className="line-input" id="d-dealId" name="dealId" defaultValue="">
-                    <option value="">{t.tasks.noDeal}</option>
-                    {deals.map((d) => (
-                      <option key={d.id} value={d.id}>{d.title}{d.contact_name ? ` — ${d.contact_name}` : ''}</option>
-                    ))}
-                  </select>
-                </div>
+                {!isSchedule ? (
+                  <div className="record-field">
+                    <label htmlFor="d-dealId">{t.tasks.formDeal}</label>
+                    <select className="line-input" id="d-dealId" name="dealId" defaultValue="">
+                      <option value="">{t.tasks.noDeal}</option>
+                      {deals.map((d) => (
+                        <option key={d.id} value={d.id}>{d.title}{d.contact_name ? ` — ${d.contact_name}` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
 
                 <div className="record-field">
                   <label htmlFor="d-notes">{t.tasks.formNotes}</label>

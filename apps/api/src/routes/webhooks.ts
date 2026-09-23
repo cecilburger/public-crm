@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { verifyWebhookSignature, ipAllowed, parseAllowList } from '@kirana/core';
-import { withoutTenant } from '@kirana/db';
+import { withoutTenant, withTenant, findMessengerBridgeChannel, knownMessengerMessageIds } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { webhookEvents } from '../metrics.ts';
 
@@ -291,4 +291,166 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     return reply.status(200).send({ received: true });
   });
+
+  /**
+   * The Facebook bridge (`apps/fb-bridge`) — Messenger DMs and Page comments
+   * read off the real facebook.com UI. Same shape of trust as the other two
+   * bridges: an internal service on loopback authenticating with a shared
+   * secret, not a provider signing its own payloads.
+   *
+   * This route is inbound. Replies leave through the outbound sender's
+   * `messenger_bridge` branch, which calls the bridge directly and never
+   * arrives here.
+   *
+   * The external id is chosen carefully, because it is the idempotency barrier
+   * for the whole channel:
+   *   - a message with a real Facebook `mid.*` keys on that directly;
+   *   - a message without one keys on a hash of
+   *     (tenant, thread, sender, sentAt, text) — `sentAt` being Facebook's own
+   *     `data-utime`, a property of the message rather than of whichever
+   *     process happened to read it. Text alone would collapse a customer's
+   *     second "halo" into their first;
+   *   - a comment keys on Facebook's own comment id, which the bridge refuses
+   *     to synthesise a substitute for.
+   * `apps/worker` recomputes the identical string when it writes the row, so
+   * the two dedupe layers cannot disagree. Change one and you must change both;
+   * `tests/facebook-bridge.test.ts` asserts they still match.
+   */
+  /**
+   * Which of these message ids the CRM already holds.
+   *
+   * This is what makes Postgres the source of truth for reconciliation. The
+   * bridge could keep its own file of what it has reported, and did — but a
+   * file on the bridge's disk is a second opinion, and the two drift the moment
+   * either side is restored, reset or redeployed. Asking here means a backfill
+   * stops at what the database actually contains.
+   *
+   * A read, so it opens the tenant's own context rather than the control pool:
+   * the bridge states the tenant, and row-level security applies from the first
+   * query to the last.
+   */
+  app.post('/v1/webhooks/fb-bridge/known', async (req, reply) => {
+    if (req.headers.authorization !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'fb-bridge known-ids rejected: bad secret');
+      return reply.status(401).send();
+    }
+    const body = req.body as { tenantId?: string; externalIds?: string[] };
+    if (!body.tenantId || !Array.isArray(body.externalIds)) return reply.status(400).send();
+    // Bounded: a backfill asks about one window of one thread, never a history.
+    const externalIds = body.externalIds.filter((id) => typeof id === 'string').slice(0, 500);
+
+    const known = await withTenant(ctx.db, body.tenantId, async (tx) => {
+      const channel = await findMessengerBridgeChannel({ tx, tenantId: body.tenantId!, kek: ctx.kek });
+      if (!channel) return [] as string[];
+      const found = await knownMessengerMessageIds({ tx, tenantId: body.tenantId!, kek: ctx.kek }, {
+        channelId: channel.channelId, providerMessageIds: externalIds,
+      });
+      return [...found];
+    });
+
+    return reply.send({ known });
+  });
+
+  app.post('/v1/webhooks/fb-bridge', async (req, reply) => {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'fb-bridge webhook rejected: bad secret');
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'bad_signature' });
+      return reply.status(401).send();
+    }
+
+    const body = req.body as {
+      tenantId?: string; event?: string; at?: string; error?: string;
+      message?: {
+        threadId?: string; externalMessageId?: string | null; senderId?: string; senderName?: string;
+        text?: string; sentAt?: string | null; direction?: string;
+      };
+      comment?: {
+        commentId?: string; postId?: string; authorId?: string | null; authorName?: string;
+        text?: string; commentedAt?: string | null; pageId?: string; pageName?: string | null;
+      };
+    };
+    if (!body.tenantId || !body.event) {
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // Validated here rather than trusted, so a bridge that half-broke sends a
+    // 400 it can log instead of writing a row with an empty sender into the
+    // customer's inbox.
+    const m = (body.event === 'message' ? body.message : null) ?? null;
+    if (body.event === 'message') {
+      // A message with neither a Facebook id nor a send time has no identity
+      // that survives the next read, so there is nothing to dedupe it on. The
+      // bridge already refuses to emit one; rejecting it here too means a
+      // bridge that regressed gets a 400 in its log rather than filing the
+      // same message again on every pass.
+      const ok = m?.threadId && m.senderId && m.senderName && m.text
+        && (m.direction === 'inbound' || m.direction === 'outbound')
+        && Boolean(m.externalMessageId || m.sentAt);
+      if (!ok) {
+        webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+        return reply.status(400).send();
+      }
+    }
+
+    const c = (body.event === 'comment' ? body.comment : null) ?? null;
+    if (body.event === 'comment' && !(c?.commentId && c.postId && c.pageId && c.text)) {
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    const externalId = facebookExternalId(body.tenantId, body.event, m, c);
+
+    const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
+      tx.query<{ id: string }>(
+        `insert into webhook_events (provider, external_id, signature_ok, payload)
+         values ('fb_bridge', $1, true, $2)
+         on conflict (provider, external_id) do nothing
+         returning id`,
+        [externalId, JSON.stringify(body)],
+      ));
+
+    webhookEvents.inc({ provider: 'fb_bridge', outcome: inserted[0] ? 'accepted' : 'duplicate' });
+    req.log.info(
+      { tenantId: body.tenantId, event: body.event, outcome: inserted[0] ? 'accepted' : 'duplicate' },
+      'fb-bridge webhook received',
+    );
+    if (inserted[0]) {
+      await ctx.dispatch({ queue: 'inbound.normalise', payload: { webhookEventId: inserted[0].id } });
+    }
+
+    return reply.status(200).send({ received: true });
+  });
+}
+
+/**
+ * The spool key for one `fb-bridge` event.
+ *
+ * Kept as a named function rather than inlined so the worker's copy can be
+ * compared against it directly — the two must produce byte-identical strings or
+ * a redelivered event passes the spool barrier and inserts a second message.
+ */
+export function facebookExternalId(
+  tenantId: string,
+  event: string,
+  message: { threadId?: string; externalMessageId?: string | null; senderId?: string; sentAt?: string | null; text?: string } | null,
+  comment: { commentId?: string } | null,
+): string {
+  if (message) {
+    // Facebook's own id when it exists — an identity it assigned beats one we
+    // derived, and it stays stable even if the text is edited afterwards.
+    if (message.externalMessageId) return `fb_dm:${tenantId}:${message.externalMessageId}`;
+    // Otherwise the message's own send time, which is the same on every read.
+    // Never a counter: see `compositeMessageKey` in apps/fb-bridge/src/events.ts
+    // for what a per-process sequence number did to messages after a restart.
+    return crypto.createHash('sha256')
+      .update(`fb_dm:${tenantId}:${message.threadId}:${message.senderId}:${message.sentAt}:${message.text}`)
+      .digest('hex');
+  }
+  if (comment) return `fb_comment:${tenantId}:${comment.commentId}`;
+  // Session-state events are status transitions, not customer data that must
+  // never duplicate, so the clock stands in for an id the same way the
+  // wa-bridge route already does for its lifecycle events.
+  return `fb_bridge:${tenantId}:${event}:${Date.now()}`;
 }

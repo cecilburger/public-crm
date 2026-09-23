@@ -40,6 +40,7 @@ import { registerGoogleCalendarRoutes } from './routes/googleCalendar.ts';
 import { registerEmailSettingsRoutes } from './routes/emailSettings.ts';
 import { registerInstagramBridgeRoutes } from './routes/instagramBridge.ts';
 import { registerInstagramMetaRoutes } from './routes/instagramMeta.ts';
+import { registerFacebookBridgeRoutes } from './routes/facebookBridge.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -187,6 +188,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const PUBLIC = new Set(['/healthz', '/readyz', '/metrics', '/v1/auth/login', '/v1/auth/refresh',
                           '/v1/webhooks/meta', '/v1/webhooks/wa-bridge', '/v1/webhooks/ig-bridge',
                           '/v1/webhooks/ig-comments',
+                          '/v1/webhooks/fb-bridge', '/v1/webhooks/fb-bridge/known',
                           '/v1/billing/estimate', '/v1/billing/plans', '/v1/auth/mfa/verify']);
 
   app.addHook('onRequest', async (req) => {
@@ -360,6 +362,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerEmailSettingsRoutes(app, ctx);
   registerInstagramBridgeRoutes(app, ctx);
   registerInstagramMetaRoutes(app, ctx);
+  registerFacebookBridgeRoutes(app, ctx);
 
   return app;
 }

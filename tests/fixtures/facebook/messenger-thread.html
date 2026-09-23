@@ -1,0 +1,48 @@
+<!--
+  A Messenger thread as the parser needs to see it: inbound bubbles, one of the
+  Page's own replies, and one row that is chrome rather than a message.
+
+  This variant exposes Facebook's own `mid.$...` ids, which is the good case —
+  the CRM keys idempotency on them directly. `messenger-thread-no-mid.html` is
+  the same conversation without them, exercising the composite-key fallback.
+-->
+<div role="main">
+  <div role="grid" aria-label="Messages in conversation with Budi Santoso">
+
+    <!-- A date divider: real text, no sender, not a message. -->
+    <div role="row"><span dir="auto">19 September 2026</span></div>
+
+    <div role="row" aria-label="Message from Budi Santoso" id="mid.$cAAB1111111111111111">
+      <img alt="Budi Santoso" src="avatar.png" />
+      <div dir="auto">Sis, ini masih ready?</div>
+      <span data-utime="1789000000" dir="auto">14:26</span>
+    </div>
+
+    <!-- Grouped follow-up: Facebook labels the first bubble of a run and leaves
+         the rest bare, so this one is attributed via the participant name. -->
+    <div role="row" id="mid.$cAAB2222222222222222">
+      <div dir="auto">Yang warna hitam ada?</div>
+      <span data-utime="1789000060" dir="auto">14:27</span>
+    </div>
+
+    <!-- The Page's own reply. Inbound-only: must never be ingested. -->
+    <div role="row" aria-label="You sent" id="mid.$cAAB3333333333333333">
+      <div dir="auto">Halo kak, masih ada ya</div>
+      <span data-utime="1789000120" dir="auto">14:28</span>
+    </div>
+
+    <!-- A multi-line message: the runs must be preserved, not glued together. -->
+    <div role="row" aria-label="Message from Budi Santoso" id="mid.$cAAB4444444444444444">
+      <img alt="Budi Santoso" src="avatar.png" />
+      <div dir="auto">Oke sip</div>
+      <div dir="auto">Saya ambil 2</div>
+      <span data-utime="1789000180" dir="auto">14:29</span>
+    </div>
+
+    <!-- A sticker: a real interaction, but no text to record. -->
+    <div role="row" aria-label="Message from Budi Santoso" id="mid.$cAAB5555555555555555">
+      <img alt="Budi Santoso" src="avatar.png" />
+    </div>
+
+  </div>
+</div>

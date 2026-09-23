@@ -1,0 +1,33 @@
+<!--
+  A minimal stand-in for Facebook's Messenger conversation list.
+
+  Trimmed to the structure the parser actually relies on — the roles, the
+  `/messages/t/<id>` hrefs and the aria-labels — with Facebook's generated class
+  names and nesting left out, because none of that is load-bearing and keeping
+  it would make this fixture rot on every unrelated redesign.
+
+  WHEN FACEBOOK CHANGES ITS MARKUP: paste the real container's outerHTML over
+  this, correct `src/selectors.ts` until these tests pass again, and the bridge
+  is fixed. That round trip is the whole reason the parsers are pure.
+-->
+<div aria-label="Chats" role="grid">
+  <div role="row">
+    <a role="link" href="/messages/t/100000000000001/" aria-label="Budi Santoso">
+      <span dir="auto">Budi Santoso</span>
+      <span dir="auto">Sis, ini masih ready?</span>
+      <span dir="auto">4m</span>
+    </a>
+  </div>
+  <div role="row">
+    <a role="link" href="https://www.facebook.com/messages/t/100000000000002/" aria-label="Siti Aminah">
+      <span dir="auto">Siti Aminah</span>
+      <span dir="auto">Makasih kak</span>
+      <span dir="auto">2 jam</span>
+      <span dir="auto">Aktif sekarang</span>
+    </a>
+  </div>
+  <!-- Chrome that is not a conversation: no /t/ link, so it must be ignored. -->
+  <div role="row">
+    <a role="link" href="/messages/new/"><span dir="auto">New message</span></a>
+  </div>
+</div>

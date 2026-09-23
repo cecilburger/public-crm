@@ -1,6 +1,6 @@
 import path from 'node:path';
 import Fastify from 'fastify';
-import { SessionManager, type BridgeEvent } from './sessionManager.ts';
+import { SessionManager, NotAuthenticatedError, type BridgeEvent } from './sessionManager.ts';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const KIRANA_API_URL = process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080';
@@ -90,6 +90,13 @@ async function resumeSessions(): Promise<void> {
       await sessions.start(channelId);
       app.log.info({ channelId }, 'wa-bridge: resumed a saved WhatsApp session');
     } catch (err) {
+      if (err instanceof NotAuthenticatedError) {
+        // Said plainly, because this is the one failure here with an obvious
+        // fix. `start` has already cleared the marker, so the next restart
+        // will not try this session again until it is rescanned.
+        app.log.warn({ channelId }, 'wa-bridge: saved session is no longer linked — rescan its QR to reconnect');
+        continue;
+      }
       app.log.warn({ err, channelId }, 'wa-bridge: could not resume a saved session');
     }
   }
@@ -98,8 +105,18 @@ async function resumeSessions(): Promise<void> {
 app.get('/healthz', async () => ({ status: 'ok' }));
 
 app.post<{ Params: { channelId: string } }>('/internal/sessions/:channelId/start', async (req, reply) => {
-  await sessions.start(req.params.channelId);
-  return reply.status(202).send({ started: true });
+  try {
+    await sessions.start(req.params.channelId);
+    return reply.status(202).send({ started: true });
+  } catch (err) {
+    // 409, not 500: nothing here is broken, the stored login is simply gone and
+    // a person has to scan a code. A 500 carrying a `TypeError` about reading
+    // 'Socket' sent whoever read it looking for a bug in this service.
+    if (err instanceof NotAuthenticatedError) {
+      return reply.status(409).send({ error: err.message, code: 'not_authenticated' });
+    }
+    throw err;
+  }
 });
 
 app.post<{ Params: { channelId: string }; Body: { to: string; body: string } }>(
@@ -134,6 +151,16 @@ void resumeSessions();
 // single afternoon, each one found by a person waiting for a reply.
 sessions.startHeartbeat((channelId) => {
   app.log.warn({ channelId }, 'wa-bridge: session stopped responding — restarting it');
-  void sessions.start(channelId).catch((err) =>
-    app.log.error({ err, channelId }, 'wa-bridge: could not restart a dead session'));
+  void sessions.start(channelId).catch((err) => {
+    // A session whose login is gone is not a crash to retry. Restarting it
+    // reopens the QR page, fails on the same missing module, and leaves
+    // another tab behind — every two minutes, forever. The operator has
+    // already been told to rescan through the `auth_failure` event, and the
+    // session is no longer marked resumable, so this stops here.
+    if (err instanceof NotAuthenticatedError) {
+      app.log.warn({ channelId }, 'wa-bridge: session is logged out — waiting for a QR scan, not retrying');
+      return;
+    }
+    app.log.error({ err, channelId }, 'wa-bridge: could not restart a dead session');
+  });
 });

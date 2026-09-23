@@ -21,6 +21,17 @@ const schema = z.object({
    * cross-tenant reads on that path will keep failing under RLS until it is.
    */
   CONTROL_DATABASE_URL: z.string().optional(),
+  /**
+   * The owner role, read by `npm run migrate` and by nothing else.
+   *
+   * `DATABASE_URL` authenticates as `kirana_app`, which deliberately holds no
+   * DDL rights — that is what stops a running service altering the schema, and
+   * it is also why pointing the migrator at it fails with "permission denied
+   * for schema public" rather than doing something worse. Optional so a
+   * deployment that migrates by other means still boots; when it is absent the
+   * migrator falls back to `DATABASE_URL` and says what it is using.
+   */
+  MIGRATION_DATABASE_URL: z.string().optional(),
   DATABASE_MAX_CONNECTIONS: z.coerce.number().int().default(20),
   /**
    * How the database is pooled in front of us.
@@ -69,6 +80,62 @@ const schema = z.object({
    */
   IG_BRIDGE_URL: z.string().default('http://127.0.0.1:8091'),
   IG_BRIDGE_SECRET: z.string().default('dev-ig-bridge-secret-change-me'),
+
+  /**
+   * Facebook bridge (`apps/fb-bridge`) — a real Chromium profile on the real
+   * facebook.com UI, inbound only, with no Graph API anywhere in the path.
+   *
+   * Unlike the Instagram bridge there is no credential to configure here and
+   * never will be: the operator logs in by hand in a browser window the bridge
+   * opens, and the session lives only as a Chromium profile on that service's
+   * own disk. These two values are just where to find the service and the
+   * shared secret it authenticates with.
+   */
+  FB_BRIDGE_URL: z.string().default('http://127.0.0.1:8092'),
+  FB_BRIDGE_SECRET: z.string().default('dev-fb-bridge-secret-change-me'),
+
+  /**
+   * Whether a public reply to a Facebook comment is followed by an automatic
+   * private message to whoever wrote it.
+   *
+   * OFF BY DEFAULT, AND THAT DEFAULT IS THE SAFE ONE. An unsolicited direct
+   * message to somebody who just commented, sent from a browser-automation
+   * session, is the classic shape of spam as far as Meta's anti-abuse systems
+   * are concerned — a far higher risk than replying to someone who wrote to us
+   * first. Getting it wrong checkpoints the operator's account and takes the
+   * whole bridge down with it, inbound included.
+   *
+   * With this off the private message is not attempted at all; the comment
+   * keeps the state showing its public reply succeeded and an agent can send
+   * the message by hand from the console.
+   */
+  FB_COMMENT_AUTO_DM: z.coerce.boolean().default(false),
+
+  /**
+   * Minimum gap between automated actions on comments, in milliseconds.
+   *
+   * Paced from a column on the comment row rather than an in-process timer, so
+   * a bridge that restarts does not reset its own pacing to zero and burst.
+   */
+  FB_COMMENT_COOLDOWN_MS: z.coerce.number().int().default(60_000),
+
+  /** How many comments one sweep may act on. Small on purpose. */
+  FB_COMMENT_BATCH: z.coerce.number().int().default(5),
+
+  /** Attempts before a comment stops being picked up. */
+  FB_COMMENT_MAX_ATTEMPTS: z.coerce.number().int().default(3),
+
+  /**
+   * How far back a reconnecting bridge reads a Messenger thread before giving
+   * up on finding history it already has.
+   *
+   * Backfill stops early the moment it reaches a message the CRM already knows,
+   * which is the common case. This is the backstop for the other one: a thread
+   * whose known anchor has scrolled out of the rendered window entirely, where
+   * without a limit the bridge would keep scrolling a conversation that may run
+   * to years.
+   */
+  FB_BACKFILL_MAX_MESSAGES: z.coerce.number().int().default(50),
 
   /** Autopilot. With no ANTHROPIC_API_KEY the worker runs offline (see main.ts). */
   AUTOPILOT_MODEL: z.string().default('claude-opus-5'),
@@ -120,7 +187,7 @@ export function env(): Env {
   }
   if (parsed.data.NODE_ENV === 'production') {
     const weak = ['dev-only-jwt-secret-change-me-000000', 'dev-meta-app-secret', 'dev-verify-token',
-                  'dev-wa-bridge-secret-change-me'];
+                  'dev-wa-bridge-secret-change-me', 'dev-fb-bridge-secret-change-me'];
     for (const [k, v] of Object.entries(parsed.data)) {
       if (typeof v === 'string' && weak.includes(v)) throw new Error(`${k} still holds its development default`);
     }

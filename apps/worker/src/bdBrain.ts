@@ -184,6 +184,14 @@ export interface BdBooking {
   booked: boolean;
   meeting_at: string | null;
   meet_link: string;
+  /** Google's own event id and the event's own Calendar link. Present only
+   * when this call is the one that actually booked something — absent when
+   * `_book` offered slots, failed, or (a re-run) found a meeting already on
+   * the conversation. `bdDraft.ts` links the task through `event_id` when it
+   * has one; `apps/console/components/TaskCalendar.tsx` falls back to
+   * matching on `meet_link` for the tasks booked before this existed. */
+  event_id: string | null;
+  html_link: string | null;
   /** What to say to the contact — already written by the bot, whether the
    * booking succeeded, the slot was taken, or the calendar failed. */
   messages: string[];

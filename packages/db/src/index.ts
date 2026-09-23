@@ -25,3 +25,4 @@ export * from './igMeta.ts';
 export * from './dashboard.ts';
 export * from './agentPerformance.ts';
 export * from './igComments.ts';
+export * from './facebookBridge.ts';

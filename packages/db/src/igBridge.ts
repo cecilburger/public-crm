@@ -3,7 +3,13 @@ import { tenantKeys, sealField, openField } from './keys.ts';
 import { audit } from './audit.ts';
 
 export interface IgBridgeConnection {
-  status: 'disconnected' | 'challenge_required' | 'ready' | 'error';
+  /**
+   * `awaiting_login` is the browser-login flow only: a real Chromium window is
+   * open on the bridge's machine and a person is part-way through Instagram's
+   * own login. Unlike `challenge_required`, the CRM is not in that loop and has
+   * nothing to collect — it only waits and polls.
+   */
+  status: 'disconnected' | 'awaiting_login' | 'challenge_required' | 'ready' | 'error';
   username: string | null;
   challengeType: 'two_factor' | 'checkpoint' | 'unknown' | null;
   lastError: string | null;
@@ -83,13 +89,25 @@ export async function setIgBridgeConnection(
 export async function ensureInstagramBridgeChannel(
   ctx: Ctx, args: { username: string },
 ): Promise<{ channelId: string }> {
+  // A blank handle is not an identity, and `external_id` is what this row is
+  // keyed on. Confirmed live: one login whose username could not be read
+  // inserted a second `instagram_bridge` channel with `external_id = ''`,
+  // displayed as "@". Because a conversation is unique per (contact, channel),
+  // the same person's thread then split in two — new messages landed in a
+  // conversation nobody was looking at, which reads exactly like inbound
+  // Instagram having stopped working.
+  const username = args.username.trim();
+  if (!username) {
+    throw new Error('Tidak bisa membuat channel Instagram tanpa username — sesi harus punya identitas akun');
+  }
+
   const rows = await ctx.tx.query<{ id: string }>(
     `insert into channels (tenant_id, kind, display_name, external_id, status)
      values ($1, 'instagram_bridge', $2, $3, 'connected')
      on conflict (kind, external_id) where external_id is not null
      do update set display_name = excluded.display_name, status = 'connected', tenant_id = excluded.tenant_id
      returning id`,
-    [ctx.tenantId, `@${args.username}`, args.username],
+    [ctx.tenantId, `@${username}`, username],
   );
   return { channelId: rows[0]!.id };
 }

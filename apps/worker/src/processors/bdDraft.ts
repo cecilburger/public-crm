@@ -1,5 +1,5 @@
 import {
-  withTenant, tenantKeys, openField, sealField, queueOutboundMessage, createTask,
+  withTenant, tenantKeys, openField, sealField, queueOutboundMessage, createTask, setTaskCalendarEvent,
   recordBrandFromChat, fillContactStoreFromChat, audit, type Database, type Sql,
 } from '@kirana/db';
 import type { BdAction, BdBooking, BdBrainClient, BdConversation } from '../bdBrain.ts';
@@ -346,7 +346,7 @@ async function applyActions(
     // onto Tugas and Kalender, and onto Client On Proses — which lists
     // contacts tagged `customer` and shows each one's nearest open meeting.
     if (booking?.booked && booking.meeting_at) {
-      await createTask(ctx, {
+      const { id: taskId, deduped } = await createTask(ctx, {
         contactId: args.contactId,
         conversationId: args.conversationId,
         title: `Meeting ${step.conversation.brand || step.conversation.name || 'Client'} x MCN Asia`,
@@ -357,6 +357,29 @@ async function applyActions(
         assigneeId: args.assigneeId,
         createdBy: args.assigneeId,
       });
+      // Not an error — `tasks_meeting_booking_key` doing exactly its job —
+      // but worth a line in the log. This job re-running for a booking it
+      // already wrote a task for is the stalled-lock scenario the raised
+      // `lockDuration` in apps/worker/src/main.ts exists to prevent; seeing
+      // this line again after that change would mean something else is now
+      // causing the same double run.
+      if (deduped) {
+        console.warn(
+          `[bd] duplicate meeting task suppressed for conversation ${args.conversationId} `
+          + `at ${booking.meeting_at} — the booking task-creation step ran more than once`,
+        );
+      }
+      // `createTask` has no column for this — it is a narrow follow-up write,
+      // same as the official Google-connect path uses (see `syncMeetingCalendarEvent`
+      // in apps/api/src/routes/tasks.ts). Only present when this very call is
+      // the one that booked the event; a deduped re-run or a booking made
+      // before `trained-cb` returned this id leaves it unset, and the
+      // calendar view falls back to matching on the Meet link instead.
+      if (booking.event_id) {
+        await setTaskCalendarEvent(ctx, {
+          taskId, calendarEventId: booking.event_id, calendarEventLink: booking.html_link ?? null,
+        });
+      }
 
       // Without the tag the meeting exists but the contact never appears on
       // Client On Proses, which is where the team looks for exactly this.

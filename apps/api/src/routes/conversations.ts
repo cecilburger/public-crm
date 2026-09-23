@@ -39,11 +39,18 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
     return ctx.asTenant(req, async (tx, actor) => {
+      // `channel_kind` comes along because the console has to know what it is
+      // looking at: a channel with no way to send must not be offered a reply
+      // box. The inbox list has always carried it; the detail read had not,
+      // which is why the composer was shown for every channel alike.
       const conv = await tx.query<{
         id: string; status: string; assignee_id: string | null; contact_id: string;
-        channel_id: string; last_inbound_at: Date | null; autopilot_mode: string;
-      }>(`select id, status, assignee_id, contact_id, channel_id, last_inbound_at, autopilot_mode
-            from conversations where tenant_id = $1 and id = $2`, [actor.tenantId, id]);
+        channel_id: string; last_inbound_at: Date | null; autopilot_mode: string; channel_kind: string;
+      }>(`select c.id, c.status, c.assignee_id, c.contact_id, c.channel_id, c.last_inbound_at,
+                 c.autopilot_mode, ch.kind as channel_kind
+            from conversations c
+            join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+           where c.tenant_id = $1 and c.id = $2`, [actor.tenantId, id]);
       if (!conv[0]) throw notFound('Conversation');
 
       const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);

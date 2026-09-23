@@ -92,6 +92,9 @@ export interface ConversationDetail {
   conversation: {
     id: string; status: string; assignee_id: string | null; contact_id: string;
     channel_id: string; last_inbound_at: string | null; autopilot_mode: string;
+    /** Which channel this thread is on. The reply box is hidden for one that
+     * cannot send — see `Composer`'s `disabledReason`. */
+    channel_kind: string;
     serviceWindowOpen: boolean;
   };
   contact: { displayName: string | null; phone: string | null; tags: string[] };
@@ -315,6 +318,12 @@ export interface Task {
   createdBy: string | null;
   createdAt: string;
   completedAt: string | null;
+  // The API already sends this (`GET /v1/tasks` spreads the full row); it was
+  // just never typed here. It's the join key for telling a task pill and a
+  // Google pill apart when they're the same meeting — a task's own synced
+  // event carries this id, and `GoogleCalendarEvent.id` is that same Google
+  // event id when Google is asked for it back.
+  calendarEventId: string | null;
   calendarEventLink: string | null;
 }
 
@@ -361,11 +370,52 @@ export interface MessageTemplate {
 }
 
 export interface IgBridgeConnection {
-  status: 'disconnected' | 'challenge_required' | 'ready' | 'error';
+  /** `awaiting_login` means a browser window is open on the bridge's machine
+   * and a person is part-way through Instagram's own login. */
+  status: 'disconnected' | 'awaiting_login' | 'challenge_required' | 'ready' | 'error';
   username: string | null;
   challengeType: 'two_factor' | 'checkpoint' | 'unknown' | null;
   lastError: string | null;
   updatedAt: string | null;
+  /** False when the bridge service itself could not be reached — a different
+   * problem from an expired session, and fixed differently. */
+  bridgeReachable?: boolean;
+  /** What the last browser login picked up. `sessionid` arrives masked: it is
+   * the credential itself and the full value never leaves the bridge. */
+  captured?: {
+    sessionIdMasked: string;
+    csrfToken: string | null;
+    dsUserId: string | null;
+    capturedAt: string;
+  } | null;
+}
+
+export interface FbBridgeConnection {
+  status: 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
+  pageId: string | null;
+  pageName: string | null;
+  /** The Business Suite asset id. Null means a personal account, read from
+   * messenger.com instead — the two inboxes are different surfaces. */
+  assetId: string | null;
+  lastError: string | null;
+  lastSeenAt: string | null;
+  updatedAt: string | null;
+  /** False when the bridge service itself could not be reached — a different
+   * problem from an expired session, and fixed differently. */
+  bridgeReachable?: boolean;
+}
+
+export interface FacebookComment {
+  id: string;
+  pageId: string;
+  pageName: string | null;
+  postId: string;
+  commentId: string;
+  authorExternalId: string | null;
+  authorName: string | null;
+  body: string;
+  commentedAt: string | null;
+  createdAt: string;
 }
 
 export interface IgMetaConnection {
