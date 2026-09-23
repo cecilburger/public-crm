@@ -41,6 +41,10 @@ export const messengerDotComTransport: ThreadTransport = {
     return await readContainerHtml(page, THREAD.messageList);
   },
 
+  // Already plain markup on this transport, so the cheap read and the
+  // transcript read are the same call.
+  readSurfaceHtml: (page: Page) => readContainerHtml(page, THREAD.messageList),
+
   // The contact's name is ignored on purpose: messenger.com names the sender
   // inside every message, and carrying the inbox's idea of the name alongside
   // would be a second source of truth for the same fact — the weaker of the two.

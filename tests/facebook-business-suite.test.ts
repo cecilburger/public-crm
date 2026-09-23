@@ -15,6 +15,7 @@ import {
   parseBusinessSuiteHeaderName,
 } from '../apps/fb-bridge/src/parsers/businessSuiteThread.ts';
 import { parseMessengerThread, selectBackfill } from '../apps/fb-bridge/src/parsers/messengerThread.ts';
+import { parseBusinessSuiteThreadList } from '../apps/fb-bridge/src/parsers/businessSuiteInbox.ts';
 import { buildAnnotatorScript, JUSTIFY_DIRECTION } from '../apps/fb-bridge/src/pageHtml.ts';
 import { businessSuiteTransport } from '../apps/fb-bridge/src/transport/businessSuite.ts';
 import { messengerDotComTransport } from '../apps/fb-bridge/src/transport/messengerDotCom.ts';
@@ -153,6 +154,36 @@ describe('the Business Suite transcript parser', () => {
 
     expect(parseBusinessSuiteHeaderName(header)).toBe('Sinta');
   });
+
+  // Live capture. Business Suite nests the name and the two header buttons
+  // under a chain of wrappers that each repeat their children's text, so a
+  // reading that keeps ancestors hands back "GabeAssign this conversationOpen
+  // Drop-down" as the contact's name. That is not cosmetic: the inbox sweep
+  // confirms it selected the right row by comparing this name to the row's
+  // title, so while it was wrong NO conversation could be read at all.
+  it('reads the contact name out of the real nested header', async () => {
+    expect(parseBusinessSuiteHeaderName(await fixture('business-suite-header.html'))).toBe('Gabe');
+  });
+
+  it('drops a wrapper that only repeats its children, keeps one that adds text', () => {
+    const repeats = '<span data-surface="lib:inbox:detail_view_header">'
+      + '<div><div>Sinta</div><div>Assign this conversation</div></div></span>';
+    const adds = '<span data-surface="lib:inbox:detail_view_header">'
+      + '<div>Sinta <div>Assign this conversation</div></div></span>';
+
+    expect(parseBusinessSuiteHeaderName(repeats)).toBe('Sinta');
+    expect(parseBusinessSuiteHeaderName(adds)).toBe('Sinta Assign this conversation');
+  });
+
+  // A zero-width space is not whitespace to `String.trim`, and Business Suite
+  // renders one at the end of the header. Left in, it makes two readings of the
+  // same name compare unequal.
+  it('treats a zero-width space as nothing', () => {
+    const header = '<span data-surface="lib:inbox:detail_view_header">'
+      + '<div>Sinta\u200b</div></span>';
+
+    expect(parseBusinessSuiteHeaderName(header)).toBe('Sinta');
+  });
 });
 
 describe('confirming a Business Suite send', () => {
@@ -237,8 +268,10 @@ describe('choosing a transport', () => {
       .toThrow(/asset id/i);
   });
 
-  it('says out loud that it cannot enumerate an inbox', () => {
-    expect(businessSuiteTransport.discoversConversations).toBe(false);
+  it('can enumerate an inbox on both surfaces', () => {
+    // Business Suite gets there by click-to-reveal; messenger.com reads hrefs.
+    // Either way the watcher may trust that a new conversation will be found.
+    expect(businessSuiteTransport.discoversConversations).toBe(true);
     expect(messengerDotComTransport.discoversConversations).toBe(true);
   });
 
@@ -407,5 +440,52 @@ describe('a Business Suite conversation reaching the CRM', () => {
     const rows = await storedMessages();
 
     expect(rows.some((r) => r.provider_message_id.includes('synthetic0005'))).toBe(false);
+  });
+});
+
+/* ---------------------------------------------- conversation discovery */
+
+describe('the Business Suite conversation list', () => {
+  it('finds every conversation row, newest first, and names each one', async () => {
+    const { rows, rowCount } = parseBusinessSuiteThreadList(await fixture('business-suite-inbox.html'));
+
+    expect(rowCount).toBe(2);
+    expect(rows.map((r) => [r.index, r.title])).toEqual([[0, 'Sinta Dewi'], [1, 'Rudi Hartono']]);
+  });
+
+  it('returns no id, because the markup holds none', async () => {
+    // The id is revealed only by selecting the row and reading the channel-
+    // selector links. A parser that "found" one here would be inventing it.
+    const { rows } = parseBusinessSuiteThreadList(await fixture('business-suite-inbox.html'));
+
+    for (const row of rows) expect(Object.keys(row)).toEqual(['index', 'title', 'signature']);
+  });
+
+  it('does not mistake the hover-action grid for conversations', async () => {
+    // Every row carries an invisible `a[role="row"]` bar with "Move to Done"
+    // and "Mark as Follow up". Two rows would read as four, and clicking one
+    // would archive a customer.
+    const html = await fixture('business-suite-inbox.html');
+    expect((html.match(/<a role="row"/g) ?? []).length).toBe(4);
+
+    const { rowCount } = parseBusinessSuiteThreadList(html);
+    expect(rowCount).toBe(2);
+  });
+
+  it('changes a row\'s signature when its preview changes, and is stable otherwise', async () => {
+    const html = await fixture('business-suite-inbox.html');
+    const before = parseBusinessSuiteThreadList(html).rows[0]!;
+    const again = parseBusinessSuiteThreadList(html).rows[0]!;
+    const after = parseBusinessSuiteThreadList(html.replace('mau tanya harga', 'jadi order ya')).rows[0]!;
+
+    // Deterministic: the watcher diffs on this across sweeps.
+    expect(again.signature).toBe(before.signature);
+    expect(after.signature).not.toBe(before.signature);
+  });
+
+  it('reports an empty list as zero rows rather than as a missing container', async () => {
+    const empty = '<span data-surface="/x/bizweb_inbox:thread_list"><div></div></span>';
+
+    expect(parseBusinessSuiteThreadList(empty)).toEqual({ rows: [], rowCount: 0 });
   });
 });

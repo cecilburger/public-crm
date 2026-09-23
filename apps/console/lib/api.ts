@@ -332,7 +332,12 @@ export interface FbBridgeConnection {
   /** False when the bridge service itself could not be reached — a different
    * problem from an expired session, and fixed differently. */
   bridgeReachable?: boolean;
+  /** The Business Suite asset id. Null for a personal-inbox connection. */
+  assetId: string | null;
 }
+
+export type FacebookCommentStatus =
+  'new' | 'public_reply_pending' | 'public_replied' | 'dm_pending' | 'dm_sent' | 'failed';
 
 export interface FacebookComment {
   id: string;
@@ -345,6 +350,20 @@ export interface FacebookComment {
   body: string;
   commentedAt: string | null;
   createdAt: string;
+  /**
+   * Where this comment is in the reply-then-DM sequence.
+   *
+   * The API has always returned these; this type simply did not say so, which
+   * left the console unable to show an agent that a public reply had landed
+   * even when the private message afterwards had not. The two steps fail
+   * independently and are recorded independently.
+   */
+  status: FacebookCommentStatus;
+  publicReplyAt: string | null;
+  publicReplyError: string | null;
+  dmAt: string | null;
+  dmError: string | null;
+  attempts: number;
 }
 
 export interface IgMetaConnection {

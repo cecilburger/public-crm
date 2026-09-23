@@ -97,6 +97,17 @@ export interface ThreadTransport {
    */
   readTranscriptHtml(page: Page): Promise<string | null>;
 
+  /**
+   * The same container, read plainly and cheaply.
+   *
+   * Used to tell whether the page has stopped rewriting itself, which needs
+   * nothing but "is this markup the same as a second ago". Kept separate from
+   * `readTranscriptHtml` because that one measures a computed style for every
+   * message on screen, and doing that once a second while waiting is both
+   * wasteful and where a live run once wedged past the protocol timeout.
+   */
+  readSurfaceHtml(page: Page): Promise<string | null>;
+
   parseTranscript(html: string, opts: ParseOptions): ParsedTranscript;
   parseThread(html: string, opts: ParseOptions): ParsedThread;
 

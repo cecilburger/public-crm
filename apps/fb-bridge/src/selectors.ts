@@ -46,10 +46,26 @@ export const URLS = {
    * wrong one costs a silent empty sweep, since a page with no posts on it and
    * a page that does not exist look identical to a comment parser.
    */
-  pagePosts: (pageId: string) => (/^\d{15,}$/.test(pageId)
+  pagePosts: (pageId: string) => (/^\d{6,}$/.test(pageId)
     ? `https://www.facebook.com/profile.php?id=${pageId}`
     : `https://www.facebook.com/${pageId}/posts`),
   post: (postId: string) => `https://www.facebook.com/${postId}`,
+  /**
+   * One post, opened directly, with a comment singled out.
+   *
+   * Acting on a comment used to start from the Page's whole timeline and hunt
+   * for it there — which worked only while the comment happened to be near the
+   * top. Confirmed live: a public reply landed that way, and the private
+   * message on the SAME comment minutes later returned "comment not found",
+   * because by then the feed had not rendered that far. The permalink is the
+   * post itself, so the comment is always on the page that opens, and
+   * `comment_id` asks Facebook to surface it.
+   */
+  postPermalink: (pageId: string, postId: string, commentId?: string) => {
+    const base = `https://www.facebook.com/permalink.php?story_fbid=${encodeURIComponent(postId)}`
+      + `&id=${encodeURIComponent(pageId)}`;
+    return commentId ? `${base}&comment_id=${encodeURIComponent(commentId)}` : base;
+  },
 } as const;
 
 /** Any URL whose path says we are looking at a login wall rather than content —
@@ -72,10 +88,30 @@ export const MESSAGE_ID_RE = /\bmid\.\$?[A-Za-z0-9_$-]{6,}/;
 /** Facebook comment ids are long digit strings; they show up in `id`,
  * `data-*` and in permalink hrefs as `comment_id=<digits>`. */
 export const COMMENT_ID_RE = /(?:comment_id=|comment_fbid=)(\d{6,})/;
+/**
+ * The other way Facebook writes the same parameter, and the one the live Page
+ * timeline uses: base64 of `comment:<post id>_<comment id>`, URL-encoded.
+ *
+ * Both forms are on the page at once — a comment's own permalink carries this
+ * one, while a link back to the comment it replies to can carry the numeric
+ * one. A reader that knew only the numeric form therefore read the PARENT's id
+ * off a reply and filed two different comments under one id.
+ */
+export const COMMENT_ID_B64_RE = /(?:comment_id|comment_fbid)=([A-Za-z0-9+/_-]{12,}(?:%3D|=){0,2})/i;
+export const COMMENT_ID_DECODED_RE = /^comment:(\d{6,})_(\d{6,})$/;
 export const COMMENT_ID_ATTR_RE = /^(?:comment-)?(\d{10,})$/;
 
 /** `story_fbid=<id>` / `/posts/<id>` / `/videos/<id>` — the post a comment sits on. */
-export const POST_ID_RE = /(?:story_fbid=(\d{6,})|\/posts\/(?:pfbid[A-Za-z0-9]+|(\d{6,}))|\/videos\/(\d{6,}))/;
+/**
+ * A post's id from any of the link shapes Facebook uses for it. `story_fbid`
+ * carries either a numeric id or, on the current Page feed, an opaque
+ * `pfbid…` slug — confirmed live on the Page's own timeline, where every post
+ * permalink was `permalink.php?story_fbid=pfbid0…&id=<pageId>`. The slug is a
+ * perfectly good id: stable, unique, and the thing every comment permalink on
+ * that post also carries. A first version accepted only digits and silently
+ * dropped every comment on the Page as "no post".
+ */
+export const POST_ID_RE = /(?:story_fbid=(pfbid[A-Za-z0-9]+|\d{6,})|\/posts\/(pfbid[A-Za-z0-9]+|\d{6,})|\/videos\/(\d{6,}))/;
 
 /** A profile link's numeric id, the commenter's identity when it is there. */
 export const PROFILE_ID_RE = /(?:profile\.php\?id=(\d{6,})|facebook\.com\/(\d{10,})(?:[/?]|$))/;
@@ -241,14 +277,47 @@ export const COMPOSER = {
 /* ------------------------------------------------------------------ Page comments */
 
 export const COMMENTS = {
-  /** The feed of posts on a Page. */
+  /**
+   * Where a Page's posts and their comments are.
+   *
+   * Three, in this order, because two different pages are read through this
+   * one name. A Page timeline has `div[role="feed"]`. A post permalink has no
+   * feed at all: it renders the post in a modal that sits OUTSIDE
+   * `div[role="main"]`, so main matched, contained no comments, and the read
+   * came back empty while the post plainly had comments on it. The dialog is
+   * therefore tried before main, and main stays last for the shapes that have
+   * neither.
+   */
   feed: ['div[role="feed"]', 'div[role="main"]'],
+  /**
+   * The same thing on a post's own permalink, which is a different page.
+   *
+   * `permalink.php` renders the post in a modal AND keeps a feed of other
+   * posts behind it, so the feed-first list above picks the background — the
+   * read then came back with the timeline's comments and none of the post's,
+   * which is a silent miss, not an error. Here the modal wins, and the other
+   * two remain for the renderings that have no modal.
+   */
+  postSurface: ['div[role="dialog"][aria-modal="true"]', 'div[role="main"]', 'div[role="feed"]'],
   /** One post within that feed. */
   post: ['div[role="article"]', 'div[data-pagelet^="FeedUnit"]'],
   /** One comment within a post. Facebook labels these in the accessibility
    * tree as "Comment by <name>", which is also where the author name comes
    * from when no profile link is rendered. */
-  comment: ['div[role="article"][aria-label*="omment"]', 'div[data-testid="UFI2Comment/root_depth_0"]'],
+  /**
+   * One comment. TWO substrings, not one, and that is the whole point: a CSS
+   * attribute match is CASE-SENSITIVE, so `*="omment"` matches "Comment by …"
+   * and misses "Komentar oleh …" entirely. On an Indonesian-language session
+   * every comment on the Page was therefore invisible to the parser — no
+   * error, no dropped count, just an inbox that never showed a comment. The
+   * `i` flag would be tidier and is not supported by the pure DOM parser these
+   * selectors also run through, so both spellings are listed instead.
+   */
+  comment: [
+    'div[role="article"][aria-label*="omment"]',
+    'div[role="article"][aria-label*="omentar"]',
+    'div[data-testid="UFI2Comment/root_depth_0"]',
+  ],
   commentLabelRe: /^(?:comment|komentar)\s+(?:by|oleh)\s+(.+?)(?:\s*,.*)?$/i,
   /** The commenter's profile link — the only place their id appears. */
   authorLink: 'a[href*="/profile.php"], a[href^="https://www.facebook.com/"], a[role="link"][tabindex="0"]',
@@ -303,8 +372,15 @@ export const VOLATILE_TEXT_RES: readonly RegExp[] = [
  * transport each rather than one set of selectors pretending to fit both.
  */
 export const BIZ_URLS = {
+  /**
+   * The MESSENGER view, not "All messages". Confirmed live: the all-channels
+   * view lists the Page's Instagram DMs beside its Messenger ones, with nothing
+   * on the row to tell them apart, and a first version of this transport read
+   * an Instagram conversation into the CRM as a Facebook one. Instagram is
+   * another bridge's job; this one must not see it at all.
+   */
   inbox: (assetId: string) =>
-    `https://business.facebook.com/latest/inbox/all/?asset_id=${encodeURIComponent(assetId)}`,
+    `https://business.facebook.com/latest/inbox/messenger/?asset_id=${encodeURIComponent(assetId)}`,
   /**
    * A single conversation. `asset_id` says which Page's inbox, and
    * `selected_item_id` which conversation inside it — both are required, which
@@ -317,6 +393,14 @@ export const BIZ_URLS = {
 
 /** The conversation id out of a Business Suite URL. */
 export const BIZ_CONVERSATION_ID_RE = /[?&]selected_item_id=(\d{6,})/;
+/**
+ * Which platform a selected conversation belongs to. Read alongside the id,
+ * because the id alone cannot say: a 15-digit id was a Messenger user and a
+ * 39-digit one was Instagram on the day this was probed, and nothing
+ * guarantees that shape. Only `FB_MESSAGE` is this bridge's to read.
+ */
+export const BIZ_THREAD_TYPE_RE = /[?&]thread_type=([A-Z_]+)/;
+export const BIZ_MESSENGER_THREAD_TYPE = 'FB_MESSAGE';
 
 /**
  * Where a message's direction is recorded.
@@ -375,4 +459,136 @@ export const BIZ_COMPOSER = {
    */
   waitMs: 12_000,
   confirmMs: 15_000,
+} as const;
+
+/**
+ * The Business Suite conversation list.
+ *
+ * Confirmed live. Every conversation is a `data-surface` wrapper whose path
+ * ends in `thread_rowN` (N counting from zero, newest first), holding a
+ * `thread_title` surface with the contact's display name. The row carries NO
+ * id and NO href — the only place Business Suite states which conversation is
+ * open is the channel-selector tab links, whose hrefs all carry
+ * `selected_item_id=<id>` for the CURRENT selection.
+ *
+ * So discovery is click-to-reveal: select a row, then read the id off those
+ * links. Two things about the click were learned the hard way. A synthetic
+ * mouse click at the row's centre does nothing — an invisible `a[role="row"]`
+ * hover grid ("Move to Done", "Mark as Follow up") sits over the row and
+ * swallows it. Dispatching `.click()` on the row's own `div[role="presentation"]`
+ * wrapper selects it in well under a second. That grid is also why nothing
+ * here matches `[role="row"]`: those are the destructive hover actions, not
+ * the conversations.
+ */
+export const BIZ_INBOX = {
+  list: ['span[data-surface*="bizweb_inbox:thread_list"]'],
+  row: ['[data-surface*="thread_row"]'],
+  rowTitle: ['[data-surface*="thread_title"]'],
+  /** Pulls the `N` out of a row's surface path. */
+  rowIndexRe: /thread_row(\d+)\s*$/,
+  /** The element that actually receives the selecting click. */
+  rowClickTarget: 'div[role="presentation"]',
+  /**
+   * The CONTAINER holding the channel tabs, not one tab.
+   *
+   * Two things learned the hard way. Reading a single `<a>` and then searching
+   * for links inside it finds nothing — an element does not contain itself —
+   * so this must be the container and the link chosen from within it. And the
+   * tabs do not agree: confirmed live, the Messenger tab carries the selected
+   * MESSENGER conversation while the Instagram tab simultaneously carries a
+   * different, Instagram one. Taking "the first link" therefore reads whichever
+   * platform happens to come first in the DOM.
+   */
+  selectedLinkContainer: [
+    '[data-surface*="channel_selector"]',
+    'div[role="tablist"]',
+  ],
+  /** The tab whose id is the one this transport means. */
+  selectedLinkPreferredRe: /\/latest\/inbox\/messenger\b/,
+  /** How long a click is given to be reflected in those links. Measured at
+   * ~0.7s live; the budget is generous because a slow tab is not a failure. */
+  revealMs: 8_000,
+} as const;
+
+
+/* ------------------------------------------------- comment actions */
+
+/**
+ * Acting on one comment on the Page's own post, at facebook.com/profile.php?id=.
+ *
+ * Confirmed live. The comment's stable handle is the `data-commentid` wrapper
+ * around its `div[role="article"]`; inside the article the controls are plain
+ * `[role="button"]`s carrying only visible text — "Reply", "Send message" — with
+ * no aria-label, so they are matched by text. Reply opens a Lexical editor
+ * whose placeholder names the commenter ("Reply to Gabe"); Send message opens a
+ * modal dialog labelled "Message <name>" holding its own Lexical editor and an
+ * explicit "Send Message" button. Nothing here relies on a class name.
+ */
+/**
+ * The private-message dialog Facebook opens for a comment, by its own label.
+ *
+ * A bare `div[role="dialog"][aria-modal="true"]` is NOT this dialog on a post
+ * permalink — the post is one too. See `COMMENT_ACTIONS.messageDialog`.
+ */
+const MESSAGE_DIALOG = [
+  'div[role="dialog"][aria-modal="true"][aria-label^="Message"]',
+  'div[role="dialog"][aria-modal="true"][aria-label^="Kirim pesan"]',
+] as const;
+
+/** The same selector, once per way Facebook labels the message dialog. */
+const within = (selector: string): string[] => MESSAGE_DIALOG.map((dialog) => `${dialog} ${selector}`);
+
+export const COMMENT_ACTIONS = {
+  byId: (commentId: string) => `div[data-commentid="${commentId.replace(/[^0-9]/g, '')}"]`,
+  /** Both spellings, for the same case-sensitivity reason as `COMMENTS.comment`. */
+  article: 'div[role="article"][aria-label*="omment"], div[role="article"][aria-label*="omentar"]',
+  replyButtonRe: /^(?:reply|balas)$/i,
+  replyEditor: [
+    'div[role="textbox"][data-lexical-editor="true"][aria-placeholder^="Reply to"]',
+    'div[role="textbox"][data-lexical-editor="true"][aria-placeholder^="Balas"]',
+  ],
+  /** Our own reply, once it exists: an article labelled with the Page's name.
+   * Facebook writes "Reply by <name>" or "Comment by <name>" depending on
+   * nesting, so both are accepted. */
+  ownReplyLabelRe: (pageName: string) =>
+    new RegExp(`^(?:reply|comment|balasan|komentar)\\s+(?:by|oleh)\\s+${pageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+  sendMessageButtonRe: /^(?:send message|kirim pesan)$/i,
+  /**
+   * The private-message dialog, named by its OWN label — never "whatever modal
+   * is open".
+   *
+   * `permalink.php` renders the post itself inside
+   * `div[role="dialog"][aria-modal="true"]`. Confirmed live, and expensively:
+   * selectors scoped to "the modal" matched the POST's modal, so the private
+   * reply was typed into the comment box under the post and Enter published it
+   * as a public reply. Two of them, on the Page's own post, before the trace
+   * showed what the surface actually was. Everything inside the message dialog
+   * is therefore scoped to these, and nothing is scoped to a bare modal.
+   */
+  messageDialog: MESSAGE_DIALOG,
+  messageEditor: within('div[role="textbox"][data-lexical-editor="true"]'),
+  // Facebook spells the same control both ways depending on the surface, and
+  // the comment row has a button of its own by that name — which is why these
+  // are scoped to the message dialog and not to the page.
+  messageSendButton: [
+    ...within('[role="button"][aria-label="Send Message"]'),
+    ...within('[role="button"][aria-label="Send message"]'),
+    ...within('[role="button"][aria-label="Kirim Pesan"]'),
+    ...within('[role="button"][aria-label="Kirim pesan"]'),
+  ],
+  waitMs: 10_000,
+  // The private-DM confirmation window. Left at 20s: proven live to be enough
+  // for a Messenger thread, which is a persistent conversation Facebook keeps
+  // warm — unlike a fresh public reply, it has never been observed arriving
+  // late here.
+  confirmMs: 20_000,
+  // The PUBLIC reply confirmation window — deliberately separate from
+  // `confirmMs` above rather than one shared number raised for both. Confirmed
+  // live: a reply on a genuinely fresh post can take longer than 20s for
+  // Facebook's own backend to publish and render, well after the click, the
+  // type and the Enter all succeeded — which once left the CRM holding a
+  // terminal 'failed' status for a reply that Facebook had, in fact, already
+  // posted. 60s is not an arbitrary bump; it is room for that observed publish
+  // latency, scoped to the one flow that showed it.
+  publicReplyConfirmMs: 60_000,
 } as const;

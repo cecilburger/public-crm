@@ -239,6 +239,15 @@ export class MessengerWatcher {
     }
 
     const { rows, rowCount } = reading;
+    // Said on every sweep, not only when something is wrong. A watcher that
+    // logs only failures is indistinguishable from one that is not running —
+    // and this one genuinely was silent for minutes while nothing was wrong
+    // with it, which is a worse place to debug from than an error would have
+    // been. `rendered` is what the list showed; `read` is what could be named.
+    this.log.info(
+      { tenantId, transport: transport.kind, rendered: rowCount, read: rows.length },
+      'fb-bridge: inbox swept',
+    );
     if (rowCount === 0) {
       // The container rendered but holds no conversation links at all. That is
       // either a genuinely empty inbox or a stale selector, and the two are
@@ -411,7 +420,12 @@ export class MessengerWatcher {
         );
       }
 
-      for (const message of this.diffNew(tenantId, threadId, parsed.messages)) {
+      const fresh = this.diffNew(tenantId, threadId, parsed.messages);
+      this.log.info(
+        { tenantId, threadId, matched: parsed.matchedRows, inbound: parsed.messages.length, fresh: fresh.length },
+        'fb-bridge: thread read',
+      );
+      for (const message of fresh) {
         this.onEvent({
           event: 'message',
           tenantId,

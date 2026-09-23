@@ -1173,11 +1173,16 @@ export async function connectFacebookBridge(_prev: FbBridgeResult | null, form: 
   try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
   const pageId = String(form.get('pageId') ?? '').trim();
   const pageName = String(form.get('pageName') ?? '').trim();
+  // Optional, and its absence is meaningful: no asset id means a personal
+  // inbox on messenger.com, an asset id means that Page's Business Suite inbox.
+  // Sent as undefined rather than '' so the API's digit check is not tripped
+  // by an empty field.
+  const assetId = String(form.get('assetId') ?? '').trim() || undefined;
   if (!pageId || !pageName) return { ok: false, error: t.facebookBridge.missingFields };
 
   try {
     const res = await api<{ status: FbBridgeResult['status']; lastError?: string | null }>(
-      '/v1/facebook-bridge/connect', { method: 'POST', body: { pageId, pageName } },
+      '/v1/facebook-bridge/connect', { method: 'POST', body: { pageId, pageName, assetId } },
     );
     revalidatePath('/pengaturan/facebook');
     return { ok: true, status: res.status };
@@ -1544,4 +1549,49 @@ export async function sendCalendarEventEmail(_prev: ActionResult | null, form: F
   } catch (err) {
     return { ok: false, error: err instanceof ApiError ? err.message : t.tasks.sendEmailFailed };
   }
+}
+
+/* ------------------------------------------------------ komentar facebook */
+
+/**
+ * Both comment actions are QUEUED, never performed here.
+ *
+ * The bridge types the text into a real browser on another machine, which
+ * takes seconds and fails in ways only the worker sees. A 202 therefore means
+ * "a job exists" and nothing more — the copy says "antrean" for that reason —
+ * and the row's own status (`public_reply_pending`, then `public_replied` or
+ * `failed`) is the only truth about whether the customer was answered. The
+ * comment page and the inbox are revalidated so the next render shows it.
+ *
+ * The id sent is the `facebook_comments` row id (what the inbox links by),
+ * not Facebook's comment id: the state machine claims by row, and the API
+ * answers 409 when the row is not in a state that step can start from.
+ */
+async function queueCommentAction(
+  form: FormData, step: 'reply-public' | 'send-dm', fallback: string,
+): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const commentId = String(form.get('commentId') ?? '').trim();
+  const text = String(form.get('text') ?? '').trim();
+  if (!commentId) return { ok: false, error: fallback };
+  if (!text) return { ok: false, error: t.inbox.emptyText };
+
+  try {
+    await api(`/v1/facebook-bridge/comments/${commentId}/${step}`, { method: 'POST', body: { text } });
+    revalidatePath(`/obrolan/komentar/${commentId}`);
+    revalidatePath('/obrolan', 'layout');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : fallback };
+  }
+}
+
+/** "Balas publik" on a comment — a reply under it, on the post, as the Page. */
+export async function replyCommentPublic(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  return queueCommentAction(form, 'reply-public', t.inbox.replyFailed);
+}
+
+/** "Kirim DM" on a comment — Facebook's one-shot private reply to the commenter. */
+export async function sendCommentDm(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  return queueCommentAction(form, 'send-dm', t.inbox.dmFailed);
 }

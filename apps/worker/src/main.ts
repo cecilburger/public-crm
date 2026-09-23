@@ -14,6 +14,10 @@ import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from './autop
 import { purgeExpiredData, verifyAllAuditChains, expireUnpaidOrders, sweepSecurityClocks } from './processors/retention.ts';
 import { runHealthChecks } from './processors/healthChecks.ts';
 import { closePeriodAndIssueInvoice, checkUsageThresholds, runDunning } from './processors/billingRollup.ts';
+import {
+  processCommentPublicReply, processCommentDm, processCommentAutopilot, dispatchCommentSweeps,
+  COMMENT_REPLY_QUEUE, COMMENT_DM_QUEUE, COMMENT_SWEEP_QUEUE,
+} from './processors/facebookComments.ts';
 
 const e = env();
 const kek = loadKek(e.KIRANA_KEK);
@@ -26,10 +30,13 @@ const control = await connectPostgres(e.DATABASE_URL, { max: 4, poolMode: e.DATA
 
 const { Queue } = await import('bullmq');
 const queues = new Map<string, InstanceType<typeof Queue>>();
+const queueFor = (name: string) => {
+  let q = queues.get(name);
+  if (!q) { q = new Queue(name, { connection }); queues.set(name, q); }
+  return q;
+};
 const dispatch = async ({ queue, payload }: { queue: string; payload: unknown }) => {
-  let q = queues.get(queue);
-  if (!q) { q = new Queue(queue, { connection }); queues.set(queue, q); }
-  await q.add(queue, payload, { attempts: 8, backoff: { type: 'exponential', delay: 2_000 } });
+  await queueFor(queue).add(queue, payload, { attempts: 8, backoff: { type: 'exponential', delay: 2_000 } });
 };
 
 // The API's `/v1/realtime` connections live in a different process (a
@@ -84,6 +91,8 @@ const accessTokenFor = async (tenantId: string, channelId: string): Promise<stri
   });
 };
 
+const commentDeps = { db, kek, fbBridge, dispatch, env: e };
+
 const workers = [
   new Worker('inbound.normalise', async (job: Job) =>
     processInboundWebhook({ db, control, kek, dispatch, publish }, job.data.webhookEventId), { connection, concurrency: 16 }),
@@ -100,6 +109,25 @@ const workers = [
   new Worker('email.send', async (job: Job) =>
     sendBillingEmail(email, job.data.tenantId, job.data.invoiceId, job.data.kind),
     { connection, concurrency: 4 }),
+
+  // Facebook comments: the two actions, and the sweep that feeds them. The
+  // actions run one at a time on purpose — each is a browser typing into the
+  // real site, and a burst of parallel replies is precisely the pattern Meta's
+  // anti-abuse systems look for. The volume (FB_COMMENT_BATCH per cooldown per
+  // tenant) needs no more than that.
+  new Worker(COMMENT_REPLY_QUEUE, async (job: Job) =>
+    processCommentPublicReply(commentDeps, job.data), { connection, concurrency: 1 }),
+
+  new Worker(COMMENT_DM_QUEUE, async (job: Job) =>
+    processCommentDm(commentDeps, job.data), { connection, concurrency: 1 }),
+
+  // The scheduler's tick carries no tenant and fans out; a fanned-out job
+  // carries one and sweeps it. Same queue, so the sweep has one name everywhere.
+  new Worker(COMMENT_SWEEP_QUEUE, async (job: Job) => (
+    job.data?.tenantId
+      ? processCommentAutopilot(commentDeps, job.data)
+      : dispatchCommentSweeps({ control, dispatch })
+  ), { connection, concurrency: 2 }),
 
   new Worker('maintenance', async (job: Job) => {
     switch (job.name) {
@@ -121,6 +149,26 @@ const workers = [
 for (const w of workers) {
   w.on('failed', (job, err) => console.error(`[${w.name}] ${job?.id} failed:`, err.message));
 }
+
+// The comment sweep is the one periodic job this process schedules for itself
+// (the maintenance queue is fed from outside). A job scheduler is idempotent on
+// its id, so every boot converges on exactly one; with the feature off it is
+// removed, so flipping the flag and restarting really does stop the ticks
+// rather than leaving a stale scheduler firing no-ops forever. The interval is
+// the cooldown, floored at a minute: the per-row cooldown is what actually
+// paces, this only bounds how often the worker looks.
+const SWEEP_MIN_INTERVAL_MS = 60_000;
+const sweepQueue = queueFor(COMMENT_SWEEP_QUEUE);
+if (e.FB_COMMENT_AUTO_DM) {
+  await sweepQueue.upsertJobScheduler(
+    COMMENT_SWEEP_QUEUE,
+    { every: Math.max(SWEEP_MIN_INTERVAL_MS, e.FB_COMMENT_COOLDOWN_MS) },
+    { name: 'tick', data: {}, opts: { removeOnComplete: true, removeOnFail: 20 } },
+  );
+} else {
+  await sweepQueue.removeJobScheduler(COMMENT_SWEEP_QUEUE);
+}
+
 console.log(`worker ready: ${workers.map((w) => w.name).join(', ')}`);
 
 const shutdown = async () => {

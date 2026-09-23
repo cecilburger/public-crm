@@ -127,6 +127,14 @@ export function FacebookBridgeForm({ connection }: { connection: FbBridgeConnect
                      placeholder={t.facebookBridge.pageNamePlaceholder} />
               <p className="record-hint" style={{ margin: 0 }}>{t.facebookBridge.pageNameHint}</p>
             </div>
+            <div className="record-field">
+              <label htmlFor="fb-asset-id">{t.facebookBridge.assetId}</label>
+              <input className="line-input" id="fb-asset-id" name="assetId" autoComplete="off"
+                     inputMode="numeric" pattern="[0-9]*"
+                     defaultValue={connection.assetId ?? ''}
+                     placeholder={t.facebookBridge.assetIdPlaceholder} />
+              <p className="record-hint" style={{ margin: 0 }}>{t.facebookBridge.assetIdHint}</p>
+            </div>
             {errorMsg ? <p className="error">{errorMsg}</p> : null}
             <div>
               <button type="submit" className="btn primary" disabled={connectPending}>

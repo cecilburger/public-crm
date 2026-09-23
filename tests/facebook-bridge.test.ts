@@ -20,7 +20,7 @@ import { parseMessengerInbox } from '../apps/fb-bridge/src/parsers/messengerInbo
 import {
   parseMessengerThread, parseMessengerTranscript, countOwnMessages, selectBackfill,
 } from '../apps/fb-bridge/src/parsers/messengerThread.ts';
-import { parseFacebookComments } from '../apps/fb-bridge/src/parsers/comments.ts';
+import { parseFacebookComments, countOwnCommentReplies } from '../apps/fb-bridge/src/parsers/comments.ts';
 import { compositeMessageKey } from '../apps/fb-bridge/src/events.ts';
 import { freshDb, makeTenant, TEST_KEK, type TestTenant } from './helpers/db.ts';
 
@@ -1283,5 +1283,218 @@ describe('a comment being worked on', () => {
 
     const work = await pending();
     expect(work.filter((c) => c.id === id)).toHaveLength(1);
+  });
+});
+
+/* --------------------------------------- a comment as the Page renders it */
+
+describe('a comment on the Page timeline, on the shape the real site renders', () => {
+  const OWN_REPLY = (name: string, text: string) =>
+    `<div role="article" aria-label="Reply by ${name} 1m"><a href="/profile.php?id=900000000000001">${name}</a><div>${text}</div><div>Like</div></div>`;
+
+  it('reads the stable comment id, the pfbid post slug, and the commenter', async () => {
+    const { comments, droppedNoId, droppedNoPost } = parseFacebookComments(await fixture('page-comment-live.html'));
+
+    expect(droppedNoId).toBe(0);
+    expect(droppedNoPost).toBe(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      commentId: '900000000000031',
+      // A `pfbid…` slug, not digits — a first guard accepted only digits and
+      // dropped every comment on the Page as "no post".
+      postId: expect.stringMatching(/^pfbid0SYNTHETIC/),
+      authorId: '100000000000009',
+      authorName: 'Sinta Dewi',
+      text: 'mau tau jasa ini gimana?',
+    });
+  });
+
+  it('names the commenter by the profile link, not by the label with the time glued on', async () => {
+    // The label is "Comment by Sinta Dewi a few seconds ago" with nothing the
+    // regex could stop at; the link says "Sinta Dewi".
+    const { comments } = parseFacebookComments(await fixture('page-comment-live.html'));
+
+    expect(comments[0]!.authorName).toBe('Sinta Dewi');
+    expect(comments[0]!.authorName).not.toMatch(/ago|lalu/);
+  });
+
+  it('counts only the Page\'s own replies carrying exactly that text', async () => {
+    const html = await fixture('page-comment-live.html');
+    const withOwn = html.replace('</div>\n', OWN_REPLY('Toko Demo', 'Check DM ya kak!!!') + '</div>\n');
+
+    expect(countOwnCommentReplies(html, { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(0);
+    expect(countOwnCommentReplies(withOwn, { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(1);
+    // Same words from the customer are not ours.
+    expect(countOwnCommentReplies(html.replace('mau tau jasa ini gimana?', 'Check DM ya kak!!!'),
+      { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(0);
+    // Ours, different words.
+    expect(countOwnCommentReplies(withOwn, { pageName: 'Toko Demo', text: 'lain' })).toBe(0);
+  });
+});
+
+/* ------------------------------------ a failure that can be tried again */
+
+describe('an event that failed before the Page was connected', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let t: TestTenant;
+  let e: Env;
+
+  const post = (body: unknown) => app.inject({
+    method: 'POST', url: '/v1/webhooks/fb-bridge',
+    headers: { authorization: `Bearer ${e.FB_BRIDGE_SECRET}`, 'content-type': 'application/json' },
+    payload: JSON.stringify(body),
+  });
+
+  const event = () => ({
+    event: 'message', tenantId: t.tenantId, at: new Date().toISOString(),
+    message: {
+      threadId: '100000000000021', externalMessageId: 'mid.$cAAretry0001',
+      senderId: '100000000000021', senderName: 'Rudi', text: 'halo, masih buka?',
+      sentAt: null, direction: 'inbound', seq: 0,
+    },
+  });
+
+  const stored = () => withTenant(db, t.tenantId, (tx) =>
+    tx.query<{ id: string }>(
+      `select m.id from messages m
+         join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+        where m.tenant_id = $1 and ch.kind = 'messenger_bridge'`, [t.tenantId]));
+
+  beforeAll(async () => {
+    db = await freshDb();
+    t = await makeTenant(db, 'fbretry');
+    e = env();
+    app = buildApp({
+      db, control: db, kek: TEST_KEK, env: e,
+      dispatch: async ({ queue, payload }) => {
+        if (queue !== 'inbound.normalise') return;
+        await processInboundWebhook(
+          { db, control: db, kek: TEST_KEK, dispatch: async () => {} },
+          (payload as { webhookEventId: string }).webhookEventId,
+        ).catch(() => {});
+      },
+    });
+    await app.ready();
+    // Deliberately NO channel yet: this is a message arriving before the
+    // operator has connected the Page, which is exactly what happened live.
+  });
+
+  afterAll(async () => { await app.close(); await db.close(); });
+
+  it('is kept, not stored, while there is nowhere to put it', async () => {
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it('lands once the Page is connected and the bridge re-sends it', async () => {
+    // The bridge re-emits on every reconciliation until the CRM holds it. A
+    // failed spool row must therefore be re-processable — treated as a
+    // duplicate it would be dropped forever, and the customer never answered.
+    await withTenant(db, t.tenantId, (tx) =>
+      ensureMessengerBridgeChannel({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        pageId: PAGE.id, pageName: PAGE.name, status: 'connected',
+      }));
+
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(1);
+  });
+
+  it('still refuses a third copy of a message it already holds', async () => {
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(1);
+  });
+});
+
+/**
+ * Replying to a Facebook conversation from the CRM, a day later.
+ *
+ * `guardOutbound` encodes Meta's rules for the WhatsApp Cloud API: reply
+ * free-form within 24 hours of the customer's last message, or send an
+ * approved template. A bridge has neither — it types into the same composer a
+ * person would, and it cannot send a template at all.
+ *
+ * The worker's send path already knew that and skipped the guard for
+ * `messenger_bridge`. The API did not, so a Facebook conversation that went
+ * quiet for a day became unanswerable from the CRM: the reply was refused with
+ * "send an approved template instead", naming a thing this channel has no way
+ * to send. The two sides now read the same list.
+ */
+describe('replying to a Facebook conversation the day after', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let t: TestTenant;
+  let token: string;
+  const jobs: { queue: string }[] = [];
+
+  beforeAll(async () => {
+    db = await freshDb();
+    t = await makeTenant(db, 'fbwindow');
+    const e = env();
+
+    app = buildApp({
+      db, control: db, kek: TEST_KEK, env: e,
+      dispatch: async ({ queue, payload }) => {
+        jobs.push({ queue });
+        if (queue !== 'inbound.normalise') return;
+        await processInboundWebhook(
+          { db, control: db, kek: TEST_KEK, dispatch: async () => {} },
+          (payload as { webhookEventId: string }).webhookEventId,
+        );
+      },
+    });
+    await app.ready();
+
+    await withTenant(db, t.tenantId, (tx) =>
+      ensureMessengerBridgeChannel({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        pageId: PAGE.id, pageName: PAGE.name, status: 'connected',
+      }));
+
+    // Their message landed three days ago, so the service window is long shut.
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    const sent = await app.inject({
+      method: 'POST', url: '/v1/webhooks/fb-bridge',
+      headers: { authorization: `Bearer ${e.FB_BRIDGE_SECRET}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        event: 'message', tenantId: t.tenantId, at: threeDaysAgo,
+        message: {
+          threadId: '100000000000077', externalMessageId: 'mid.$cAABwindow0000000001',
+          senderId: '100000000000077', senderName: 'Gabe', text: 'masih buka kak?',
+          sentAt: threeDaysAgo, direction: 'inbound', seq: 0,
+        },
+      }),
+    });
+    expect(sent.statusCode).toBe(200);
+
+    const login = await app.inject({
+      method: 'POST', url: '/v1/auth/login',
+      payload: { workspace: 'fbwindow', email: 'owner@fbwindow.test', password: 'correct horse battery staple' },
+    });
+    expect(login.statusCode).toBe(200);
+    token = (login.json() as { accessToken: string }).accessToken;
+  });
+
+  afterAll(async () => { await app.close(); await db.close(); });
+
+  it('queues the reply instead of demanding a template it cannot send', async () => {
+    const list = await app.inject({
+      method: 'GET', url: '/v1/conversations', headers: { authorization: `Bearer ${token}` },
+    });
+    const conv = (list.json() as { id: string; channel_kind: string }[])
+      .find((row) => row.channel_kind === 'messenger_bridge');
+    expect(conv).toBeDefined();
+
+    jobs.length = 0;
+    const res = await app.inject({
+      method: 'POST', url: `/v1/conversations/${conv!.id}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { body: 'Halo kak, masih buka ya' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(jobs.map((job) => job.queue)).toContain('outbound.send');
   });
 });

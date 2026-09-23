@@ -17,4 +17,9 @@ apps/ig-bridge/.ig_bridge_auth_pptr/
 # A live logged-in Facebook session: Chromium profile, cookies, and the
 # bridge's own markers. Anyone who can read it can act as that account.
 apps/fb-bridge/.fb_bridge_auth/
-.dev-stack-data/
+# The dev stack's Postgres data directory, and any copy of it set aside after
+# a crash. Root-scoped and wildcarded on purpose: the narrow `.dev-stack-data/`
+# rule matched only the live one, so a directory moved aside as
+# `.dev-stack-data.rusak-<time>/` became 1297 untracked files that `git add -A`
+# would have committed — a 31 MB database, WAL and all.
+/.dev-stack-data*/

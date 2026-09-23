@@ -150,15 +150,15 @@ export async function processFbBridgeEvent(
     deps.publish?.(payload.tenantId, { type: 'message', conversationId: result.conversationId });
   }
 
-  // NO AUTOPILOT, NO BD, NO CHATBOT — and this is a correctness decision, not
-  // caution. `outboundSend` has no `messenger_bridge` branch, so a reply queued
-  // against this channel falls through to the Meta Graph sender: it would try
-  // to call graph.facebook.com, which this whole feature exists to avoid, and
-  // would fail there anyway because the bridge has no send path to deliver it.
-  // Drafting an answer nobody can send is worse than not drafting one — it
-  // looks to an agent like the message was handled.
-  //
-  // Wiring this up is a deliberate follow-up that needs an outbound path first.
+  // NO AUTOPILOT, NO BD, NO CHATBOT. The original reason — that `outboundSend`
+  // had no `messenger_bridge` branch, so a draft would fall through to the Meta
+  // Graph sender this feature exists to avoid — no longer holds: that branch
+  // exists and drives the bridge. What remains is a product decision rather
+  // than a technical one. Every Facebook send goes through a real browser on
+  // somebody's machine, against Terms of Service, with a session that can be
+  // checkpointed; putting a generated reply on that path without anyone asking
+  // for it is not a default worth choosing. Wiring it up is a deliberate
+  // follow-up, not an oversight.
 
   return { status: 'processed' };
 }

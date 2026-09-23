@@ -345,11 +345,20 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     const externalId = facebookExternalId(body.tenantId, body.event, m, c);
 
+    // A row that FAILED is re-spooled, not treated as a duplicate. The bridge
+    // re-emits a message on every reconciliation until the CRM says it holds
+    // it, and the CRM only holds it once `messages` does — so an event that
+    // failed in the processor (confirmed live: two DMs that arrived before the
+    // Page was connected, refused for having no channel) would otherwise hit
+    // this conflict on every retry and be dropped as "duplicate" forever. A
+    // `processed` row stays a duplicate; only a failure is worth another go.
     const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
       tx.query<{ id: string }>(
         `insert into webhook_events (provider, external_id, signature_ok, payload)
          values ('fb_bridge', $1, true, $2)
-         on conflict (provider, external_id) do nothing
+         on conflict (provider, external_id) do update
+           set status = 'received', payload = excluded.payload, error = null, processed_at = null
+           where webhook_events.status = 'failed'
          returning id`,
         [externalId, JSON.stringify(body)],
       ));

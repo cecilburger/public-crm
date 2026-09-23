@@ -1,5 +1,5 @@
 import { ensureConversation, type Ctx, type InboundResult } from './repo.ts';
-import { tenantKeys, sealField, openField, fieldIndex } from './keys.ts';
+import { tenantKeys, sealField, openField, fieldIndex, type TenantKeys } from './keys.ts';
 import { recordConversationActivity } from './metering.ts';
 import { audit } from './audit.ts';
 
@@ -587,6 +587,34 @@ export async function claimCommentForDm(ctx: Ctx, args: { id: string; now?: Date
   return rows.length > 0;
 }
 
+/**
+ * Clears a recorded DM failure so a person may try again.
+ *
+ * `claimCommentForDm` refuses while `dm_error` is set, and that is right for
+ * the automated sweep: a private message that failed once must not be retried
+ * on a loop against a real customer. It is wrong for an agent, who can open
+ * Facebook, see for themselves whether anything was sent, and decide. Without
+ * this the comment was stuck forever behind an enabled button that could never
+ * do anything — confirmed live, after an environmental failure that had since
+ * been fixed.
+ *
+ * Deliberately narrow. Only a comment sitting at `public_replied` with an
+ * error recorded and nothing delivered can be reset: once `dm_at` is set the
+ * message really went, and clearing that would invite a duplicate. Returns
+ * whether anything changed, so a caller can tell a real reset from a no-op.
+ */
+export async function clearCommentDmError(ctx: Ctx, args: { id: string }): Promise<boolean> {
+  const rows = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments
+        set dm_error = null
+      where tenant_id = $1 and id = $2 and status = 'public_replied'
+        and dm_at is null and dm_error is not null
+      returning id`,
+    [ctx.tenantId, args.id],
+  );
+  return rows.length > 0;
+}
+
 /** Only ever called after a real Messenger delivery has been confirmed. */
 export async function markCommentDmSent(ctx: Ctx, args: { id: string; now?: Date }): Promise<boolean> {
   const now = args.now ?? new Date();
@@ -638,24 +666,41 @@ export interface FacebookCommentRow {
   attempts: number;
 }
 
+/** A comment row as stored, before its sealed columns are opened. */
+interface StoredCommentRow {
+  id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
+  author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
+  commented_at: Date | null; created_at: Date; status: CommentStatus;
+  public_reply_at: Date | null; public_reply_error: string | null;
+  dm_at: Date | null; dm_error: string | null; attempts: number;
+}
+
+const COMMENT_COLUMNS = `id, page_id, page_name, post_id, comment_id,
+            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
+            status, public_reply_at, public_reply_error, dm_at, dm_error, attempts`;
+
+function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow): FacebookCommentRow {
+  return {
+    id: r.id, pageId: r.page_id, pageName: r.page_name, postId: r.post_id, commentId: r.comment_id,
+    authorExternalId: r.author_external_id_enc ? openField(keys, tenantId, r.author_external_id_enc) : null,
+    authorName: r.author_name_enc ? openField(keys, tenantId, r.author_name_enc) : null,
+    body: r.body_enc ? openField(keys, tenantId, r.body_enc) : '',
+    commentedAt: r.commented_at, createdAt: r.created_at,
+    status: r.status,
+    publicReplyAt: r.public_reply_at, publicReplyError: r.public_reply_error,
+    dmAt: r.dm_at, dmError: r.dm_error, attempts: r.attempts,
+  };
+}
+
 /**
- * Newest first. The only read path for comments today; there is no console page
- * for them yet, so this exists for the API route and for tests to assert what
- * was actually stored rather than trusting the write.
+ * Newest first. The read path for the console and the API route, and what
+ * tests assert against rather than trusting the write.
  */
 export async function listFacebookComments(
   ctx: Ctx, args: { limit?: number; postId?: string } = {},
 ): Promise<FacebookCommentRow[]> {
-  const rows = await ctx.tx.query<{
-    id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
-    author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
-    commented_at: Date | null; created_at: Date; status: CommentStatus;
-    public_reply_at: Date | null; public_reply_error: string | null;
-    dm_at: Date | null; dm_error: string | null; attempts: number;
-  }>(
-    `select id, page_id, page_name, post_id, comment_id,
-            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
-            status, public_reply_at, public_reply_error, dm_at, dm_error, attempts
+  const rows = await ctx.tx.query<StoredCommentRow>(
+    `select ${COMMENT_COLUMNS}
        from facebook_comments
       where tenant_id = $1 and ($3::text is null or post_id = $3)
       order by coalesce(commented_at, created_at) desc
@@ -664,14 +709,26 @@ export async function listFacebookComments(
   );
 
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
-  return rows.map((r) => ({
-    id: r.id, pageId: r.page_id, pageName: r.page_name, postId: r.post_id, commentId: r.comment_id,
-    authorExternalId: r.author_external_id_enc ? openField(keys, ctx.tenantId, r.author_external_id_enc) : null,
-    authorName: r.author_name_enc ? openField(keys, ctx.tenantId, r.author_name_enc) : null,
-    body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
-    commentedAt: r.commented_at, createdAt: r.created_at,
-    status: r.status,
-    publicReplyAt: r.public_reply_at, publicReplyError: r.public_reply_error,
-    dmAt: r.dm_at, dmError: r.dm_error, attempts: r.attempts,
-  }));
+  return rows.map((r) => openCommentRow(keys, ctx.tenantId, r));
+}
+
+/**
+ * One comment by its row id, or null.
+ *
+ * What a queued job starts from: it names a comment by row id and needs the
+ * Facebook ids, the author and the Page before it can talk to the bridge, and
+ * the current state for the log line when a claim is refused. The same shape as
+ * the listing, so a job and the console never disagree about what a comment is.
+ */
+export async function getFacebookComment(ctx: Ctx, args: { id: string }): Promise<FacebookCommentRow | null> {
+  // A job id that is not a uuid is "no such comment", not a database error that
+  // the queue would retry eight times to the same answer.
+  if (!/^[0-9a-f-]{36}$/i.test(args.id)) return null;
+  const rows = await ctx.tx.query<StoredCommentRow>(
+    `select ${COMMENT_COLUMNS} from facebook_comments where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, args.id],
+  );
+  if (!rows[0]) return null;
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  return openCommentRow(keys, ctx.tenantId, rows[0]);
 }

@@ -28,11 +28,14 @@ import {
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import QRCode from 'qrcode';
-import { buildApp } from '../apps/api/src/app.ts';
+import { buildApp, type Dispatch } from '../apps/api/src/app.ts';
 import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
 import { processAutopilotDraft } from '../apps/worker/src/processors/autopilotDraft.ts';
 import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
+import {
+  processCommentPublicReply, processCommentDm, processCommentAutopilot, type CommentActionJob,
+} from '../apps/worker/src/processors/facebookComments.ts';
 import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billingRollup.ts';
 import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from '../apps/worker/src/autopilot/model.ts';
 import { GraphMetaClient } from '../apps/worker/src/meta.ts';
@@ -723,48 +726,68 @@ const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
-const app = buildApp({
-  db, control: db, kek, env: e, realtime,
-  dispatch: async ({ queue, payload, delayMs }) => {
-    // No real queue here to schedule a delayed job on — a plain wait keeps a
-    // broadcast's pacing (`sendRatePerSecond`) actually observable locally
-    // instead of silently collapsing to "everything at once".
-    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    if (queue === 'inbound.normalise') {
-      await processInboundWebhook(
-        {
-          db, control: db, kek,
-          dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); },
-          publish: (tenantId, event) => realtime.publish(tenantId, event),
-        },
-        (payload as { webhookEventId: string }).webhookEventId);
-    }
-    if (queue === 'autopilot.draft') await runAutopilot(payload);
-    if (queue === 'outbound.send') {
-      const job = payload as { tenantId: string; messageId: string };
-      // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real
-      // Meta credentials — there is nowhere for `processOutbound` to actually
-      // send those, only a guaranteed failure. A real, live-session-backed
-      // channel (WhatsApp Web, or Instagram through the Playwright bridge)
-      // is worth routing through the real send path here; everything else
-      // stays the no-op it always was in this demo stack.
-      const channelKind = await withTenant(db, job.tenantId, async (tx) => {
-        const rows = await tx.query<{ kind: string }>(
-          `select ch.kind from messages m
-             join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
-            where m.tenant_id = $1 and m.id = $2`,
-          [job.tenantId, job.messageId],
-        );
-        return rows[0]?.kind ?? null;
-      }).catch(() => null);
+// Named rather than written inline into `buildApp` so the comment processors
+// can dispatch back into it: a sweep queues reply and DM jobs exactly as the
+// real worker does, and here they run straight away, in order.
+const dispatch: Dispatch = async ({ queue, payload, delayMs }) => {
+  // No real queue here to schedule a delayed job on — a plain wait keeps a
+  // broadcast's pacing (`sendRatePerSecond`) actually observable locally
+  // instead of silently collapsing to "everything at once".
+  if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  if (queue === 'inbound.normalise') {
+    await processInboundWebhook(
+      {
+        db, control: db, kek,
+        dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); },
+        publish: (tenantId, event) => realtime.publish(tenantId, event),
+      },
+      (payload as { webhookEventId: string }).webhookEventId);
+  }
+  if (queue === 'autopilot.draft') await runAutopilot(payload);
+  if (queue === 'outbound.send') {
+    const job = payload as { tenantId: string; messageId: string };
+    // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real
+    // Meta credentials — there is nowhere for `processOutbound` to actually
+    // send those, only a guaranteed failure. A real, live-session-backed
+    // channel (WhatsApp Web, or Instagram through the Playwright bridge)
+    // is worth routing through the real send path here; everything else
+    // stays the no-op it always was in this demo stack.
+    const channelKind = await withTenant(db, job.tenantId, async (tx) => {
+      const rows = await tx.query<{ kind: string }>(
+        `select ch.kind from messages m
+           join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+          where m.tenant_id = $1 and m.id = $2`,
+        [job.tenantId, job.messageId],
+      );
+      return rows[0]?.kind ?? null;
+    }).catch(() => null);
 
-      if (channelKind === 'whatsapp_web' || channelKind === 'instagram_bridge') {
-        await processOutbound({ db, kek, meta, waBridge, igBridge, fbBridge, accessTokenFor }, job)
-          .catch((err) => console.error('[dev-stack] outbound send failed:', (err as Error).message));
-      }
+    // messenger_bridge joined the list once the Facebook sender was real:
+
+    // without it a reply typed in the console sat in the outbox as a no-op
+
+    // locally, which made a working send path look broken.
+
+    if (channelKind === 'whatsapp_web' || channelKind === 'instagram_bridge' || channelKind === 'messenger_bridge') {
+      await processOutbound({ db, kek, meta, waBridge, igBridge, fbBridge, accessTokenFor }, job)
+        .catch((err) => console.error('[dev-stack] outbound send failed:', (err as Error).message));
     }
-  },
-});
+  }
+  if (queue === 'facebook.comment.reply' || queue === 'facebook.comment.dm' || queue === 'facebook.comment.sweep') {
+    // The real bridge client, same as outbound.send above: a live Page session
+    // is the only thing worth routing these to, and without one the bridge
+    // answers 404 and the comment records that in words an agent can read.
+    const commentDeps = { db, kek, fbBridge, dispatch, env: e };
+    const run = queue === 'facebook.comment.reply'
+      ? processCommentPublicReply(commentDeps, payload as CommentActionJob)
+      : queue === 'facebook.comment.dm'
+        ? processCommentDm(commentDeps, payload as CommentActionJob)
+        : processCommentAutopilot(commentDeps, payload as { tenantId: string });
+    await run.catch((err) => console.error(`[dev-stack] ${queue} failed:`, (err as Error).message));
+  }
+};
+
+const app = buildApp({ db, control: db, kek, env: e, realtime, dispatch });
 
 await app.listen({ port: e.PORT, host: '127.0.0.1' });
 
