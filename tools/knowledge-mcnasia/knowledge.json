@@ -1,0 +1,215 @@
+{
+  "_sumber": "SOSMED KE WA-20260924T080504Z-1-001.zip — 36 chat WA leads, Detail Service McnAsia.biz.pdf, DECK SERVICE AFF, ADS. FULL & KONTEN DIVISI OPTIMASI MCNASIA2026.pdf, 3 draft kontrak (hanya klausul umum). Tidak ada nama, nomor, email, atau data performa klien yang disalin.",
+  "items": [
+    {
+      "kind": "product",
+      "sku": "AFF-100",
+      "title": "Campaign Affiliate 100 Affiliate + minimal 100 video",
+      "priceIdr": 10000000,
+      "body": "Layanan jasa (bukan barang, tidak ada stok). Paket affiliate paling kecil. 100 akun affiliate aktif, kontrak minimal 100 video (aktualnya sering lebih). Pilih satu marketplace: TikTok Shop atau Shopee. Termasuk: filter affiliate sesuai kategori & kebutuhan brand, rencana konten berdasarkan atribut produk, sample management, laporan bulanan, evaluasi performa (GMV & kuantitas). Komisi affiliate ditentukan brand (open plan). Brand menyiapkan 100 sample produk. Pembayaran satu kali di awal.",
+      "tags": ["affiliate", "paket", "tiktok", "shopee"]
+    },
+    {
+      "kind": "product",
+      "sku": "AFF-150",
+      "title": "Campaign Affiliate 150 Affiliate + minimal 150 video (Spesial Offer)",
+      "priceIdr": 15000000,
+      "body": "Layanan jasa (bukan barang, tidak ada stok). Paket yang diiklankan sebagai [Spesial offer] Paket 150 affiliate. 150 akun affiliate + minimal 150 video. Hanya satu marketplace (TikTok Shop atau Shopee); campaign dua marketplace sekaligus ada di paket 300/500. Termasuk filter & kurasi affiliate, rekrut & koordinasi, pengiriman sample, monitoring upload video, tracking performa, report realtime via Google Sheet. Brand menyiapkan 150 sample, stok, dan resi pengiriman. Pembayaran satu kali di awal.",
+      "tags": ["affiliate", "paket", "spesial offer"]
+    },
+    {
+      "kind": "product",
+      "sku": "AFF-200",
+      "title": "Campaign Affiliate 200 Affiliate + minimal 200 video",
+      "priceIdr": 18000000,
+      "body": "Layanan jasa (bukan barang, tidak ada stok). 200 akun affiliate + minimal 200 video. Affiliate dengan performa GMV minimal di 28 hari terakhir untuk kategori serupa. Termasuk filter affiliate, rencana konten, sample management, laporan bulanan, evaluasi performa, + komisi management sesuai kategori. Brand menyiapkan 200 sample.",
+      "tags": ["affiliate", "paket"]
+    },
+    {
+      "kind": "product",
+      "sku": "AFF-300",
+      "title": "Campaign Affiliate 300 Affiliate + minimal 300 video",
+      "priceIdr": 25000000,
+      "body": "Layanan jasa (bukan barang, tidak ada stok). 300 akun affiliate + minimal 300 video. Bisa dijalankan di TikTok Shop dan Shopee sekaligus (contoh strategi: 200 affiliate TikTok untuk akuisisi & FYP, 100 affiliate Shopee untuk retargeting). Termasuk pelatihan bulanan affiliate (pengetahuan produk, teknik penjualan, anti-plagiarisme, kepatuhan), penulisan script & storyboard, laporan bulanan, + komisi management sesuai kategori. Brand menyiapkan 300 sample. Pembayaran satu kali di awal.",
+      "tags": ["affiliate", "paket", "tiktok", "shopee"]
+    },
+    {
+      "kind": "product",
+      "sku": "VID-OFFICIAL-15",
+      "title": "Video Konten Official Account — 15 video per bulan",
+      "priceIdr": 7500000,
+      "body": "Layanan jasa per bulan (bukan barang, tidak ada stok). 15 video per bulan untuk akun official brand. Tipe konten: hard selling, soft selling, edukasi, storytelling, tren viral — disesuaikan objective brand saat meeting. Termasuk ide, script, shooting, editing, optimasi caption, hashtag, dan timing posting. Strategy & reporting: weekly trend, monthly performance report & improvement plan. Brand mengirim produk ke tim MCNASIA untuk produksi.",
+      "tags": ["konten", "video", "official account"]
+    },
+    {
+      "kind": "product",
+      "sku": "STORE-MGMT",
+      "title": "E-Commerce Management — Full Store Management & Customer Service",
+      "priceIdr": 4000000,
+      "body": "Layanan jasa per bulan (bukan barang, tidak ada stok), + komisi untuk MCNASIA (dibahas saat meeting). Satu platform: TikTok Shop atau Shopee. Meliputi operasional toko, update produk/stok/harga/variasi/foto & optimasi katalog, monitoring order, customer service & after sales (response rate >95%, respon <5 menit), flash sale/voucher/bundling/campaign marketplace, monitoring rating & performa toko, laporan penjualan berkala, strategi growth. Keuangan dan akun tetap atas nama brand; cetak resi dan pengiriman oleh brand.",
+      "tags": ["marketplace", "toko", "customer service"]
+    },
+    {
+      "kind": "product",
+      "sku": "ADS-GMVMAX",
+      "title": "Maintenance TikTok GMV Max",
+      "priceIdr": 15000000,
+      "body": "Layanan jasa per bulan (bukan barang, tidak ada stok), + komisi dari total GMV setelah dikurangi refund & cancel (persentase dibahas saat meeting). Di luar budget iklan. Scope: setup & strategi campaign (kurasi konten affiliate jadi materi iklan), manajemen budget & bidding saat momentum (double date, payday), optimasi ROAS/CTR & creative refresh, sinkronisasi promo & stok Hero SKU, laporan & insight di akhir periode.",
+      "tags": ["ads", "tiktok", "gmv max"]
+    },
+    {
+      "kind": "product",
+      "sku": "ADS-ADVANCE",
+      "title": "Ads Advance (kelola iklan)",
+      "priceIdr": 5000000,
+      "body": "Layanan jasa per bulan (bukan barang, tidak ada stok), di luar budget iklan. Kontrak 6 bulan. Meliputi strategi & perencanaan campaign, setup & struktur campaign, riset audience & targeting, A/B testing creative, daily optimization, weekly performance report, dashboard & monthly report, optimasi ROAS & CPA, strategi remarketing. Platform sesuai kesepakatan (TikTok, Shopee, atau Meta CPAS).",
+      "tags": ["ads", "meta cpas", "shopee ads", "tiktok ads"]
+    },
+    {
+      "kind": "product",
+      "sku": "LIVE-AFF-150",
+      "title": "Special Offer: Daily Live Streaming 150 jam/bulan + 150 Affiliate",
+      "priceIdr": 37500000,
+      "body": "Layanan jasa per bulan (bukan barang, tidak ada stok), + komisi untuk MCNASIA (dibahas saat meeting). Live 30 hari, minimal 5 jam per hari (150 jam/bulan): controller, operator, talent/host, studio, equipment (kamera, lighting, mic), dekorasi, analisis data & penyesuaian strategi. Ditambah campaign 150 affiliate & 150 short video per bulan (filter berdasarkan followers, views, kategori, kualitas konten & GMV).",
+      "tags": ["live streaming", "affiliate", "paket"]
+    },
+    {
+      "kind": "product",
+      "sku": "FULL-ROI",
+      "title": "Full Service TikTok (Garansi ROI) — mulai dari",
+      "priceIdr": 55000000,
+      "body": "Layanan jasa per bulan, harga MULAI DARI (bukan barang, tidak ada stok), + komisi dan skema garansi ROI dibahas saat meeting. Gabungan: campaign 150 akun affiliate + 150 video affiliate, live streaming official (tim lengkap & studio, 30 hari), maintain ads + analisis, e-commerce management (setup akun & desain toko, CS & admin, monitoring insight/engagement/traffic/rating/pengiriman, strategi produk), dan 15 video official account per bulan.",
+      "tags": ["full service", "paket", "garansi"]
+    },
+    {
+      "kind": "product",
+      "sku": "TVC",
+      "title": "Star-Powered TVC Production — mulai dari",
+      "priceIdr": 500000000,
+      "body": "Layanan jasa, harga MULAI DARI (bukan barang, tidak ada stok). Produksi TVC/branding video dengan talent & strategi konten. Detail dan penawaran dibahas saat meeting.",
+      "tags": ["tvc", "branding"]
+    },
+
+    {
+      "kind": "policy",
+      "title": "Tentang MCNASIA.BIZ",
+      "body": "MCNASIA.BIZ (PT Han Meili Jaya) adalah agency Official Partner TikTok & Shopee, 'One Stop Solution Provider' yang membantu brand meningkatkan penjualan lewat strategi digital terukur. Layanan: Campaign Affiliate, Official Livestream (termasuk AI Live), TikTok & Shopee Ads, Meta CPAS Ads, Branding & Content (video official account, TVC), Marketplace Management. Kantor: Ruko Mall Seasons City Blok B No. 10 (samping Panin Bank, ruko belakang Seasons City), Tambora, Jakarta Barat 11320. Jam operasional 09:00–20:00 WIB. Kontak resmi: WhatsApp +62 877-1818-9777 dan +62 822-3033-6666, email business.development@mcnasia.net.",
+      "tags": ["profil", "alamat", "kontak", "jam kerja"]
+    },
+    {
+      "kind": "policy",
+      "title": "Alur kerja sama (dari chat pertama sampai running)",
+      "body": "1) Lead mengisi form singkat: Nama Brand, Posisi di Brand, Link TikTok Shop, Link Shopee, dan kebutuhan/ekspektasi kerja sama. 2) Tim melakukan analisis singkat brand. 3) Online meeting Google Meet 20–30 menit (link dibuat oleh tim MCNASIA dan dikirim ke email lead; tidak wajib langsung deal) untuk presentasi sistem kerja, portofolio, dan penawaran yang disesuaikan. Meeting juga bisa offline di kantor. 4) Deck penawaran dikirim setelah meeting. 5) Jika deal: kontrak dan invoice dikirim, brand melakukan pembayaran sesuai invoice. 6) Dibuat grup WhatsApp bersama tim project/legal untuk timeline, setup, dan monitoring campaign.",
+      "tags": ["proses", "meeting", "onboarding"]
+    },
+    {
+      "kind": "policy",
+      "title": "Pembayaran",
+      "body": "Pembayaran berdasarkan invoice resmi dari MCNASIA melalui transfer ke rekening perusahaan yang tercantum di invoice/kontrak. Paket Campaign Affiliate dibayar satu kali di awal periode. Beberapa layanan bulanan (misalnya Ads Advance) dapat dibayar bertahap sesuai kontrak. Biaya layanan iklan selalu di luar budget iklan. Nomor rekening hanya diberikan lewat invoice/kontrak, bukan lewat chat.",
+      "tags": ["pembayaran", "invoice"]
+    },
+    {
+      "kind": "policy",
+      "title": "Kriteria & kualitas affiliate",
+      "body": "Affiliate MCNASIA berasal dari database ribuan (±10.000) creator yang tidak terikat kontrak eksklusif, lintas kategori: F&B, beauty/skincare, fashion, home living, mom & kids, health & wellness, produk digital (TikTok). Kurasi berdasarkan kategori, target market, engagement, dan performa penjualan: histori penjualan minimal Rp30 juta dalam 28 hari terakhir di kategori serupa. Rata-rata followers 6.000+ (fokus utama tetap performa penjualan), level affiliate mulai level 3. Database TikTok dan Shopee terpisah. Belum ada database affiliate Instagram — untuk target Instagram disarankan Meta Ads.",
+      "tags": ["affiliate", "kriteria", "kualitas"]
+    },
+    {
+      "kind": "policy",
+      "title": "Garansi campaign affiliate",
+      "body": "Jumlah affiliate dan video digaransi sesuai kontrak. Jika ada affiliate yang tidak aktif atau tidak upload, dilakukan replacement atau penyelesaian proporsional sesuai klausul kontrak (pengembalian biaya berdasarkan sisa affiliate). Kenaikan penjualan dengan persentase tertentu TIDAK digaransi; yang digaransi adalah kualitas affiliate sesuai kriteria yang disepakati. Performa bulan pertama dipakai sebagai dasar optimasi bulan berikutnya. Garansi ROI hanya ada di paket Full Service dan skemanya dibahas saat meeting.",
+      "tags": ["garansi", "affiliate"]
+    },
+    {
+      "kind": "policy",
+      "title": "Sample produk dan tanggung jawab brand",
+      "body": "Untuk campaign affiliate, brand menyiapkan satu sample per affiliate (contoh: paket 100 affiliate = 100 sample). Tim MCNASIA mengkoordinasikan request dan distribusi sample ke affiliate yang sudah dikurasi. Brand bertanggung jawab atas stok produk, cetak resi, dan pengiriman.",
+      "tags": ["sample", "affiliate"]
+    },
+    {
+      "kind": "policy",
+      "title": "Komisi affiliate dan komisi MCNASIA",
+      "body": "Komisi affiliate (open plan) ditentukan oleh brand. Sebagai gambaran pasar: fashion umumnya 7–10%, F&B/snack sekitar 10%. Selain fee paket, beberapa layanan memakai komisi untuk MCNASIA yang disepakati di kontrak (umumnya 4–5% untuk F&B) dan hanya dibayar bila affiliate menghasilkan penjualan. Total komisi di-setting di sistem TAP (TikTok Affiliate Partner) MCNASIA. Angka final dibahas saat meeting.",
+      "tags": ["komisi", "affiliate"]
+    },
+    {
+      "kind": "policy",
+      "title": "Batas negosiasi paket",
+      "body": "Paket affiliate minimum adalah 100 affiliate + minimal 100 video; paket di bawah itu (misalnya 50 affiliate) atau pembayaran cicilan untuk paket affiliate tidak tersedia secara standar karena formulasi paket disusun berdasarkan target pertumbuhan sales. Harga paket sudah net. Permintaan skema khusus, potongan harga, atau pembayaran bertahap diteruskan ke manager BD, jangan dijanjikan di chat.",
+      "tags": ["negosiasi", "harga", "eskalasi"]
+    },
+    {
+      "kind": "faq",
+      "title": "Bisa lihat daftar/nama affiliate sebelum kerja sama?",
+      "body": "Daftar lengkap affiliate belum bisa dibagikan sebelum kerja sama disepakati. Setelah deal, seluruh data affiliate yang akan diundang dibagikan lewat report Google Sheets, dan brand bisa mengecek serta menyetujui affiliate hasil kurasi sebelum sample dikirim. Contoh video affiliate dan performa campaign kategori serupa bisa ditunjukkan saat meeting.",
+      "tags": ["affiliate", "transparansi"]
+    },
+    {
+      "kind": "faq",
+      "title": "Apa yang terjadi dengan video affiliate setelah kontrak selesai?",
+      "body": "Video affiliate tidak di-private dan tetap bisa menghasilkan penjualan setelah kontrak selesai, dengan catatan link produk (SKU) di seller center tidak di-takedown oleh brand.",
+      "tags": ["affiliate", "video", "kontrak"]
+    },
+    {
+      "kind": "faq",
+      "title": "Apakah brand boleh memakai ulang video yang diproduksi?",
+      "body": "Boleh. Brand dapat menggunakan, mengedit, memodifikasi, dan mengadaptasi video hasil kerja sama untuk publikasi dan promosi di platform lain; klausul ini bisa dicantumkan di kontrak. Brand juga bisa 'owning' konten affiliate yang sudah tayang untuk official account atau materi iklan.",
+      "tags": ["hak cipta", "konten"]
+    },
+    {
+      "kind": "faq",
+      "title": "Apakah campaign affiliate bisa di TikTok dan Shopee sekaligus?",
+      "body": "Paket 100 dan 150 affiliate hanya untuk satu marketplace (pilih TikTok Shop atau Shopee). Campaign di TikTok Shop dan Shopee sekaligus tersedia mulai paket 300 affiliate ke atas.",
+      "tags": ["affiliate", "marketplace"]
+    },
+    {
+      "kind": "faq",
+      "title": "Apakah bisa untuk Instagram atau produk digital?",
+      "body": "Layanan utama MCNASIA untuk TikTok Shop dan Shopee. Produk digital bisa dipromosikan lewat affiliate TikTok (diarahkan ke taplink/landing page/website), tetapi tidak bisa dijual di Shopee. Untuk target Instagram, MCNASIA belum punya database affiliate Instagram dan menyarankan layanan Meta CPAS Ads. Content production untuk IG bisa dibahas saat meeting.",
+      "tags": ["instagram", "produk digital", "meta ads"]
+    },
+    {
+      "kind": "faq",
+      "title": "Bisa handle lebih dari satu produk/SKU?",
+      "body": "Bisa. Beberapa produk atau SKU dalam satu brand dapat dimasukkan ke campaign; detail pembagiannya dibahas saat meeting.",
+      "tags": ["produk", "sku"]
+    },
+    {
+      "kind": "faq",
+      "title": "Kenapa GMV MCNASIA di profil MCN TikTok terlihat 0?",
+      "body": "Data MCN di TikTok hanya menampilkan penjualan creator yang menandatangani kontrak eksklusif dengan MCN/agency. MCNASIA tidak mengikat creator dengan kontrak eksklusif; fokusnya mengelola official account brand dan menjalankan campaign affiliate lewat jaringan ribuan creator. Karena itu angka tersebut tidak mencerminkan performa campaign yang dijalankan. Case study dan histori performa bisa ditunjukkan saat meeting.",
+      "tags": ["gmv", "mcn", "kepercayaan"]
+    },
+    {
+      "kind": "faq",
+      "title": "Brand apa saja yang pernah ditangani?",
+      "body": "Portofolio di deck resmi antara lain Garudafood, Unilever, Mondelez (Cadbury & Oreo), Mengniu Dairy (YoyiC), Mie Gaga, Nestlab, serta brand F&B, beauty, fashion, dan home living lainnya. Komposisi kategori yang berjalan kira-kira 60% F&B & beauty dan 40% home living, mom & kids, dan lainnya. Detail case study dan dashboard performa ditunjukkan saat meeting.",
+      "tags": ["portofolio", "kepercayaan"]
+    },
+    {
+      "kind": "faq",
+      "title": "Harus meeting? Tidak bisa dijelaskan lewat chat saja?",
+      "body": "Penjelasan dasar bisa lewat chat, tetapi sistem kerja, target, garansi, dan penawaran disesuaikan per brand, jadi tim menyarankan online meeting singkat 20–30 menit di Google Meet agar tidak terjadi miskomunikasi. Meeting tidak mewajibkan langsung deal. Jadwal meeting di jam kerja 09:00–20:00 WIB; slot dikonfirmasi oleh tim. Meeting offline di kantor Jakarta Barat juga bisa.",
+      "tags": ["meeting", "jadwal"]
+    },
+    {
+      "kind": "faq",
+      "title": "Kalau pakai jasa manage marketplace, akun dan keuangan dipegang siapa?",
+      "body": "Akun dan keuangan tetap milik brand, sesuai nama PT yang terdaftar di seller center. Tim MCNASIA (admin marketplace dedicated) mengelola operasional dan optimasi harian. Cetak resi dan pengiriman tetap dilakukan pihak brand.",
+      "tags": ["marketplace", "akun", "keuangan"]
+    }
+  ],
+  "perlu_konfirmasi_sebelum_diimpor": [
+    "AFF-100: durasi campaign — chat bilang 1,5 bulan, deck tampaknya 2 bulan.",
+    "AFF-150: durasi — satu chat bilang 2 bulan, chat lain bilang 150 akun aktif dalam 1 bulan. Satu chat juga bilang bisa kombinasi TikTok+Shopee, dua chat lain bilang hanya satu marketplace (saya pakai: satu marketplace).",
+    "AFF-300: Rp25 juta konsisten, tapi durasi beda (kontrak 4 bulan, chat 5 bulan, deck 6 bulan?) dan satu chat menyebut 'Rp25.000.000 / bulan'. Satu chat juga menyebut harga normal Rp30 juta dipotong promo Rp5 juta.",
+    "AFF-250 (PDF: Rp25 juta → Rp20 juta) TIDAK dimasukkan karena bentrok dengan AFF-300 = Rp25 juta.",
+    "AFF-500: Rp45 juta/bulan (chat) vs 'mulai Rp50 juta' (deck paket custom eksklusif) — TIDAK dimasukkan.",
+    "Live streaming saja: chat bilang 'mulai 199/jam' — tidak jelas Rp199.000/jam atau lainnya — TIDAK dimasukkan.",
+    "AI Live Official: Rp120 juta dicoret jadi Rp53 juta/bulan — apakah harga promo masih berlaku? TIDAK dimasukkan.",
+    "Manage marketplace full (termasuk optimasi ads Shopee/TikTok/Meta): chat bilang Rp25–35 juta — beda dengan STORE-MGMT Rp4 juta. TIDAK dimasukkan.",
+    "Top up ads diskon 5% (PDF) TIDAK dimasukkan: pengaturan Autopilot default melarang bot menawarkan diskon.",
+    "Lihat affiliate sebelum bayar: satu chat bilang 'boleh banget' sebelum pembayaran, chat lain bilang hanya setelah deal. FAQ memakai: setelah deal, sebelum sample dikirim.",
+    "Nomor WA kontak: saya hanya memakai dua nomor yang tercantum di deck resmi. Nomor pribadi manager BD dari chat tidak dimasukkan."
+  ]
+}

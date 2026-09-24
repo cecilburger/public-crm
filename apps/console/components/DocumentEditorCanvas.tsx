@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import JSZip from 'jszip';
 import Konva from 'konva';
 import { Stage, Layer, Text as KonvaText, Image as KonvaImage, Rect, Group, Transformer } from 'react-konva';

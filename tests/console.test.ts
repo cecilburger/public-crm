@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { rp, num, ago, clock, initials, awaitingReply } from '../apps/console/lib/format.ts';
+import { rp, num, ago, clock, initials, awaitingReply, isPairing } from '../apps/console/lib/format.ts';
 import { expiresAt } from '../apps/console/lib/session.ts';
 
 describe('console formatting', () => {
@@ -68,5 +68,29 @@ describe('session token inspection', () => {
     expect(expiresAt('not-a-jwt')).toBe(0);
     expect(expiresAt('a.!!!!.c')).toBe(0);
     expect(expiresAt('a.eyJubyI6ImV4cCJ9.c')).toBe(0);
+  });
+});
+
+describe('the WhatsApp pairing refresh rule', () => {
+  const now = Date.parse('2026-09-24T08:00:00Z');
+  const at = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+
+  it('counts a live QR, and one that has only just lapsed', () => {
+    expect(isPairing({ sessionStatus: 'qr_pending', qrExpiresAt: at(20_000) }, now)).toBe(true);
+    expect(isPairing({ sessionStatus: 'qr_pending', qrExpiresAt: at(-10_000) }, now)).toBe(true);
+  });
+
+  it('does not hold the page at 3 seconds for a QR nothing is behind', () => {
+    // The seeded demo number: qr_pending with no expiry, forever.
+    expect(isPairing({ sessionStatus: 'qr_pending', qrExpiresAt: null }, now)).toBe(false);
+    // A bridge that died mid-pairing.
+    expect(isPairing({ sessionStatus: 'qr_pending', qrExpiresAt: at(-5 * 60_000) }, now)).toBe(false);
+  });
+
+  it('counts a session starting up, and nothing settled', () => {
+    expect(isPairing({ sessionStatus: 'starting', qrExpiresAt: null }, now)).toBe(true);
+    for (const s of ['ready', 'error', 'disconnected']) {
+      expect(isPairing({ sessionStatus: s, qrExpiresAt: at(20_000) }, now)).toBe(false);
+    }
   });
 });

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { Stage, Layer, Group, Rect, Text as KonvaText, Line, Circle } from 'react-konva';
 import Konva from 'konva';
 import { t } from '@/lib/copy';

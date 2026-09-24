@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState, useRef, useState, type ChangeEvent } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { createClient, updateClient, deleteClient, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';

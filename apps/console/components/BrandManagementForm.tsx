@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState, useRef } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import {
   createBrandFromManagement, updateBrandFromManagement, deleteBrandFromManagement, type ActionResult,
 } from '@/app/(app)/actions';

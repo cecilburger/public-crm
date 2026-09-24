@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import type { Task, Member, Deal, TaskKind, Brand, GoogleCalendarStatus, GoogleCalendarEvent } from '@/lib/api';

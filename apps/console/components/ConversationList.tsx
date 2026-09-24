@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ago, awaitingReply } from '@/lib/format';
 import { t } from '@/lib/copy';
@@ -29,14 +29,16 @@ import {
  * than something this CRM can do. Leaving comments out of "Perlu dibalas"
  * would hide precisely the ones somebody has to act on.
  */
-const itemNeedsReply = (item: InboxItem) =>
+type Item = InboxItem<ConversationSummary, FacebookComment>;
+
+const itemNeedsReply = (item: Item) =>
   item.kind === 'conversation'
     ? awaitingReply(item.conversation)
     : ['new', 'public_reply_pending', 'dm_pending'].includes(item.comment.status);
 
 /** Finished. For a comment that means the sequence ran out: either the private
  * message went, or a public reply landed and no private message was due. */
-const itemIsDone = (item: InboxItem) =>
+const itemIsDone = (item: Item) =>
   item.kind === 'conversation'
     ? item.conversation.status === 'resolved'
     : ['dm_sent', 'public_replied'].includes(item.comment.status);
@@ -126,7 +128,7 @@ export function ConversationList(
   // Opening an item keeps the same query string, so the list you land back on
   // (via the browser's back button, or the thread panel's own close) is still
   // scoped the way you left it, not silently reset to everything.
-  const itemHref = (item: InboxItem) => {
+  const itemHref = (item: Item) => {
     const query = params.toString();
     const href = inboxHref(item, basePath);
     return query ? `${href}?${query}` : href;

@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import type { Contact, Task } from '@/lib/api';

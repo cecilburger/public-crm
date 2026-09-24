@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { t } from '@/lib/copy';
 import { formatTaskDue, isTaskOverdue, isTaskDueToday, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
 import { markTaskDone } from '@/app/(app)/actions';

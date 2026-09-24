@@ -4,6 +4,8 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { t } from '@/lib/copy';
 
+const MIN_GAP_MS = 1500;
+
 /**
  * Two sources feed the same refresh: an interval (still needed for things a
  * message event doesn't cover, like a QR code rotating while pairing) and
@@ -15,7 +17,7 @@ import { t } from '@/lib/copy';
  * "live" light that means nothing, and it can be paused, because a list that
  * reorders itself while you are reading it is worse than a stale one.
  */
-export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
+export function AutoRefresh({ seconds = 10, renderedAt }: { seconds?: number; renderedAt?: number }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [on, setOn] = useState(true);
@@ -24,15 +26,54 @@ export function AutoRefresh({ seconds = 10 }: { seconds?: number }) {
   // Set the real timestamp after mount so SSR and client initial renders match.
   useEffect(() => { setLast(Date.now()); }, []);
 
+  // A page shown from the browser's cache (`staleTimes` in next.config) opens
+  // instantly but may be up to 30 s old — catch it up straight away, in the
+  // background, rather than at the next tick. Mount only: every refresh
+  // re-renders with a new `renderedAt`, and that must not trigger another.
+  useEffect(() => {
+    if (renderedAt && Date.now() - renderedAt > 5_000) start(() => { router.refresh(); setLast(Date.now()); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!on) return;
-    const refresh = () => start(() => { router.refresh(); setLast(Date.now()); });
+    // Each refresh re-renders the whole server page — a burst of API reads —
+    // so they are rationed: a burst of realtime events coalesces into one
+    // refresh at most every MIN_GAP_MS, the interval tick is skipped when an
+    // event already refreshed recently, and a background tab doesn't refresh
+    // at all until it is looked at again. On a slow machine the unrationed
+    // version queued refreshes faster than they could finish.
+    let lastRun = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let missed = false;
+
+    const run = () => {
+      timer = undefined;
+      if (document.hidden) { missed = true; return; }
+      lastRun = Date.now();
+      start(() => { router.refresh(); setLast(Date.now()); });
+    };
+    const schedule = () => {
+      if (timer) return;
+      timer = setTimeout(run, Math.max(0, lastRun + MIN_GAP_MS - Date.now()));
+    };
+    const onVisible = () => {
+      if (!document.hidden && missed) { missed = false; schedule(); }
+    };
 
     const source = new EventSource('/api/realtime');
-    source.onmessage = refresh;
+    source.onmessage = schedule;
 
-    const id = setInterval(refresh, seconds * 1000);
-    return () => { source.close(); clearInterval(id); };
+    const id = setInterval(() => {
+      if (Date.now() - lastRun >= seconds * 1000 - MIN_GAP_MS) schedule();
+    }, seconds * 1000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      source.close();
+      clearInterval(id);
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [on, seconds, router]);
 
   return (

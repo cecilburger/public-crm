@@ -88,3 +88,22 @@ export function awaitingReply(c: {
 }): boolean {
   return c.status !== 'resolved' && c.last_inbound_at !== null && c.last_message_at === c.last_inbound_at;
 }
+
+/**
+ * Whether a WhatsApp number is mid-pairing right now, which is what earns the
+ * 3-second refresh (a rotating QR must never go stale on screen).
+ *
+ * `qr_pending` alone isn't enough: a session left there with no bridge
+ * behind it — the seeded demo number, or a bridge that died mid-pairing —
+ * would hold every WhatsApp page at a 3-second full refresh forever. A QR the
+ * bridge actually sent always carries an expiry, and the next one arrives as
+ * it lapses, so a QR counts only until shortly after its expiry.
+ */
+export function isPairing(
+  c: { sessionStatus: string; qrExpiresAt: string | null },
+  now = Date.now(),
+): boolean {
+  if (c.sessionStatus === 'starting') return true;
+  if (c.sessionStatus !== 'qr_pending' || !c.qrExpiresAt) return false;
+  return new Date(c.qrExpiresAt).getTime() + 30_000 > now;
+}

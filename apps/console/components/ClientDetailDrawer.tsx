@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useActionState } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { updateClient, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';

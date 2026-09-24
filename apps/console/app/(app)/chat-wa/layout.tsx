@@ -1,5 +1,5 @@
 import { api, type ConversationSummary, type WaBridgeChannel } from '@/lib/api';
-import { awaitingReply } from '@/lib/format';
+import { awaitingReply, isPairing } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { ConversationList } from '@/components/ConversationList';
 import { AutoRefresh } from '@/components/AutoRefresh';
@@ -16,7 +16,7 @@ export default async function ChatWaLayout({ children }: { children: React.React
   ]);
   const waiting = conversations.filter(awaitingReply).length;
   // Refreshes fast enough that a rotating QR (in the rail) never goes stale.
-  const pairing = channels.some((c) => c.sessionStatus === 'qr_pending' || c.sessionStatus === 'starting');
+  const pairing = channels.some((c) => isPairing(c));
 
   return (
     <>
@@ -27,7 +27,7 @@ export default async function ChatWaLayout({ children }: { children: React.React
         </div>
         {waiting > 0 ? <span className="chip warn">{waiting} {t.chats.filterNeedsReply.toLowerCase()}</span> : null}
         <span className="spacer" />
-        <AutoRefresh seconds={pairing ? 3 : 10} />
+        <AutoRefresh seconds={pairing ? 3 : 10} renderedAt={Date.now()} />
         <WaBridgeConnectButton />
       </div>
       <div className="inbox">

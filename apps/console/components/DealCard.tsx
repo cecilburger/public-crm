@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useActionState } from 'react';
 import { moveDeal, type ActionResult } from '@/app/(app)/actions';
 import { rp, dueLabel, initials } from '@/lib/format';

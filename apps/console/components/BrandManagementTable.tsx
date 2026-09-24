@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useMemo, useState } from 'react';
 import type { Brand, Member } from '@/lib/api';
 import { initials } from '@/lib/format';

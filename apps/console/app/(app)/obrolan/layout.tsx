@@ -35,7 +35,7 @@ export default async function ChatsLayout({ children }: { children: React.ReactN
         </div>
         {waiting > 0 ? <span className="chip warn">{waiting} {t.chats.filterNeedsReply.toLowerCase()}</span> : null}
         <span className="spacer" />
-        <AutoRefresh seconds={10} />
+        <AutoRefresh seconds={10} renderedAt={Date.now()} />
       </div>
       <div className="inbox">
         <ConversationList

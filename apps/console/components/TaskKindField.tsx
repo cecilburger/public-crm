@@ -21,7 +21,7 @@ export function TaskKindField({
   id: string; name: string; value: string; onChange: (v: string) => void; initialCustomKinds: TaskKind[];
 }) {
   const csrf = useCsrfToken();
-  const [customKinds, setCustomKinds] = useState(initialCustomKinds);
+  const [customKinds, setCustomKinds] = useState<Pick<TaskKind, 'id' | 'name'>[]>(initialCustomKinds);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [pending, setPending] = useState(false);

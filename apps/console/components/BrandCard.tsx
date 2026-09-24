@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { setBrandStatus } from '@/app/(app)/actions';
 import { ago } from '@/lib/format';
 import { t } from '@/lib/copy';

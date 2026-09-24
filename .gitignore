@@ -23,3 +23,6 @@ apps/fb-bridge/.fb_bridge_auth/
 # `.dev-stack-data.rusak-<time>/` became 1297 untracked files that `git add -A`
 # would have committed — a 31 MB database, WAL and all.
 /.dev-stack-data*/
+
+# The dev stack's Postgres cluster (tools/local-postgres.ts).
+/.dev-stack-pg/

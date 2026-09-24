@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState, useRef, useState } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { createBrand, updateBrand, deleteBrand, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';

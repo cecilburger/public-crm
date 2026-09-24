@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '@/lib/copy';
 import { formatTaskDue, isTaskOverdue, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
