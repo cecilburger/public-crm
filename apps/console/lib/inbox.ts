@@ -28,6 +28,12 @@ export interface CommentLike {
   createdAt: string;
 }
 
+/** What a comment must additionally expose to be grouped under its post. */
+export interface GroupableComment extends CommentLike {
+  postId: string;
+  status: string;
+}
+
 /** What the channel filter offers. Deliberately coarser than `channel_kind`:
  * an agent picks a platform, not a transport. */
 export type InboxChannel =
@@ -177,6 +183,53 @@ export function shouldShowInstagramNotReady(channel: string): boolean {
   return channel === 'instagram_comment';
 }
 
+/** One Page post, with every comment on it — the grouping Meta Business
+ * Suite's own "Facebook comments" tab shows: a post on the left, everyone who
+ * commented on it together on the right. */
+export interface CommentPostGroup<K extends GroupableComment = GroupableComment> {
+  postId: string;
+  /** Oldest first — a thread reads top to bottom like the conversation it is. */
+  comments: K[];
+  /** The most recent comment's own timestamp, for sorting posts newest-first. */
+  latestAt: string | null;
+  /** True when any comment on this post is waiting on a person. */
+  needsReply: boolean;
+}
+
+const COMMENT_PENDING_STATUSES = new Set(['new', 'public_reply_pending', 'dm_pending']);
+
+/**
+ * Every comment, filed under the post it was left on.
+ *
+ * Left ungrouped, a busy post reads as N unrelated rows with nothing to say
+ * they are the same conversation — exactly the shape Meta Business Suite
+ * moved away from. Grouped, the left list names the thing a customer actually
+ * commented ON, and the right panel shows everyone who did, together.
+ */
+export function groupCommentsByPost<K extends GroupableComment>(comments: K[]): CommentPostGroup<K>[] {
+  const byPost = new Map<string, K[]>();
+  for (const comment of comments) {
+    const group = byPost.get(comment.postId);
+    if (group) group.push(comment);
+    else byPost.set(comment.postId, [comment]);
+  }
+
+  const at = (c: K) => c.commentedAt ?? c.createdAt;
+  const groups: CommentPostGroup<K>[] = [...byPost.entries()].map(([postId, list]) => ({
+    postId,
+    comments: [...list].sort((a, b) => at(a).localeCompare(at(b))),
+    latestAt: list.reduce<string | null>((max, c) => (!max || at(c) > max ? at(c) : max), null),
+    needsReply: list.some((c) => COMMENT_PENDING_STATUSES.has(c.status)),
+  }));
+
+  return groups.sort((a, b) => {
+    if (!a.latestAt && !b.latestAt) return 0;
+    if (!a.latestAt) return 1;
+    if (!b.latestAt) return -1;
+    return b.latestAt.localeCompare(a.latestAt);
+  });
+}
+
 /**
  * The link an item opens.
  *
@@ -184,10 +237,17 @@ export function shouldShowInstagramNotReady(channel: string): boolean {
  * conversation id. Both are UUIDs and the two routes load entirely different
  * things, so sharing a segment would turn one wrong id into either a confusing
  * 404 or, worse, somebody else's thread.
+ *
+ * A comment opens its POST, not itself: `/obrolan/komentar/<postId>` shows
+ * every comment on that post together, the same page regardless of which of
+ * them was clicked. Facebook's own id for a post is never a UUID, so this
+ * cannot collide with either id space above it.
  */
-export function inboxHref(item: InboxItem<ConversationLike, CommentLike>, basePath = '/obrolan'): string {
+export function inboxHref<C extends ConversationLike, K extends GroupableComment>(
+  item: InboxItem<C, K>, basePath = '/obrolan',
+): string {
   return item.kind === 'comment'
-    ? `${basePath}/komentar/${item.id}`
+    ? `${basePath}/komentar/${item.comment.postId}`
     : `${basePath}/${item.id}`;
 }
 
