@@ -22,7 +22,7 @@ const SWEEP_INTERVAL_MS = 15 * 60_000;
 /** How many of a Page's newest posts are re-read in full on each sweep. */
 const POSTS_PER_SWEEP = 3;
 /** How long a post's comments get to render before it is read. */
-const COMMENT_RENDER_MS = 12_000;
+const COMMENT_RENDER_MS = 20_000;
 
 /** How many comment ids to keep per tenant. Comments arrive on old posts as
  * well as new ones, so this has to cover more than one sweep's worth — but it

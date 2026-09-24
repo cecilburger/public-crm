@@ -841,6 +841,14 @@ export const t = {
     publicReplyError: 'Balasan publik gagal',
     dmError: 'DM gagal',
     notFound: 'Komentar ini tidak ditemukan.',
+    /** The left-list row for a post, grouped the way Meta Business Suite's own
+     * "Facebook comments" tab does it: the post is the row, not whoever
+     * commented on it. Facebook's own post id is the only name available
+     * without scraping the post's own text or image, which this build does
+     * not do — so it is shown plainly rather than invented a nicer one. */
+    postLabel: (postId: string) => `Postingan ${postId}`,
+    commentCount: (n: number) => `${n} komentar`,
+    postThread: 'Semua komentar di postingan ini',
   },
 
   chatIg: {
