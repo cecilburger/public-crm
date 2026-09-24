@@ -104,7 +104,12 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}
 
+        {/* Facebook is inbound only for now, so the reply box is replaced by a
+            sentence saying so. Every other channel passes nothing here and
+            keeps the composer it has always had. */}
         <Composer conversationId={conversation.id} windowOpen={conversation.serviceWindowOpen}
+                  disabledReason={conversation.channel_kind === 'messenger_bridge'
+                    ? t.facebookBridge.replyUnavailable : undefined}
                   customerName={contact.displayName ?? contact.phone ?? '—'} quickReplies={quickReplies} />
       </div>
 

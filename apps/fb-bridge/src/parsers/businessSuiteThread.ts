@@ -229,3 +229,29 @@ function dropNestedRows(rows: El[]): El[] {
     return true;
   });
 }
+
+/**
+ * How many messages in this transcript say exactly this, whichever way they
+ * went.
+ *
+ * The cheap confirmation. `countOwnBusinessSuiteMessages` is the strict one —
+ * it knows which side a bubble is on — but it needs the ANNOTATED read, and
+ * that read walks every message's ancestors calling `getComputedStyle`, which
+ * on a long thread is where a live run wedged past a sixty-second protocol
+ * timeout. This reads the plain markup instead.
+ *
+ * Used only as a before/after DELTA on text the CRM itself just sent, so the
+ * one thing it cannot tell apart — the customer happening to send the very
+ * same words in the same few seconds — would take a coincidence to produce and
+ * costs a false "delivered" rather than a false failure.
+ */
+export function countMessagesWithText(html: string, text: string): number {
+  const root = parseHtml(html);
+  const container = queryFirst(root, BIZ_THREAD.messageList) ?? root;
+  const wanted = text.trim();
+  let count = 0;
+  for (const row of queryAll(container, BIZ_THREAD.row)) {
+    if (textOf(row).trim() === wanted) count += 1;
+  }
+  return count;
+}

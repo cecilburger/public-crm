@@ -40,7 +40,7 @@ export interface FbMessageEvent {
     /**
      * Facebook's own message id (`mid.$...`) when the DOM exposes one, else
      * null. When it is present the CRM keys idempotency on it directly; when it
-     * is not, the CRM falls back to a composite of thread + sender + `sentAt` +
+     * is not, the CRM falls back to a composite of thread + sender + `seq` +
      * a hash of the text. Text alone is never an identity: a customer sending
      * "halo" twice is two messages, not one.
      */
@@ -50,16 +50,19 @@ export interface FbMessageEvent {
     senderId: string;
     senderName: string;
     text: string;
-    /**
-     * ISO-8601, from Facebook's own `data-utime` on the row.
-     *
-     * Required whenever `externalMessageId` is null, because it is then the
-     * only thing keeping two identical texts apart — the watcher refuses to
-     * emit a message that has neither. Null is therefore only possible
-     * alongside a real `mid.$...`, which is already an identity on its own.
-     */
+    /** ISO-8601, or null when the DOM did not expose a timestamp. */
     sentAt: string | null;
     direction: Direction;
+    /**
+     * A per-thread counter that only ever goes up, assigned once at the moment
+     * a message is first recognised as new — NOT its index in the DOM.
+     * `apps/ig-bridge` learned this the hard way: Facebook's rendered message
+     * window does not cover the same slice of history on every read, so a
+     * DOM-position index makes already-ingested messages resurface as new.
+     * This is only ever handed out once per genuinely new message, which is
+     * what makes the composite id above stable.
+     */
+    seq: number;
   };
 }
 
@@ -112,25 +115,9 @@ export type FbBridgeEvent = FbMessageEvent | FbCommentEvent | FbSessionErrorEven
  * this function for exactly that reason — it does not import this file — so any
  * change here has to be made in `apps/worker/src/processors/facebookInbound.ts`
  * too, and the test suite asserts the two agree.
- *
- * WHY `sentAt` AND NOT A COUNTER. This used to interpolate a per-thread
- * sequence number the watcher handed out in memory. A counter is not a
- * property of the message — it is a property of the process that saw it — so
- * it restarted at zero every time the bridge did, and `tsx watch` restarts on
- * every save. After a restart a customer's new "halo" got seq 0 again and
- * hashed to exactly what their first "halo" had hashed to, whereupon the spool
- * discarded it as a redelivery and the message was never seen by anyone. That
- * is the same failure `apps/ig-bridge` shipped with its unpersisted
- * `.thread-sequences.json`, and persisting this one would only have moved the
- * problem onto a file that can be lost or copied between machines.
- *
- * `sentAt` belongs to the message: Facebook's own `data-utime`, the same value
- * on every read, on every restart, and from either transport. The residual
- * collision is two identical texts in one thread within the same second with
- * no `mid.$...` on either — which is what the `mid` branch above exists for.
  */
 export function compositeMessageKey(args: {
-  tenantId: string; threadId: string; senderId: string; sentAt: string; text: string;
+  tenantId: string; threadId: string; senderId: string; seq: number; text: string;
 }): string {
-  return `fb_dm:${args.tenantId}:${args.threadId}:${args.senderId}:${args.sentAt}:${args.text}`;
+  return `fb_dm:${args.tenantId}:${args.threadId}:${args.senderId}:${args.seq}:${args.text}`;
 }

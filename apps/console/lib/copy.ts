@@ -565,17 +565,21 @@ export const t = {
   facebookBridge: {
     title: 'Facebook',
     sectionTitle: 'Facebook Messenger & Komentar (Tidak Resmi)',
-    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Pesan Messenger bisa dibaca dan dibalas dari sini; komentar Halaman hanya tercatat.',
-    inboundOnly: 'Balasan Messenger dikirim lewat bridge ini. Komentar Halaman hanya tercatat — balasan komentar dan chatbot belum tersedia untuk Facebook.',
+    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Hanya menerima pesan masuk — tidak bisa membalas dari sini.',
+    inboundOnly: 'Pesan masuk dan balasan sudah jalan, termasuk balasan publik ke komentar. Pemindahan ke WhatsApp dan chatbot belum tersedia untuk Facebook.',
+    replyUnavailable: 'Balasan Facebook belum tersedia. Pesan masuk tetap tercatat di sini, tapi jawabannya harus dikirim lewat Facebook langsung untuk sekarang.',
     pageId: 'ID Halaman',
     pageIdPlaceholder: 'mis. 61594393176093',
     pageIdHint: 'Angka di URL Halaman Anda. Buka Halaman di Facebook, lihat bagian profile.php?id=… atau Pengaturan Halaman.',
     pageName: 'Nama Halaman',
     pageNamePlaceholder: 'mis. Red Panda Test',
     pageNameHint: 'Harus persis sama dengan yang Facebook tampilkan. Nama ini yang dipakai untuk membedakan balasan Anda sendiri dari pesan pelanggan.',
-    assetId: 'Asset ID Business Suite',
+    assetId: 'ID aset Business Suite',
     assetIdPlaceholder: 'mis. 1225922357281590',
-    assetIdHint: 'Isi ini kalau yang dihubungkan Halaman bisnis — pesannya ada di Meta Business Suite, bukan di Messenger biasa. Buka business.facebook.com/latest/inbox, lihat angka setelah asset_id= di URL. Angkanya BERBEDA dari ID Halaman. Kosongkan kalau yang dihubungkan akun pribadi.',
+    /** The one hint on this form that has to say "not that number": the two
+     * ids look alike, the wrong one produces a Business Suite page that loads
+     * fine and holds nobody's conversations, and nothing errors. */
+    assetIdHint: 'Angka asset_id di URL business.facebook.com/latest/inbox/…?asset_id=… — ini BUKAN ID Halaman. Isi untuk Halaman yang inbox-nya ada di Business Suite; kosongkan kalau yang dibaca inbox pribadi.',
     assetIdInvalid: 'Asset ID harus berupa angka saja, minimal 6 digit. Salin persis dari asset_id= di URL Business Suite.',
     surfaceBusinessSuite: (assetId: string) => `Pesan dibaca dari Meta Business Suite (asset ${assetId}).`,
     surfaceMessenger: 'Pesan dibaca dari Messenger biasa (akun pribadi). Kalau ini sebenarnya Halaman bisnis, putuskan lalu hubungkan ulang sambil mengisi Asset ID — kalau tidak, pesan pelanggan tidak akan terbaca sama sekali.',
@@ -755,6 +759,87 @@ export const t = {
     // REPLY_KOMENTAR_PUBLIK di trained-cb — kalau nanti endpoint komentar di
     // sana sudah ada, draft-nya diambil dari situ, bukan dari sini.
     draftPublicReply: 'Halo Kak, terima kasih sudah mampir 🙏 Info lengkapnya sudah kami kirim lewat DM ya',
+  },
+
+  /** The unified inbox: one list for DMs and public comments across platforms. */
+  inbox: {
+    channelAll: 'Semua kanal',
+    channelWhatsapp: 'WhatsApp',
+    channelFacebookDm: 'Facebook DM',
+    channelInstagramDm: 'Instagram DM',
+    channelFacebookComment: 'Komentar Facebook',
+    channelInstagramComment: 'Komentar Instagram',
+    /** Said in the list itself, not hidden in a tooltip: a filter that is empty
+     * because the feature has not landed reads exactly like one that is empty
+     * because nobody commented, and an agent would sit waiting for messages
+     * that were never going to arrive. */
+    instagramCommentsNotReady: 'Komentar Instagram belum terhubung di versi ini.',
+    /**
+     * Shown only when the request actually failed — never when it succeeded
+     * and the answer was genuinely an empty list.
+     *
+     * Without this the two are indistinguishable, and the wrong one is the
+     * dangerous one: an agent reads an empty list as "nobody commented" and
+     * stops looking, while real customers sit unanswered behind a broken
+     * endpoint. Confirmed live during review — 67 failed requests produced a
+     * calm, empty, entirely convincing inbox.
+     */
+    commentsUnavailable: 'Komentar Facebook sementara tidak dapat dimuat.',
+
+    commentBadge: 'Komentar',
+    commentOn: 'Komentar di postingan',
+    commenter: 'Pengomentar',
+    commentBody: 'Isi komentar',
+    postContext: 'Postingan',
+    openOnFacebook: 'Buka di Facebook',
+    pickOne: 'Pilih satu item di kiri',
+    pickOneHelp: 'DM dan komentar tampil bersama, yang paling baru di atas.',
+
+    replyPublic: 'Balas publik',
+    sendDm: 'Kirim DM',
+    replyPublicLabel: 'Balasan publik di postingan',
+    dmLabel: 'Pesan pribadi ke pengomentar',
+    /** What an agent starts from, editable before sending. The same default
+     * the automatic sweep uses (FB_COMMENT_AUTO_REPLY_TEXT), so a reply sent
+     * by hand and one sent by the sweep read the same on the post. */
+    replyPublicDefault: 'Check DM ya kak!!!',
+    /** Says who is writing and why before anything else — a Page's first
+     * private message to a stranger reads as spam otherwise. */
+    dmDefault: 'Halo kak, terima kasih sudah komentar. Ada yang bisa kami bantu? Balas di sini ya.',
+    /** "Antrean", never "terkirim": a 202 means a job exists. The bridge still
+     * has to type it into a real browser, and the status chip above is the
+     * only thing that says whether the customer was actually answered. */
+    replyQueued: 'Balasan publik masuk antrean. Status di atas diperbarui otomatis.',
+    dmQueued: 'DM masuk antrean. Status di atas diperbarui otomatis.',
+    processing: 'Sedang dikerjakan oleh sistem — tunggu sebentar.',
+    replyPublicDone: 'Komentar ini sudah dibalas publik.',
+    dmDone: 'DM ke pengomentar ini sudah terkirim.',
+    dmNeedsReply: 'Balas publik dulu; DM baru bisa dikirim setelah balasan publik masuk.',
+    replyFailed: 'Balasan publik gagal masuk antrean.',
+    dmFailed: 'DM gagal masuk antrean.',
+    emptyText: 'Isi pesannya dulu.',
+    sending: 'Mengirim…',
+    /** Fallback only. Nothing renders this any more — the actions are live in
+     * `CommentActions` — but the key stays so anything that still reads it
+     * gets a sentence rather than `undefined`. */
+    actionsDisabled: 'Belum tersedia — backend balasan komentar belum diaktifkan.',
+
+    commentStatuses: {
+      new: 'Baru',
+      public_reply_pending: 'Balasan publik diproses',
+      public_replied: 'Sudah dibalas publik',
+      dm_pending: 'DM diproses',
+      dm_sent: 'DM terkirim',
+      failed: 'Gagal',
+    } as Record<string, string>,
+    publicReplyAt: 'Dibalas publik',
+    dmAt: 'DM terkirim',
+    attempts: 'Percobaan',
+    /** Named per step, because they fail independently and are stored
+     * independently: an agent needs to see WHICH step did not happen. */
+    publicReplyError: 'Balasan publik gagal',
+    dmError: 'DM gagal',
+    notFound: 'Komentar ini tidak ditemukan.',
   },
 
   chatIg: {

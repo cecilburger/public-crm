@@ -126,6 +126,19 @@ const schema = z.object({
   FB_COMMENT_MAX_ATTEMPTS: z.coerce.number().int().default(3),
 
   /**
+   * What the sweep says — in public under the comment, then in private to the
+   * commenter — when it acts on a comment by itself. Only the automatic path
+   * reads these; an agent replying from the console types their own words.
+   *
+   * Plain strings, checked for nothing but being non-empty: the copy is the
+   * operator's call, and a clumsy sentence is a far smaller risk than the
+   * automated action carrying it.
+   */
+  FB_COMMENT_AUTO_REPLY_TEXT: z.string().min(1).default('Check DM ya kak!!!'),
+  FB_COMMENT_AUTO_DM_TEXT: z.string().min(1)
+    .default('Halo kak, ini dari Red Panda Test — boleh kami bantu lewat DM ya.'),
+
+  /**
    * How far back a reconnecting bridge reads a Messenger thread before giving
    * up on finding history it already has.
    *

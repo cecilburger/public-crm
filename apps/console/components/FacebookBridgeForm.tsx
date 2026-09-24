@@ -34,9 +34,10 @@ const AWAITING_POLL_MS = 5_000;
  * Unofficial by construction (see `apps/fb-bridge`), so the warning lives on
  * the page rather than only in a chat transcript.
  *
- * One thing this deliberately does not have: a password field. No Facebook
- * credential ever reaches the CRM — the operator logs in themselves in a
- * window the bridge opens on the machine running it.
+ * Two things this deliberately does not have: a password field, and a way to
+ * send anything. No Facebook credential ever reaches the CRM — the operator
+ * logs in themselves in a window the bridge opens — and the bridge is inbound
+ * only, so there is no reply box to offer.
  */
 export function FacebookBridgeForm({ connection }: { connection: FbBridgeConnection }) {
   const router = useRouter();
@@ -90,14 +91,6 @@ export function FacebookBridgeForm({ connection }: { connection: FbBridgeConnect
             <p style={{ margin: 0, fontWeight: 600, color: 'var(--good)' }}>
               {t.facebookBridge.connectedAs(connection.pageName ?? connection.pageId ?? '')}
             </p>
-            {/* Which surface this connection actually reads. Worth saying out
-                loud on a working connection: a Page connected without an asset
-                id sweeps the wrong inbox and reports no error for it. */}
-            <p className="record-hint" style={{ margin: 0 }}>
-              {connection.assetId
-                ? t.facebookBridge.surfaceBusinessSuite(connection.assetId)
-                : t.facebookBridge.surfaceMessenger}
-            </p>
             <p className="record-hint" style={{ margin: 0 }}>{t.facebookBridge.inboundOnly}</p>
             <form action={disconnectAction}>
               <CsrfField />
@@ -134,14 +127,10 @@ export function FacebookBridgeForm({ connection }: { connection: FbBridgeConnect
                      placeholder={t.facebookBridge.pageNamePlaceholder} />
               <p className="record-hint" style={{ margin: 0 }}>{t.facebookBridge.pageNameHint}</p>
             </div>
-            {/* Optional, and an empty box is a real answer: no asset id means a
-                personal account, which the bridge reads from messenger.com
-                instead. A business Page left blank here connects to an inbox
-                that loads fine and holds none of its conversations. */}
             <div className="record-field">
               <label htmlFor="fb-asset-id">{t.facebookBridge.assetId}</label>
               <input className="line-input" id="fb-asset-id" name="assetId" autoComplete="off"
-                     inputMode="numeric" pattern="\d*"
+                     inputMode="numeric" pattern="[0-9]*"
                      defaultValue={connection.assetId ?? ''}
                      placeholder={t.facebookBridge.assetIdPlaceholder} />
               <p className="record-hint" style={{ margin: 0 }}>{t.facebookBridge.assetIdHint}</p>

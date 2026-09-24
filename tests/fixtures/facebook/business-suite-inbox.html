@@ -1,0 +1,57 @@
+<!--
+  The Meta Business Suite conversation list.
+
+  STRUCTURE REAL, VALUES INVENTED. Read off the live site: each conversation is
+  a `data-surface` wrapper ending in `thread_rowN`, holding a `thread_title`
+  surface with the display name, a preview line and a time. Rows carry NO id
+  and NO href — the id exists only in the channel-selector links once a row is
+  selected, which is why the parser returns none.
+
+  The `a[role="row"]` grid inside each row is the invisible hover-action bar
+  ("Move to Done", "Mark as Follow up"). It is here because a parser that
+  matched `[role="row"]` would read those as conversations, and a clicker that
+  hit them would archive a customer.
+
+  Names, previews and times are synthetic. No real person's row is copied.
+-->
+<span data-surface-wrapper="1" data-surface="/bizweb:inbox/bizweb:INBOX/lib:bizweb_inbox:main_content/lib:bizweb_inbox:content_layout/lib:inbox:thread_and_detail/bizweb_inbox:thread_list">
+  <div>
+    <div>
+      <div role="presentation">
+        <span data-surface-wrapper="1" data-surface="/bizweb:inbox/bizweb:INBOX/lib:bizweb_inbox:main_content/lib:bizweb_inbox:content_layout/lib:inbox:thread_and_detail/bizweb_inbox:thread_list/thread_row0">
+          <div>
+            <div>
+              <span data-surface-wrapper="1" data-surface="/bizweb:inbox/bizweb:INBOX/lib:bizweb_inbox:main_content/lib:bizweb_inbox:content_layout/lib:inbox:thread_and_detail/bizweb_inbox:thread_list/thread_row0/lib:thread_title">
+                <div>Sinta Dewi</div>
+              </span>
+              <div>mau tanya harga</div>
+              <div>Today 11:09</div>
+            </div>
+            <div role="grid">
+              <div><a role="row" href="#"><div role="gridcell" aria-label="Move to Done"></div></a></div>
+              <div><a role="row" href="#"><div role="gridcell" aria-label="Mark as Follow up"></div></a></div>
+            </div>
+          </div>
+        </span>
+      </div>
+
+      <div role="presentation">
+        <span data-surface-wrapper="1" data-surface="/bizweb:inbox/bizweb:INBOX/lib:bizweb_inbox:main_content/lib:bizweb_inbox:content_layout/lib:inbox:thread_and_detail/bizweb_inbox:thread_list/thread_row1">
+          <div>
+            <div>
+              <span data-surface-wrapper="1" data-surface="/bizweb:inbox/bizweb:INBOX/lib:bizweb_inbox:main_content/lib:bizweb_inbox:content_layout/lib:inbox:thread_and_detail/bizweb_inbox:thread_list/thread_row1/lib:thread_title">
+                <div>Rudi Hartono</div>
+              </span>
+              <div>You: hai</div>
+              <div>Tuesday</div>
+            </div>
+            <div role="grid">
+              <div><a role="row" href="#"><div role="gridcell" aria-label="Move to Done"></div></a></div>
+              <div><a role="row" href="#"><div role="gridcell" aria-label="Mark as Follow up"></div></a></div>
+            </div>
+          </div>
+        </span>
+      </div>
+    </div>
+  </div>
+</span>

@@ -1,13 +1,22 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import puppeteer from 'puppeteer';
+import { DEBUG, trace } from './debug.ts';
 import type { Browser, Page } from 'puppeteer';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import {
-  CHECKPOINT_TEXT_RE, CHECKPOINT_URL_MARKERS, COMPOSER, LOGGED_OUT_TEXT_RE, LOGGED_OUT_URL_MARKERS,
-  THREAD, URLS,
+  BIZ_COMPOSER, BIZ_THREAD, CHECKPOINT_TEXT_RE, CHECKPOINT_URL_MARKERS, COMMENT_ACTIONS, COMPOSER,
+  LOGGED_OUT_TEXT_RE, LOGGED_OUT_URL_MARKERS, PROFILE_ID_RE, THREAD, URLS,
 } from './selectors.ts';
+import {
+  assertBusinessSuiteThreadSurface, assertPrivateMessageSurface, fireClick, fireCommentControl, focusComposer,
+  hasCommentControl, hasPrivateComposer,
+  listButtonLabels, readCommentHtml, readComposerText, readContainerHtml, readPostSurfaceHtml,
+} from './pageHtml.ts';
+import { countOwnCommentReplies, parseFacebookComments } from './parsers/comments.ts';
+import { countMessagesWithText } from './parsers/businessSuiteThread.ts';
+import { firstHrefMatch, parseHtml } from './parsers/dom.ts';
 import { businessSuiteTransport } from './transport/businessSuite.ts';
 import { messengerDotComTransport } from './transport/messengerDotCom.ts';
 import type { TransportContext } from './transport/types.ts';
@@ -22,6 +31,18 @@ puppeteerExtra.use(StealthPlugin());
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Polls a condition until it holds or the budget runs out. Facebook renders a
+ * post's comments well after `domcontentloaded`, and a fixed sleep either wastes
+ * seconds or lands early. */
+async function waitFor(check: () => Promise<boolean>, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (await check()) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(500);
+  }
+}
+
 /** Watching runs headless by default; the login window never does, because a
  * human has to see it. */
 const HEADLESS = process.env.FB_BRIDGE_HEADLESS !== 'false';
@@ -34,6 +55,11 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
  * away the work and, worse, look to Facebook like a second login attempt. */
 const LOGIN_WINDOW_TIMEOUT_MS = 15 * 60_000;
 const LOGIN_POLL_INTERVAL_MS = 3_000;
+
+/** How often a public reply's own comment is re-read while waiting to see it
+ * land — a plain in-place read, never a reload, so a 60s window costs no more
+ * than a handful of DOM reads. */
+const COMMENT_CONFIRM_POLL_MS = 1_000;
 
 /** The persisted session is gone — the operator has to log in again. */
 export class SessionExpiredError extends Error {}
@@ -66,6 +92,32 @@ export class SenderNotImplementedError extends Error {}
 export class ThreadRequiresAcceptanceError extends Error {}
 /** Typed into the composer, but never seen arriving in the transcript. */
 export class SendNotConfirmedError extends Error {}
+
+/**
+ * A comment action whose DOM path has not been verified against the live site
+ * yet. Answered as 501 so the CRM fails the job with a readable reason instead
+ * of retrying into a capability that does not exist. The same stance
+ * `sendMessage` took before its composer was probed — and it disappears the
+ * same way, by the action landing rather than by anything upstream changing.
+ */
+export class CommentActionNotImplementedError extends Error {}
+/** The comment could not be found on the post — deleted, hidden, or the post
+ * is not the Page's. Permanent. */
+export class CommentNotFoundError extends Error {}
+/** Facebook offers no such action for this comment or this person: no reply
+ * box, or no private-message affordance. Permanent, and carries the code the
+ * CRM records verbatim. */
+export class CommentActionUnavailableError extends Error {
+  constructor(message: string, public readonly code: 'reply_unavailable' | 'private_reply_unavailable') {
+    super(message);
+  }
+}
+
+export interface CommentTarget {
+  postId: string;
+  commentId: string;
+  text: string;
+}
 
 export type SessionStatus = 'disconnected' | 'awaiting_login' | 'ready' | 'checkpoint_required' | 'error';
 
@@ -260,6 +312,27 @@ export class SessionManager {
       headless,
       userDataDir: this.profileDir(tenantId),
       defaultViewport: headless ? { width: 1400, height: 1000 } : null,
+      // Puppeteer's default is three minutes, which is not a timeout so much as
+      // a hang. Confirmed live: one wedged in-page call held a comment action
+      // for 188 seconds before failing, long past every budget this file sets
+      // and long enough for the queue to look stuck. Sixty seconds is still far
+      // above any healthy call here.
+      protocolTimeout: 60_000,
+      // A second Chromium beside the operator's own browser and a local dev
+      // stack is enough to run a laptop out of memory — confirmed live, when
+      // orphaned instances from earlier restarts accumulated and the kernel
+      // killed this service mid-request with nothing in the log. These are the
+      // flags that matter for a headless scraper: no GPU process, no shared
+      // memory file that macOS sizes badly under Docker-less Chrome, and no
+      // background timer throttling (the watcher's observer must keep firing
+      // in a tab nobody is looking at).
+      args: [
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+      ],
     }) as unknown as Browser;
   }
 
@@ -443,8 +516,15 @@ export class SessionManager {
     // real site. Polling until there is text to judge is what makes the
     // distinction meaningful: "no text yet" is a page still loading, while "no
     // text after several seconds" is a page we genuinely cannot read.
+    // 25 seconds, not 8. Measured headless against Business Suite: DOMContent-
+    // Loaded fires at ~3.6s and the first text appears at ~6s on a warm, single
+    // tab. At boot the message watcher and the comment watcher navigate at the
+    // same moment on a cold browser, and 8s tripped this on both of them — the
+    // bridge came up, logged "belum bisa dibaca" twice, and read nothing until
+    // the next reconciliation ten minutes later. A page still blank after 25s
+    // is genuinely unreadable; one blank at 8s was usually just late.
     let body: string | null = null;
-    const deadline = Date.now() + 8_000;
+    const deadline = Date.now() + 25_000;
     while (Date.now() < deadline) {
       body = await page.evaluate(
         '(document.body && document.body.innerText ? document.body.innerText : "").slice(0, 1500)',
@@ -542,9 +622,34 @@ export class SessionManager {
       // was sent at all.
       const selfName = ctx.pageName;
       const readTranscript = async () => (await transport.readTranscriptHtml(page)) ?? '';
+      const settled = await settleSurface(
+        page, async () => (await transport.readSurfaceHtml(page)) ?? '', SURFACE_BUDGET_MS,
+      );
+      trace('send', () => `surface ${settled ? 'settled' : 'still moving'} at ${page.url().slice(0, 80)}`);
+      if (!settled) {
+        throw new SendNotConfirmedError(
+          'Percakapan Facebook masih berubah — pesan tidak diketik agar tidak terkirim ke percakapan lain',
+        );
+      }
+      if (transport.kind === 'business_suite') {
+        const correctThread = await assertBusinessSuiteThreadSurface(page, threadId);
+        if (!correctThread) {
+          throw new SendNotConfirmedError(
+            'Business Suite tidak membuktikan percakapan Messenger tujuan yang benar — pesan tidak diketik',
+          );
+        }
+      }
       const before = transport.countOwn(await readTranscript(), { text, selfName });
 
-      await page.click(composer);
+      const focused = await withDeadline(focusComposer(page, transport.composerSelectors), transport.composerWaitMs, 'membuka kotak pesan');
+      if (!focused) {
+        throw new SendNotConfirmedError('Kotak pesan Facebook tidak dapat difokuskan — pesan tidak diketik');
+      }
+      if (transport.kind === 'business_suite' && !(await assertBusinessSuiteThreadSurface(page, threadId))) {
+        throw new SendNotConfirmedError(
+          'Business Suite mengubah percakapan sebelum pesan diisi — pesan tidak diketik',
+        );
+      }
       // `page.type()` would be the obvious call and it does not work here. The
       // composer is a Lexical editor (`data-lexical-editor="true"`, confirmed
       // live), and Lexical builds its own state from `beforeinput` events, so a
@@ -554,18 +659,23 @@ export class SessionManager {
       // `Input.insertText` — the primitive a real paste uses — which Lexical
       // does register. Despite the name it takes the whole string.
       await page.keyboard.sendCharacter(text);
+      if (transport.kind === 'business_suite' && !(await assertBusinessSuiteThreadSurface(page, threadId))) {
+        throw new SendNotConfirmedError(
+          'Business Suite mengubah percakapan sebelum pengiriman — pesan tidak dikirim',
+        );
+      }
       // There is no Send button to click. Beside the composer the live page
       // offers only attachment, sticker, GIF, emoji and Like; the send control
       // appears only once text is present. Enter is how the message goes.
       await page.keyboard.press('Enter');
 
-      const deadline = Date.now() + transport.confirmMs;
-      while (Date.now() < deadline) {
-        if (transport.countOwn(await readTranscript(), { text, selfName }) > before) return;
-        await sleep(500);
-      }
+      const stayed = await deliveredAndStayed(
+        async () => transport.countOwn(await readTranscript(), { text, selfName }),
+        before, Date.now() + transport.confirmMs,
+      );
+      if (stayed) return;
       throw new SendNotConfirmedError(
-        'Pesan sudah diketik tapi tidak muncul sebagai pesan terkirim di percakapan — '
+        'Pesan sudah diketik tapi tidak bertahan sebagai pesan terkirim di percakapan — '
         + 'kemungkinan ditolak diam-diam oleh Facebook',
       );
     } catch (err) {
@@ -575,6 +685,309 @@ export class SessionManager {
       throw err;
     } finally {
       await page.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Public reply to a comment on the Page's post.
+   *
+   * NOT YET DRIVEN. The comment-reply composer has not been probed against the
+   * live site, and every selector here is verified or absent — never guessed.
+   * Throwing the typed 501 keeps the whole CRM chain honest in the meantime:
+   * the worker records "not available yet" on the comment, in words an agent
+   * can read, instead of a reply that sits queued looking sent.
+   */
+  async replyToComment(tenantId: string, target: CommentTarget): Promise<void> {
+    const marker = await this.getPageMarker(tenantId);
+    if (!marker) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+    const page = await this.newPage(tenantId);
+    if (!page) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+
+    const t0 = Date.now();
+    const mark = (step: string) => trace('reply', `${step} +${Date.now() - t0}ms`);
+    // Narrow, for finding THIS comment and its own controls — correct there,
+    // and left alone: `hasCommentControl` must not confuse this comment's
+    // "Reply" button with a reply's own "Reply" button one level down.
+    const readComment = async () => (await readCommentHtml(page, target.commentId)) ?? '';
+    // WIDE, for proving our own reply exists at all. Confirmed live: a reply
+    // to a comment is NOT rendered as a descendant of that comment's own
+    // `div[role="article"]` on the single-comment permalink view this
+    // function navigates to — it lands as a SIBLING in the post's surface.
+    // `readComment()`'s own scope therefore has zero nested articles no
+    // matter how long a reply is waited for, and no timeout, however
+    // generous, was ever going to fix a search that could not see the answer.
+    // The post surface is the same reader the comment sweep already trusts to
+    // find replies correctly.
+    const readForConfirmation = async () => (await readPostSurfaceHtml(page, target.postId)) ?? '';
+    try {
+      await page.goto(URLS.postPermalink(marker.pageId, target.postId, target.commentId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      mark('goto-post');
+      await this.assertUsable(page);
+      mark('post-usable');
+      const found = await waitFor(async () => (await readCommentHtml(page, target.commentId)) !== null,
+        COMMENT_ACTIONS.waitMs);
+      mark(`find-comment (found=${found})`);
+      if (!found) {
+        throw new CommentNotFoundError('Komentar ini tidak ditemukan di postingan Halaman — mungkin sudah dihapus atau disembunyikan');
+      }
+
+      // Counted before, for the same reason as `sendMessage`: a reply is often
+      // the same words as one already there, and "our text is on the post"
+      // would report success off a reply from last week.
+      const before = countOwnCommentReplies(await readForConfirmation(), { pageName: marker.pageName, text: target.text });
+      mark(`baseline (before=${before})`);
+
+      const opened = await hasCommentControl(page, target.commentId, COMMENT_ACTIONS.replyButtonRe);
+      mark(`reply-control (opened=${opened})`);
+      // Fired, not awaited — see `fireCommentControl`. The editor appearing is
+      // the evidence the click landed.
+      if (opened) fireCommentControl(page, target.commentId, COMMENT_ACTIONS.replyButtonRe);
+      if (!opened) {
+        throw new CommentActionUnavailableError('Facebook tidak menampilkan tombol Balas pada komentar ini', 'reply_unavailable');
+      }
+      const editor = COMMENT_ACTIONS.replyEditor.join(', ');
+      const hasEditor = await page.waitForSelector(editor, { timeout: COMMENT_ACTIONS.waitMs })
+        .then(() => true).catch(() => false);
+      mark(`editor-visible (${hasEditor})`);
+      if (!hasEditor) {
+        throw new CommentActionUnavailableError('Kotak balasan komentar tidak muncul setelah tombol Balas ditekan', 'reply_unavailable');
+      }
+
+      // Lexical, exactly as the Messenger composers: `page.type()` never
+      // registers, one CDP insertText does, and Enter is the send.
+      await page.click(editor);
+      await page.keyboard.sendCharacter(target.text);
+      const typedNow = await readComposerText(page, [editor]);
+      mark(`typed (kotak berisi ${JSON.stringify((typedNow ?? '').slice(0, 60))})`);
+      if (DEBUG) {
+        const around = await page.evaluate(`(function(){
+          var el = document.querySelector(${JSON.stringify(editor)});
+          if (!el) return null;
+          var wrap = el.closest('form') || el.parentElement || el;
+          return (wrap.outerHTML || '').replace(/\\s+/g, ' ').slice(0, 1200);
+        })()`).catch(() => null) as string | null;
+        trace('reply', `dom-around-editor: ${around}`);
+        trace('reply', `controls: ${(await listButtonLabels(page)).join(' | ')}`);
+      }
+      await page.keyboard.press('Enter');
+      mark('pressed-enter');
+
+      // Enter is pressed EXACTLY ONCE, above. Everything from here on is
+      // read-only polling of the comment we already asked Facebook to reply
+      // to — never a second click, never a second keystroke. A confirmation
+      // that timed out is therefore never "typed twice"; at worst it is typed
+      // once and reported wrong, which is what the rest of this function
+      // exists to make as unlikely as it can be.
+      const confirmed = await confirmReplyWithFinalRecheck(
+        async () => countOwnCommentReplies(await readForConfirmation(), { pageName: marker.pageName, text: target.text }) > before,
+        { budgetMs: COMMENT_ACTIONS.publicReplyConfirmMs, pollMs: COMMENT_CONFIRM_POLL_MS },
+      );
+      if (confirmed === 'settled') { mark('confirmed'); return; }
+      if (confirmed === 'final-recheck') { mark('confirmed on final recheck'); return; }
+      mark(`not-confirmed after final recheck (last html len=${(await readForConfirmation()).length})`);
+      throw new SendNotConfirmedError(
+        'Balasan sudah diketik tapi tidak muncul di bawah komentar setelah 60 detik — '
+        + 'kemungkinan ditolak diam-diam oleh Facebook',
+      );
+    } catch (err) {
+      if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
+        this.forgetSession(tenantId, (err as Error).message);
+      }
+      throw err;
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Private Messenger message to a commenter, through the comment's own
+   * "Send message" control.
+   *
+   * Confirmation does not come from the dialog — Facebook closes it whether or
+   * not the message went. It comes from the commenter's Messenger thread, read
+   * through the same transport and the same own-bubble count that confirms an
+   * ordinary reply. The thread id is the commenter's profile id, which on the
+   * Page's inbox is exactly what `selected_item_id` carries for a Messenger
+   * conversation — confirmed live against a known contact.
+   */
+  async privateReplyToComment(tenantId: string, target: CommentTarget): Promise<{ threadId: string }> {
+    const marker = await this.getPageMarker(tenantId);
+    if (!marker) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+    const ctx: TransportContext = { pageName: marker.pageName, assetId: marker.assetId ?? null };
+    const transport = ctx.assetId ? businessSuiteTransport : messengerDotComTransport;
+
+    const t0 = Date.now();
+    // Off unless asked for. These marks are what localised the hang that three
+    // rounds of guessing could not — the click, not the navigation — so they
+    // stay, behind a switch, rather than being deleted and rewritten the next
+    // time Facebook moves something.
+    const mark = (step: string) => {
+      trace('private-reply', `${step} +${Date.now() - t0}ms`);
+    };
+    const postPage = await this.newPage(tenantId);
+    if (!postPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+    let threadPage: Page | null = null;
+
+    try {
+      await postPage.goto(URLS.postPermalink(marker.pageId, target.postId, target.commentId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      mark('goto-post');
+      await this.assertUsable(postPage);
+      mark('post-usable');
+      const found = await waitFor(async () => (await readCommentHtml(postPage, target.commentId)) !== null,
+        COMMENT_ACTIONS.waitMs);
+      mark('find-comment');
+      if (!found) {
+        throw new CommentNotFoundError('Komentar ini tidak ditemukan di postingan Halaman — mungkin sudah dihapus atau disembunyikan');
+      }
+
+      const commentHtml = (await readCommentHtml(postPage, target.commentId)) ?? '';
+      const threadId = firstHrefMatch(parseHtml(commentHtml), PROFILE_ID_RE);
+      if (!threadId) {
+        throw new CommentActionUnavailableError('Pengomentar tidak bisa dikenali — tidak ada tautan profil pada komentar', 'private_reply_unavailable');
+      }
+      const contactName = parseFacebookComments(commentHtml, { defaultPostId: target.postId }).comments
+        .find((comment) => comment.commentId === target.commentId)?.authorName.trim() ?? '';
+      if (!contactName) {
+        throw new CommentActionUnavailableError(
+          'Nama pengomentar tidak terbaca — tujuan pesan pribadi tidak dapat dipastikan', 'private_reply_unavailable',
+        );
+      }
+      const expectedSurface = { contactId: threadId, contactName };
+
+      // The thread is opened BEFORE the send so the baseline count is taken
+      // against the same page the confirmation will read.
+      threadPage = await this.newPage(tenantId);
+      mark('open-thread');
+      if (!threadPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+      await threadPage.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      mark('goto-thread');
+      await this.assertUsable(threadPage);
+      mark('thread-usable');
+      await threadPage.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
+      // The PLAIN read, not the annotating one. Confirming delivery does not
+      // need to know which side each bubble is on — the count is a delta on
+      // text this service just sent — and the annotating read walks every
+      // message's ancestors calling getComputedStyle, which is where a live
+      // run wedged past the protocol timeout.
+      const readThread = async () => (await readContainerHtml(threadPage!, BIZ_THREAD.messageList)) ?? '';
+      await settleSurface(threadPage, readThread, SURFACE_BUDGET_MS);
+      const before = countMessagesWithText(await readThread(), target.text);
+      mark('baseline');
+
+      const opened = await hasCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe);
+      if (!opened) {
+        throw new CommentActionUnavailableError('Facebook tidak menyediakan pesan pribadi untuk komentar ini', 'private_reply_unavailable');
+      }
+
+      // Everything the browser had before the click, so a page that merely
+      // navigated into the messaging surface can be told from one that was
+      // already showing a composer.
+      const browser = await this.ensureBrowser(tenantId);
+      if (!browser) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
+      const known = new Set(await browser.pages().catch(() => [] as Page[]));
+
+      // Fired, not awaited: this click tears down the clicked page's execution
+      // context as the messaging surface opens, and awaiting it hung until the
+      // protocol timeout. A composer appearing SOMEWHERE is the evidence.
+      fireCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe);
+      mark('click-send-message');
+
+      const surface = await resolvePrivateReplySurface(browser, known, COMMENT_ACTIONS.waitMs);
+      if (!surface) {
+        throw new CommentActionUnavailableError(
+          'Facebook tidak membuka kotak pesan pribadi untuk komentar ini', 'private_reply_unavailable',
+        );
+      }
+      mark(`composer-found on ${surface.url().slice(0, 80)}`);
+
+      // This assertion is the safety boundary. A post permalink is a dialog
+      // too, and its public Reply editor is a Lexical textbox too. Neither
+      // fact licenses typing. The exact customer plus a private composer and
+      // send mechanism have to be present in the same DOM observation first.
+      const privateSurface = await withDeadline(
+        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan tujuan pesan pribadi',
+      );
+      if (!privateSurface) {
+        throw new CommentActionUnavailableError(
+          'Facebook tidak dapat membuktikan bahwa kotak ini pesan pribadi untuk pengomentar yang benar — tidak ada yang diketik',
+          'private_reply_unavailable',
+        );
+      }
+      const editor = privateSurface === 'dialog' ? COMMENT_ACTIONS.messageEditor : BIZ_COMPOSER.box;
+      const focused = await withDeadline(focusComposer(surface, editor), COMMENT_ACTIONS.waitMs, 'membuka kotak pesan');
+      if (!focused) {
+        throw new CommentActionUnavailableError(
+          'Kotak pesan pribadinya tidak bisa diketik — Facebook menutupnya sebelum sempat diisi',
+          'private_reply_unavailable',
+        );
+      }
+      mark('focused-editor');
+
+      // The focus call can land after a SPA rerender. Re-prove the destination
+      // immediately before CDP inserts text; if it changed, leaving an empty
+      // composer behind is safe while one character in a public comment is not.
+      const stillPrivate = await withDeadline(
+        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan kotak pesan pribadi',
+      );
+      if (stillPrivate !== privateSurface) {
+        throw new CommentActionUnavailableError(
+          'Kotak pesan berubah sebelum diisi — tidak ada yang dikirim', 'private_reply_unavailable',
+        );
+      }
+      await withDeadline(surface.keyboard.sendCharacter(target.text), COMMENT_ACTIONS.waitMs, 'mengetik pesan');
+      const typed = await readComposerText(surface, editor);
+      mark(`typed (kotak berisi ${JSON.stringify((typed ?? '').slice(0, 40))})`);
+      if (!typed) {
+        throw new SendNotConfirmedError(
+          'Teksnya tidak masuk ke kotak pesan pribadi — tidak ada yang dikirim',
+        );
+      }
+
+      // The dialog offers an explicit Send button; a plain Messenger composer
+      // does not, and Enter is the send there. Both surfaces are possible.
+      if (DEBUG) trace('private-reply', `controls: ${(await listButtonLabels(surface)).join(' | ')}`);
+
+      // Enter is the send in a Messenger composer and NOTHING like it on a
+      // post page, where the nearest text box is the comment reply box and
+      // Enter publishes. That is not hypothetical: while the selectors below
+      // were scoped to "any modal", this line typed a private reply into the
+      // comment box and published it, twice, on the Page's own post. So Enter
+      // is only ever pressed on a surface that is a conversation, and the
+      // dialog is sent with its own button or not at all.
+      const sendSurface = await withDeadline(
+        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan tujuan sebelum mengirim',
+      );
+      if (sendSurface !== privateSurface) {
+        throw new CommentActionUnavailableError(
+          'Kotak pesan berubah sebelum dikirim — tidak ada yang dikirim', 'private_reply_unavailable',
+        );
+      }
+      if (sendSurface === 'dialog') {
+        fireClick(surface, COMMENT_ACTIONS.messageSendButton);
+      } else {
+        await surface.keyboard.press('Enter');
+      }
+      mark(`sent via ${sendSurface === 'dialog' ? 'tombol dialog' : 'Enter di percakapan'}`);
+
+      // Polled in place, never reloaded. Business Suite is a single-page app
+      // that updates its own transcript, and reloading it on a loop is both
+      // slow and where a live run wedged for 188 seconds.
+      const stayed = await deliveredAndStayed(
+        async () => countMessagesWithText(await readThread(), target.text),
+        before, Date.now() + COMMENT_ACTIONS.confirmMs,
+      );
+      if (stayed) return { threadId };
+      throw new SendNotConfirmedError(
+        'Pesan pribadi sudah dikirim dari dialog tapi tidak muncul di percakapan Messenger — kemungkinan ditolak diam-diam oleh Facebook',
+      );
+    } catch (err) {
+      if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
+        this.forgetSession(tenantId, (err as Error).message);
+      }
+      throw err;
+    } finally {
+      await threadPage?.close().catch(() => {});
+      await postPage.close().catch(() => {});
     }
   }
 
@@ -602,3 +1015,218 @@ export class SessionManager {
   }
 }
 
+/**
+ * Where Facebook actually put the private-message composer.
+ *
+ * Clicking a comment's "Send message" does not reliably leave the composer on
+ * the page that was clicked. Confirmed live by a per-step trace: the click
+ * lands, the surface opens, and the original target then dies before anything
+ * can be typed — surfacing as `Target closed` three steps away from the click
+ * that caused it.
+ *
+ * Deliberately agnostic about HOW the composer got there. A same-page dialog,
+ * a popup, a brand-new target, or the original page navigating are the same
+ * question — which page is showing a composer — and guessing which one
+ * Facebook uses is what produced three rounds of wrong fixes. Pages that
+ * existed before the click are checked too, because a "new" surface is
+ * sometimes a reused one.
+ *
+ * Null when nothing shows a composer within the budget. That is a real answer:
+ * Facebook offers a private reply only for some comments and some people.
+ */
+/**
+ * Fails a browser step on OUR clock rather than Puppeteer's.
+ *
+ * A call into a page whose execution context is being torn down does not
+ * reject — it sits there until `protocolTimeout`, and the error it finally
+ * raises names the CDP method, not the step. Both are useless to whoever reads
+ * the CRM's error box, so every step that touches a page Facebook may have
+ * just replaced gets its own deadline and its own name.
+ */
+/**
+ * Waits for a public reply to be seen, then gives it one more look before
+ * calling it a failure.
+ *
+ * 60 seconds, not 20. Confirmed live: a reply on a genuinely fresh post can
+ * take longer than 20s for Facebook's own backend to publish and render —
+ * the click, the type and the Enter all succeeded, the comment appeared on a
+ * later, independent read, and the caller had already reported failure. That
+ * is worse than a slow success: `'failed'` is a terminal status with no path
+ * back for a public reply, so the CRM and Facebook disagreed about a reply
+ * that had, in fact, gone out.
+ *
+ * A pure state machine over a `check` callback — no Page, no network — so the
+ * three outcomes here (settles inside the window, settles only on the last
+ * look, never settles) are each a plain unit test rather than something only
+ * provable against the real site.
+ *
+ * `'final-recheck'` is a distinct outcome from `'settled'`, not a detail:
+ * the poll loop can exit with the deadline crossed mid-sleep, which leaves a
+ * window — at most one poll interval — where a reply that landed a moment too
+ * late would otherwise never be looked at again.
+ */
+export async function confirmReplyWithFinalRecheck(
+  check: () => Promise<boolean>, opts: { budgetMs: number; pollMs: number },
+): Promise<'settled' | 'final-recheck' | 'not-confirmed'> {
+  const deadline = Date.now() + opts.budgetMs;
+  while (Date.now() < deadline) {
+    if (await check()) return 'settled';
+    await sleep(opts.pollMs);
+  }
+  return (await check()) ? 'final-recheck' : 'not-confirmed';
+}
+
+export async function withDeadline<T>(work: Promise<T>, ms: number, step: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new CommentActionUnavailableError(
+          `Facebook tidak merespons saat ${step} — kotak pesannya keburu ditutup`, 'private_reply_unavailable',
+        )), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Waits until a page stops rewriting itself.
+ *
+ * Business Suite answers a thread URL by dropping `selected_item_id`,
+ * redirecting to the plain inbox and re-rendering the conversation it picks —
+ * and it is still doing that around three seconds in, which is exactly when a
+ * first version typed and pressed Enter. Confirmed live: the message rendered,
+ * the send was confirmed off that render, and the re-render threw it away. It
+ * never reached Facebook, and the CRM recorded it as sent.
+ *
+ * So nothing is typed until two consecutive reads of the transcript come back
+ * identical on the same URL. Returning false does not fail the send — a busy
+ * inbox is not a broken one — but it is traced, and the confirmation that
+ * follows is what actually decides whether anything was delivered.
+ */
+export async function settleSurface(page: Page, read: () => Promise<string>, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  let previous: string | null = null;
+  let previousUrl = page.url();
+  while (Date.now() < deadline) {
+    const html = await read();
+    const url = page.url();
+    if (html !== '' && html === previous && url === previousUrl) return true;
+    previous = html;
+    previousUrl = url;
+    await sleep(TRANSCRIPT_SETTLE_MS);
+  }
+  return false;
+}
+
+/** How long a message has to still be on screen before this service will call
+ * it sent. Facebook renders a message the moment Enter is pressed, whether or
+ * not the send behind it succeeds. */
+const SEND_DWELL_MS = 6_000;
+
+/**
+ * Whether the transcript gained our message AND kept it.
+ *
+ * A single sighting is not delivery, confirmed live — the optimistic bubble
+ * Facebook paints on Enter looks exactly like a delivered one and is what a
+ * first version counted. The message therefore has to be there, and still be
+ * there after a dwell, before this returns true.
+ */
+export async function deliveredAndStayed(
+  count: () => Promise<number>, before: number, deadline: number, dwellMs = SEND_DWELL_MS,
+): Promise<boolean> {
+  while (Date.now() < deadline) {
+    if (await count() > before) {
+      await sleep(dwellMs);
+      if (await count() > before) return true;
+      continue;
+    }
+    await sleep(500);
+  }
+  return false;
+}
+
+/** How many passes in a row a composer has to still be there, and how long
+ * apart, before this service will type into it. */
+const SURFACE_SETTLE_CHECKS = 3;
+const SURFACE_SETTLE_MS = 400;
+/** How often a page is re-read while waiting for it to stop rewriting itself,
+ * and how long it gets to manage that. Slower than the composer's check
+ * because a whole transcript re-render takes longer than a dialog's. */
+const TRANSCRIPT_SETTLE_MS = 1_000;
+const SURFACE_BUDGET_MS = 20_000;
+
+/**
+ * A composer that is not merely present but STILL present a moment later, on
+ * the same document.
+ *
+ * Seeing one is not enough, confirmed live. Clicking "Send message" opens
+ * Facebook's dialog and replaces the page's document underneath it, so a
+ * single look finds a composer on a document that is already on its way out.
+ * The `evaluate` that found it succeeds; the very next call — puppeteer's
+ * `click`, which has to scroll the element into view — lands in a context that
+ * no longer answers, and hangs until it is timed out from outside.
+ *
+ * So the question asked here is not "is there a composer" but "is there a
+ * composer that survives being looked at three times". A dying document fails
+ * on the next pass, the search moves on, and the composer is found again on
+ * whatever document replaced it.
+ */
+async function composerHasSettled(page: Page, selectors: readonly string[]): Promise<boolean> {
+  const url = page.url();
+  for (let check = 0; check < SURFACE_SETTLE_CHECKS; check += 1) {
+    if (check > 0) await sleep(SURFACE_SETTLE_MS);
+    // A navigation is a new document even when the address is unchanged, and
+    // either way what was measured no longer describes what is on screen.
+    if (page.isClosed() || page.url() !== url) return false;
+    if (!(await hasPrivateComposer(page, selectors))) return false;
+  }
+  return true;
+}
+
+export async function resolvePrivateReplySurface(
+  browser: Browser, known: ReadonlySet<Page>, budgetMs: number,
+): Promise<Page | null> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    // Re-read every pass: the set changes underneath, which is the point.
+    const pages = (await browser.pages().catch(() => [] as Page[])).filter((page) => !page.isClosed());
+    // Newest first — a surface Facebook just opened is the likeliest owner.
+    const ordered = [...pages].reverse();
+    // Facebook's own private-reply dialog, wherever it opened.
+    for (const page of ordered) {
+      if (await composerHasSettled(page, COMMENT_ACTIONS.messageEditor)) {
+        trace('private-reply', () => `surface: dialog on ${page.url().slice(0, 80)}`);
+        return page;
+      }
+    }
+    // A tab Facebook opened for this click, which may be a plain Messenger
+    // conversation rather than a dialog.
+    for (const page of ordered) {
+      if (known.has(page)) continue;
+      if (await composerHasSettled(page, BIZ_COMPOSER.box)) {
+        trace('private-reply', () => `surface: new tab ${page.url().slice(0, 80)}`);
+        return page;
+      }
+    }
+    // Only once nothing else has appeared: the conversation this service
+    // already had open. It reaches the same person, so it is a real fallback —
+    // but taking it EARLY is not a fallback at all, it is a race that the
+    // already-open tab always wins, and it wins before Facebook has had time
+    // to open the dialog at all. Confirmed live: chosen 81ms after the click.
+    if (Date.now() >= deadline) {
+      for (const page of ordered) {
+        if (!known.has(page)) continue;
+        if (await composerHasSettled(page, BIZ_COMPOSER.box)) {
+          trace('private-reply', () => `surface: fallback to open thread ${page.url().slice(0, 80)}`);
+          return page;
+        }
+      }
+      return null;
+    }
+    await sleep(400);
+  }
+}

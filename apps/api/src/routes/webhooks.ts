@@ -298,18 +298,17 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
    * bridges: an internal service on loopback authenticating with a shared
    * secret, not a provider signing its own payloads.
    *
-   * This route is inbound. Replies leave through the outbound sender's
-   * `messenger_bridge` branch, which calls the bridge directly and never
-   * arrives here.
+   * INBOUND ONLY. There is no outbound counterpart to this route and no
+   * `messenger_bridge` branch in the outbound sender, so nothing this accepts
+   * can turn into a reply.
    *
    * The external id is chosen carefully, because it is the idempotency barrier
    * for the whole channel:
    *   - a message with a real Facebook `mid.*` keys on that directly;
    *   - a message without one keys on a hash of
-   *     (tenant, thread, sender, sentAt, text) — `sentAt` being Facebook's own
-   *     `data-utime`, a property of the message rather than of whichever
-   *     process happened to read it. Text alone would collapse a customer's
-   *     second "halo" into their first;
+   *     (tenant, thread, sender, seq, text) — `seq` being a counter the bridge
+   *     hands out once per genuinely new message, never a DOM position. Text
+   *     alone would collapse a customer's second "halo" into their first;
    *   - a comment keys on Facebook's own comment id, which the bridge refuses
    *     to synthesise a substitute for.
    * `apps/worker` recomputes the identical string when it writes the row, so
@@ -363,7 +362,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       tenantId?: string; event?: string; at?: string; error?: string;
       message?: {
         threadId?: string; externalMessageId?: string | null; senderId?: string; senderName?: string;
-        text?: string; sentAt?: string | null; direction?: string;
+        text?: string; sentAt?: string | null; direction?: string; seq?: number;
       };
       comment?: {
         commentId?: string; postId?: string; authorId?: string | null; authorName?: string;
@@ -380,14 +379,9 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     // customer's inbox.
     const m = (body.event === 'message' ? body.message : null) ?? null;
     if (body.event === 'message') {
-      // A message with neither a Facebook id nor a send time has no identity
-      // that survives the next read, so there is nothing to dedupe it on. The
-      // bridge already refuses to emit one; rejecting it here too means a
-      // bridge that regressed gets a 400 in its log rather than filing the
-      // same message again on every pass.
       const ok = m?.threadId && m.senderId && m.senderName && m.text
         && (m.direction === 'inbound' || m.direction === 'outbound')
-        && Boolean(m.externalMessageId || m.sentAt);
+        && typeof m.seq === 'number';
       if (!ok) {
         webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
         return reply.status(400).send();
@@ -402,11 +396,20 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
     const externalId = facebookExternalId(body.tenantId, body.event, m, c);
 
+    // A row that FAILED is re-spooled, not treated as a duplicate. The bridge
+    // re-emits a message on every reconciliation until the CRM says it holds
+    // it, and the CRM only holds it once `messages` does — so an event that
+    // failed in the processor (confirmed live: two DMs that arrived before the
+    // Page was connected, refused for having no channel) would otherwise hit
+    // this conflict on every retry and be dropped as "duplicate" forever. A
+    // `processed` row stays a duplicate; only a failure is worth another go.
     const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
       tx.query<{ id: string }>(
         `insert into webhook_events (provider, external_id, signature_ok, payload)
          values ('fb_bridge', $1, true, $2)
-         on conflict (provider, external_id) do nothing
+         on conflict (provider, external_id) do update
+           set status = 'received', payload = excluded.payload, error = null, processed_at = null
+           where webhook_events.status = 'failed'
          returning id`,
         [externalId, JSON.stringify(body)],
       ));
@@ -434,18 +437,15 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
 export function facebookExternalId(
   tenantId: string,
   event: string,
-  message: { threadId?: string; externalMessageId?: string | null; senderId?: string; sentAt?: string | null; text?: string } | null,
+  message: { threadId?: string; externalMessageId?: string | null; senderId?: string; seq?: number; text?: string } | null,
   comment: { commentId?: string } | null,
 ): string {
   if (message) {
     // Facebook's own id when it exists — an identity it assigned beats one we
     // derived, and it stays stable even if the text is edited afterwards.
     if (message.externalMessageId) return `fb_dm:${tenantId}:${message.externalMessageId}`;
-    // Otherwise the message's own send time, which is the same on every read.
-    // Never a counter: see `compositeMessageKey` in apps/fb-bridge/src/events.ts
-    // for what a per-process sequence number did to messages after a restart.
     return crypto.createHash('sha256')
-      .update(`fb_dm:${tenantId}:${message.threadId}:${message.senderId}:${message.sentAt}:${message.text}`)
+      .update(`fb_dm:${tenantId}:${message.threadId}:${message.senderId}:${message.seq}:${message.text}`)
       .digest('hex');
   }
   if (comment) return `fb_comment:${tenantId}:${comment.commentId}`;
