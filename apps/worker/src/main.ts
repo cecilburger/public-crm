@@ -8,7 +8,7 @@ import { IgBridgeClient } from './igBridgeClient.ts';
 import { FbBridgeClient } from './fbBridgeClient.ts';
 import { resolveSender, sendBillingEmail } from './email/send.ts';
 import { processInboundWebhook } from './processors/inboundNormalise.ts';
-import { processOutbound } from './processors/outboundSend.ts';
+import { processOutbound, markSendExhausted } from './processors/outboundSend.ts';
 import { processAutopilotDraft } from './processors/autopilotDraft.ts';
 import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from './autopilot/model.ts';
 import { purgeExpiredData, verifyAllAuditChains, expireUnpaidOrders, sweepSecurityClocks } from './processors/retention.ts';
@@ -217,7 +217,18 @@ const workers = [
 ];
 
 for (const w of workers) {
-  w.on('failed', (job, err) => console.error(`[${w.name}] ${job?.id} failed:`, err.message));
+  w.on('failed', (job, err) => {
+    console.error(`[${w.name}] ${job?.id} failed:`, err.message);
+    // `job.attemptsMade` includes this failed attempt, so once it reaches the
+    // configured `attempts` there is no next retry coming — BullMQ has given
+    // up quietly, and without this the message stayed 'queued' forever with
+    // no visible sign it never actually reached the customer.
+    if (w.name === 'outbound.send' && job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+      const { tenantId, messageId } = job.data as { tenantId: string; messageId: string };
+      void markSendExhausted(db, tenantId, messageId, err.message)
+        .catch((e: Error) => console.error('[outbound.send] could not mark message failed:', e.message));
+    }
+  });
 }
 
 // The comment sweep is the one periodic job this process schedules for itself

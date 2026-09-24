@@ -446,6 +446,7 @@ a:has(> .link-pending) { cursor: progress; }
 }
 .topbar h1 { font-size: 15px; font-weight: 700; }
 .topbar .spacer { margin-left: auto; }
+.thread-head .spacer { margin-left: auto; }
 
 .scroll { overflow-y: auto; flex: 1; min-height: 0; }
 .pad { padding: 20px; }
@@ -789,6 +790,23 @@ button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
   background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--r);
   padding: 6px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
+.calendar-quarter-badge {
+  font-family: var(--f-display); font-size: 11px; font-weight: 600; color: var(--ink-2);
+  background: var(--panel-2); border-radius: 999px; padding: 2px 9px;
+}
+/* The two segmented pill groups replacing the old <select> — one for which
+   period is anchored (Hari/Minggu/Bulan), one for how the anchored period
+   renders (Grid Bulan/Agenda/Timeline). Same shape, so they read as one
+   family of control rather than two different widgets bolted together. */
+.calendar-pill-group { display: flex; gap: 2px; background: var(--panel-2); border-radius: 999px; padding: 3px; }
+.calendar-pill-btn {
+  font-family: var(--f-display); font-size: 12px; font-weight: 600; color: var(--ink-2);
+  background: none; border: none; border-radius: 999px; padding: 5px 13px; cursor: pointer;
+}
+.calendar-pill-btn:hover { color: var(--ink); }
+.calendar-pill-btn.active { background: var(--panel); color: var(--brand); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.calendar-pill-btn:disabled { color: var(--ink-3); cursor: not-allowed; opacity: .6; }
+.calendar-pill-btn:disabled:hover { color: var(--ink-3); }
 .calendar-body { display: flex; gap: 16px; align-items: flex-start; }
 .calendar-main { flex: 1; min-width: 0; }
 .calendar-sidebar { width: 240px; flex: none; display: flex; flex-direction: column; gap: 16px; }
@@ -798,7 +816,7 @@ button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
 }
 
 /* mini month (sidebar + year view) */
-.mini-cal { border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
+.mini-cal { border: none; box-shadow: var(--shadow); border-radius: var(--r); padding: 10px; }
 .mini-cal-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .mini-cal-head b { font-size: 12.5px; text-transform: capitalize; }
 .mini-cal-title-btn { background: none; border: none; padding: 0; cursor: pointer; color: inherit; }
@@ -807,6 +825,9 @@ button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
 .mini-cal-nav .btn { min-width: 22px; height: 22px; padding: 0; }
 .mini-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .mini-cal-dow { font-size: 9px; text-align: center; color: var(--ink-3); font-family: var(--f-mono); }
+/* Monday-first (`MINI_DOW`), so the last column is Sunday — marked out the
+   way a paper calendar would, not folded into the same grey as the rest. */
+.mini-cal-dow:last-child { color: var(--danger); }
 .mini-cal-day {
   aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
   font-size: 10.5px; border-radius: 50%; cursor: pointer; position: relative;
@@ -814,22 +835,101 @@ button.icon-link:disabled { cursor: not-allowed; opacity: .5; }
 }
 .mini-cal-day:hover { background: var(--panel-2); }
 .mini-cal-day.outside { color: var(--ink-3); opacity: .5; }
+/* Coloured by `dayStatus` — an open task on that day wins (see the comment
+   next to where `dayStatus` is built), so the date number itself says
+   whether the day still needs something, is already done, or is just a bare
+   Google event. Declared before `.today`/`.selected` so those two still win
+   the actual text colour when a date happens to be both — today's own date
+   should read as today first, its status second. */
+.mini-cal-day.status-open { color: var(--brand); font-weight: 600; }
+.mini-cal-day.status-done { color: var(--good); font-weight: 600; }
+.mini-cal-day.status-cancelled { color: var(--danger); font-weight: 600; }
+.mini-cal-day.status-google { color: var(--accent); font-weight: 600; }
 .mini-cal-day.today { font-weight: 700; color: var(--brand); }
 .mini-cal-day.selected { background: var(--brand); color: var(--brand-ink); font-weight: 700; }
 .mini-cal-day.has-events::after {
   content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
   width: 4px; height: 4px; border-radius: 50%; background: var(--brand);
 }
+.mini-cal-day.status-done::after { background: var(--good); }
+.mini-cal-day.status-cancelled::after { background: var(--danger); }
+.mini-cal-day.status-google::after { background: var(--accent); }
 .mini-cal-day.selected.has-events::after { background: var(--brand-ink); }
 .mini-cal.compact .mini-cal-day { font-size: 9px; }
 
-.calendar-filters { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-.calendar-filters h4 { font-family: var(--f-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
-.calendar-filter-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
+.calendar-filters { border: none; box-shadow: var(--shadow); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.calendar-filters-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.calendar-filters h4 { font-family: var(--f-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 0; }
+.calendar-filters-reset {
+  font-family: var(--f-display); font-size: 11px; font-weight: 600; color: var(--brand);
+  background: none; border: none; padding: 0; cursor: pointer;
+}
+.calendar-filters-reset:hover { text-decoration: underline; }
+.calendar-filter-row {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+}
 .calendar-filter-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .calendar-filter-dot.open { background: var(--brand); }
 .calendar-filter-dot.done { background: var(--good); }
 .calendar-filter-dot.cancelled { background: var(--danger); }
+.calendar-filter-count {
+  font-family: var(--f-display); font-size: 11px; font-weight: 600; color: var(--brand);
+  background: var(--brand-soft); border-radius: 999px; min-width: 20px; text-align: center; padding: 2px 7px;
+}
+/* `--accent`, not `--good`: this dot sits in the same "Jadwal Hari Ini" list
+   as a task's own status dot, and `.done` already claims `--good` — reusing
+   it here would make a finished task and a Google-only event read as the
+   same colour side by side. `--accent` is also what the month/day/week pills
+   already use for anything sourced from Google, so it stays the one colour
+   this page has meant "Google" with all along. */
+.calendar-filter-dot.google { background: var(--accent); }
+
+/* Deliberately its own small design language, not `.chip`/`.calendar-filters`
+   — those are mono-font, uppercase, letter-spaced, which read as dense status
+   metadata everywhere else they're used (and correctly so, there). This card
+   is meant to be read like a short list of plans for the day, so it uses the
+   ordinary display font at ordinary case throughout, the way the reference
+   design called for. Reusing `.chip` here would also mean touching a class
+   used across the whole app just to change how it looks in one sidebar
+   widget — this way nothing else moves. */
+.agenda-panel { border: none; box-shadow: var(--shadow); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.agenda-head { display: flex; flex-direction: column; gap: 6px; }
+.agenda-head-count { display: flex; justify-content: flex-end; }
+.agenda-head-title { display: flex; align-items: center; gap: 7px; }
+.agenda-head .calendar-filter-dot { background: var(--brand); flex: none; }
+.agenda-head h4 { flex: 1; font-family: var(--f-display); font-size: 14.5px; font-weight: 700; color: var(--ink); margin: 0; }
+.agenda-count-pill {
+  font-family: var(--f-display); font-size: 11px; font-weight: 600; color: var(--brand);
+  background: var(--brand-soft); border-radius: 999px; padding: 3px 10px; flex: none;
+}
+.agenda-item {
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 7px; background: var(--panel);
+}
+.agenda-item.done, .agenda-item.cancelled { opacity: .65; }
+.agenda-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.agenda-item-title { font-family: var(--f-display); font-size: 13px; font-weight: 700; color: var(--ink); line-height: 1.3; }
+.agenda-item.done .agenda-item-title, .agenda-item.cancelled .agenda-item-title { text-decoration: line-through; }
+.agenda-badge {
+  font-family: var(--f-display); font-size: 10.5px; font-weight: 600; color: var(--warn);
+  background: var(--warn-soft); border-radius: 999px; padding: 3px 9px; flex: none; white-space: nowrap;
+}
+.agenda-item-time { display: flex; align-items: center; gap: 5px; font-family: var(--f-display); font-size: 11.5px; color: var(--ink-2); }
+.agenda-item-foot { display: flex; justify-content: flex-end; }
+.agenda-meet-pill {
+  font-family: var(--f-display); font-size: 10.5px; font-weight: 600; color: var(--ink-2);
+  background: var(--panel-2); border-radius: 999px; padding: 3px 9px;
+}
+.agenda-item-avatar { width: 20px; height: 20px; font-size: 9px; }
+
+.month-agenda { display: flex; flex-direction: column; gap: 18px; }
+.month-agenda-day { display: flex; flex-direction: column; gap: 8px; }
+.month-agenda-daylabel { font-family: var(--f-display); font-size: 13px; font-weight: 700; color: var(--ink); text-transform: capitalize; margin: 0; }
+.month-agenda-items { display: flex; flex-direction: column; gap: 8px; }
+@media (min-width: 640px) {
+  .month-agenda-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+}
 
 /* year view */
 .year-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }

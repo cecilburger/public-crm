@@ -33,5 +33,9 @@ export default async function CommentPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  return <CommentThread comment={comment} />;
+  // Every comment on the same post, not just the one that was clicked — a
+  // post's comments are read together, the way they actually sit on
+  // Facebook, rather than one at a time behind a separate click each.
+  const inPost = comments.filter((c) => c.postId === comment.postId);
+  return <CommentThread postId={comment.postId} pageName={comment.pageName} comments={inPost} />;
 }

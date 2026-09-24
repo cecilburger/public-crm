@@ -29,7 +29,7 @@ export interface SendDeps {
  * window while it waited.
  */
 export async function processOutbound(deps: SendDeps, job: { tenantId: string; messageId: string }) {
-  return withTenant(deps.db, job.tenantId, async (tx) => {
+  const result = await withTenant(deps.db, job.tenantId, async (tx) => {
     const rows = await tx.query<{
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
@@ -129,7 +129,7 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
           return { status: 'failed' };
         }
         await scheduleRetry(tx, job, err as Error);
-        throw err;
+        return { status: 'retry', error: err as Error };
       }
     }
 
@@ -164,7 +164,7 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
           return { status: 'failed' };
         }
         await scheduleRetry(tx, job, err as Error);
-        throw err;
+        return { status: 'retry', error: err as Error };
       }
     }
 
@@ -230,7 +230,7 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
           return { status: 'failed' };
         }
         await scheduleRetry(tx, job, err as Error);
-        throw err;
+        return { status: 'retry', error: err as Error };
       }
     }
 
@@ -291,9 +291,19 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         return { status: 'failed' };
       }
       await scheduleRetry(tx, job, err as Error);
-      throw err; // let the queue's backoff own the retry schedule
+      return { status: 'retry', error: err as Error };
     }
   });
+
+  // Thrown out here, after `withTenant`'s transaction has already committed —
+  // `scheduleRetry`'s own bookkeeping write happened inside that transaction,
+  // so throwing from inside it (the previous shape of this function) rolled
+  // that write back every time alongside the deliberate failure, silently
+  // losing `attempts`/`last_error` on every retry. Re-throwing out here still
+  // tells BullMQ to apply its backoff and try again, just without erasing the
+  // record of having tried.
+  if (result.status === 'retry') throw (result as { error: Error }).error;
+  return result;
 }
 
 type Tx = { query: (t: string, p?: readonly unknown[]) => Promise<unknown> };
@@ -307,6 +317,22 @@ async function scheduleRetry(tx: Tx, job: { tenantId: string; messageId: string 
       where tenant_id = $1 and message_id = $2`,
     [job.tenantId, job.messageId, err.message.slice(0, 500)],
   );
+}
+
+/**
+ * Called from `main.ts`'s `worker.on('failed', ...)` once BullMQ itself has
+ * given up (the job's last attempt just failed) — a non-permanent error
+ * (rate-limited, bridge briefly down, …) never reaches `markFailed` above on
+ * its own, since every attempt short of the last one deliberately retries
+ * instead. Without this, a message that keeps failing for a "retry later"
+ * reason sat at `status = 'queued'` forever once the queue stopped trying,
+ * with nothing in the console showing it never actually went out.
+ */
+export async function markSendExhausted(
+  db: Database, tenantId: string, messageId: string, lastError: string,
+): Promise<void> {
+  await withTenant(db, tenantId, (tx) =>
+    markFailed(tx, { tenantId, messageId }, `Gagal setelah beberapa kali percobaan: ${lastError}`.slice(0, 500)));
 }
 
 async function markFailed(tx: Tx, job: { tenantId: string; messageId: string }, reason: string) {

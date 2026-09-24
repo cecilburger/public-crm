@@ -271,6 +271,7 @@ export class DmWatcher {
     const list = byThread.get(threadId) ?? [];
     list.push({ text, at: Date.now() });
     byThread.set(threadId, list);
+    this.persistRecentlySentByUs(tenantId);
   }
 
   /** Consumes (at most once) a matching recent `markSentByUs` entry, so the
@@ -285,14 +286,51 @@ export class DmWatcher {
     const fresh = list.filter((entry) => entry.at >= cutoff);
     if (idx === -1) {
       byThread!.set(threadId, fresh);
+      this.persistRecentlySentByUs(tenantId);
       return false;
     }
     byThread!.set(threadId, fresh.filter((entry) => !(entry.text === text && entry.at === list[idx]!.at)));
+    this.persistRecentlySentByUs(tenantId);
     return true;
   }
 
   private anchorsFile(tenantId: string): string {
     return path.join(this.sessions.getProfileDir(tenantId), '.thread-anchors.json');
+  }
+
+  private recentlySentFile(tenantId: string): string {
+    return path.join(this.sessions.getProfileDir(tenantId), '.recently-sent-by-us.json');
+  }
+
+  /**
+   * Kept across restarts for the same reason the anchors are — the window
+   * is only 5 minutes long anyway, so this is a small, short-lived file, but
+   * without it a restart mid-window (routine under `tsx watch`) wipes the
+   * "we just sent this through the console" memory entirely. The very next
+   * scrape then reads that same send as a fresh reply from the phone and
+   * records it a second time — confirmed live, right after an `ig-bridge`
+   * restart during this session, as a duplicate "Anda / Tim" bubble sitting
+   * next to the real "Dijawab Otomatis" one for the exact same reply.
+   */
+  private async loadRecentlySentByUs(tenantId: string): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.recentlySentFile(tenantId), 'utf8');
+      const parsed = JSON.parse(raw) as Record<string, { text: string; at: number }[]>;
+      const cutoff = Date.now() - RECENTLY_SENT_WINDOW_MS;
+      const fresh = new Map(
+        Object.entries(parsed).map(([threadId, list]) => [threadId, list.filter((e) => e.at >= cutoff)]),
+      );
+      this.recentlySentByUs.set(tenantId, fresh);
+    } catch {
+      // No persisted entries yet.
+    }
+  }
+
+  private persistRecentlySentByUs(tenantId: string): void {
+    const byThread = this.recentlySentByUs.get(tenantId);
+    if (!byThread) return;
+    void fs.writeFile(this.recentlySentFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8')
+      .catch(() => {});
   }
 
   /** Loaded once per tenant, right before the observer starts scanning —
@@ -311,6 +349,7 @@ export class DmWatcher {
       // No persisted anchors yet.
     }
     await this.loadSequences(tenantId);
+    await this.loadRecentlySentByUs(tenantId);
   }
 
   private sequencesFile(tenantId: string): string {

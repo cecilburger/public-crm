@@ -82,10 +82,15 @@ export function TaskTable({
 
   // Table and Kanban have no date range of their own the way Kalender does —
   // this asks Google for a fixed "next 30 days" window instead, once, up
-  // here, so both views merge in the exact same events.
+  // here, so both views merge in the exact same events. Skipped entirely
+  // while the Kalender view is showing: `TaskCalendar` below fetches its own
+  // (different, navigable) range, and firing both at once on every page load
+  // doubled up concurrent hits against the live Google API for no reason
+  // this view ever reads — observed adding several extra seconds to landing
+  // straight on Kalender.
   const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
   useEffect(() => {
-    if (!googleStatus.connected) { setGoogleEvents([]); return; }
+    if (!googleStatus.connected || view === 'calendar') { setGoogleEvents([]); return; }
     const from = new Date();
     from.setHours(0, 0, 0, 0);
     const to = new Date(from);
@@ -96,7 +101,7 @@ export function TaskTable({
       .then((data: { events?: GoogleCalendarEvent[] }) => setGoogleEvents(data.events ?? []))
       .catch(() => {});
     return () => controller.abort();
-  }, [googleStatus.connected]);
+  }, [googleStatus.connected, view]);
 
   // "Done"/"Batal" are task-only states an event has no equivalent for, so
   // Google only folds into the "Semua"/"Perlu ditindak" tabs — the two that

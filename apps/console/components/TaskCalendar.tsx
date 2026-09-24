@@ -4,6 +4,7 @@ import Link from '@/components/FastLink';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '@/lib/copy';
 import { formatTaskDue, isTaskOverdue, taskPartyName, taskPartyHref } from '@/lib/taskHelpers';
+import { clock, initials } from '@/lib/format';
 import {
   addDays, addMonths, monthGrid, sameDay, shiftAnchor, startOfMonth, startOfWeek, weekDays,
 } from '@/lib/calendarHelpers';
@@ -134,6 +135,19 @@ function periodLabel(mode: CalendarMode, anchor: Date): string {
   return anchor.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
 }
 
+/** The "Agenda Hari Ini" card's own time row. Just the clock face — no
+ *  minute/hour hands positioned to a real time, this is a label glyph, not a
+ *  clock reading itself. */
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+         strokeLinejoin="round" width="12" height="12" aria-hidden style={{ flex: 'none' }}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
 /** `synced` means a Google Calendar event was matched to this task and its own
  *  pill suppressed — see `googleLinkedTaskIds`. The dot is what says so. */
 function EventPill({ task, compact, synced }: { task: Task; compact?: boolean; synced?: boolean }) {
@@ -149,9 +163,15 @@ function EventPill({ task, compact, synced }: { task: Task; compact?: boolean; s
 }
 
 function MiniMonth({
-  month, selected, today, eventsByDay, onPick, onPrev, onNext, onHeaderClick, compact,
+  month, selected, today, dayStatus, onPick, onPrev, onNext, onHeaderClick, compact,
 }: {
-  month: Date; selected: Date | null; today: Date; eventsByDay: Map<string, Task[]>;
+  month: Date; selected: Date | null; today: Date;
+  /** Which days carry something, and what colour that earns the date number
+   *  — 'open'/'done'/'cancelled' from a task's own status (priority: any
+   *  open task wins, so a day that still needs something doesn't read as
+   *  finished because something else on it is done), 'google' for a day
+   *  whose only occupant is a bare Calendar event with no task behind it. */
+  dayStatus: Map<string, 'open' | 'done' | 'cancelled' | 'google'>;
   onPick: (d: Date) => void; onPrev?: () => void; onNext?: () => void;
   onHeaderClick?: () => void; compact?: boolean;
 }) {
@@ -174,12 +194,12 @@ function MiniMonth({
         {MINI_DOW.map((d) => <span key={d} className="mini-cal-dow">{d}</span>)}
         {grid.map((d) => {
           const inMonth = d.getMonth() === month.getMonth();
-          const hasEvents = (eventsByDay.get(d.toDateString())?.length ?? 0) > 0;
+          const status = dayStatus.get(d.toDateString());
           const isToday = sameDay(d, today);
           const isSelected = selected ? sameDay(d, selected) : false;
           return (
             <button type="button" key={d.toISOString()}
-                    className={`mini-cal-day ${inMonth ? '' : 'outside'} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${hasEvents ? 'has-events' : ''}`}
+                    className={`mini-cal-day ${inMonth ? '' : 'outside'} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${status ? `has-events status-${status}` : ''}`}
                     onClick={() => onPick(d)}>
               {d.getDate()}
             </button>
@@ -427,10 +447,86 @@ function DayDetailModal({
   );
 }
 
-function YearGrid({
-  anchor, eventsByDay, today, onPickDay, onPickMonth,
+/** The "Bulan" period rendered as a flat list instead of a grid — the
+ *  "Agenda" half of the Grid Bulan/Agenda toggle. Every task and Google event
+ *  in the anchored month, day by day in order, using the same card design as
+ *  the sidebar's own "Agenda Hari Ini" (that one just never spans more than a
+ *  single day). Days with nothing in them are skipped outright: a wall of
+ *  empty dates is exactly what an agenda view exists to avoid. */
+function MonthAgenda({
+  anchor, byDay, googleByDay, onOpenTaskDetail,
 }: {
-  anchor: Date; eventsByDay: Map<string, Task[]>; today: Date;
+  anchor: Date; byDay: Map<string, Task[]>; googleByDay: Map<string, GoogleCalendarEvent[]>;
+  onOpenTaskDetail: (task: Task) => void;
+}) {
+  const days = useMemo(() => {
+    const daysInMonth = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, i) => new Date(anchor.getFullYear(), anchor.getMonth(), i + 1))
+      .filter((d) => (byDay.get(d.toDateString())?.length ?? 0) > 0 || (googleByDay.get(d.toDateString())?.length ?? 0) > 0);
+  }, [anchor, byDay, googleByDay]);
+
+  if (days.length === 0) return <p className="empty calendar-empty-msg">{t.tasks.monthAgendaEmpty}</p>;
+
+  return (
+    <div className="month-agenda">
+      {days.map((d) => (
+        <div key={d.toDateString()} className="month-agenda-day">
+          <h4 className="month-agenda-daylabel">
+            {d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long' })}
+          </h4>
+          <div className="month-agenda-items">
+            {(byDay.get(d.toDateString()) ?? []).map((tk) => {
+              const party = taskPartyName(tk);
+              return (
+                <button type="button" key={tk.id} onClick={() => onOpenTaskDetail(tk)}
+                        className={`agenda-item ${pillClass(tk)}`}
+                        style={{ width: '100%', textAlign: 'left', background: 'none', cursor: 'pointer' }}>
+                  <div className="agenda-item-head">
+                    <span className="agenda-item-title">{tk.title}</span>
+                    {tk.status !== 'open' ? (
+                      <span className="agenda-badge"
+                            style={tk.status === 'done'
+                              ? { color: 'var(--good)', background: 'var(--good-soft)' }
+                              : { color: 'var(--danger)', background: 'var(--danger-soft)' }}>
+                        {t.tasks.statusLabel[tk.status] ?? tk.status}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="agenda-item-time"><ClockIcon /> {clock(tk.dueAt)} WIB</span>
+                  <div className="agenda-item-foot">
+                    {tk.meetingLink ? (
+                      <span className="agenda-meet-pill">{t.tasks.googleMeetBadge}</span>
+                    ) : party ? (
+                      <span className="avatar agenda-item-avatar" title={party}>{initials(party)}</span>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+            {(googleByDay.get(d.toDateString()) ?? []).map((ev) => (
+              <a key={ev.id} href={ev.htmlLink} target="_blank" rel="noreferrer" className="agenda-item">
+                <div className="agenda-item-head">
+                  <span className="agenda-item-title">{ev.title}</span>
+                </div>
+                <span className="agenda-item-time">
+                  <ClockIcon /> {ev.allDay ? t.tasks.allDay : `${clock(ev.start)} WIB`}
+                </span>
+                {ev.meetingLink ? (
+                  <div className="agenda-item-foot"><span className="agenda-meet-pill">{t.tasks.googleMeetBadge}</span></div>
+                ) : null}
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function YearGrid({
+  anchor, dayStatus, today, onPickDay, onPickMonth,
+}: {
+  anchor: Date; dayStatus: Map<string, 'open' | 'done' | 'cancelled' | 'google'>; today: Date;
   onPickDay: (d: Date) => void; onPickMonth: (d: Date) => void;
 }) {
   const year = anchor.getFullYear();
@@ -438,7 +534,7 @@ function YearGrid({
   return (
     <div className="year-grid">
       {months.map((m) => (
-        <MiniMonth key={m.getMonth()} month={m} selected={null} today={today} eventsByDay={eventsByDay}
+        <MiniMonth key={m.getMonth()} month={m} selected={null} today={today} dayStatus={dayStatus}
                     onPick={onPickDay} onHeaderClick={() => onPickMonth(m)} compact />
       ))}
     </div>
@@ -455,6 +551,11 @@ export function TaskCalendar({
   googleStatus: GoogleCalendarStatus;
 }) {
   const [mode, setMode] = useState<CalendarMode>('month');
+  // How the anchored period renders, independent of which period it is.
+  // 'timeline' is not a real state here — its button stays disabled until a
+  // task actually carries a duration to draw a bar from, so nothing ever
+  // sets this to that value.
+  const [contentView, setContentView] = useState<'grid' | 'agenda'>('grid');
   const [anchor, setAnchor] = useState(() => new Date());
   const [visible, setVisible] = useState<Record<Task['status'], boolean>>({ open: true, done: true, cancelled: true });
   const [detailDay, setDetailDay] = useState<Date | null>(null);
@@ -462,6 +563,14 @@ export function TaskCalendar({
   const today = useMemo(() => new Date(), []);
 
   const visibleTasks = useMemo(() => tasks.filter((tk) => visible[tk.status]), [tasks, visible]);
+  // Every task the tenant has, not just the ones the filter is currently
+  // showing — a count that shrinks the moment you check its own box would be
+  // useless for deciding whether to check it.
+  const statusCounts = useMemo(() => {
+    const counts: Record<Task['status'], number> = { open: 0, done: 0, cancelled: 0 };
+    for (const tk of tasks) counts[tk.status] += 1;
+    return counts;
+  }, [tasks]);
   const byDay = useMemo(() => groupByDay(visibleTasks), [visibleTasks]);
   const byDayHour = useMemo(() => groupByDayHour(visibleTasks), [visibleTasks]);
   const detailTasks = detailDay ? byDay.get(detailDay.toDateString()) ?? [] : [];
@@ -523,9 +632,35 @@ export function TaskCalendar({
 
   const googleByDay = useMemo(() => groupGoogleByDay(dedupedGoogleEvents), [dedupedGoogleEvents]);
   const googleByDayHour = useMemo(() => groupGoogleByDayHour(dedupedGoogleEvents), [dedupedGoogleEvents]);
+  // The mini calendar's own "something is here" dot, and what colour it
+  // earns — confirmed live: today carried two Google-only meetings and no
+  // CRM task, and the dot never lit up, because `MiniMonth` was only ever
+  // handed `byDay`. A day with an open task is 'open' even if it also holds
+  // a done one — the thing still outstanding is what a glance at the
+  // calendar should surface, not whatever happens to be done. Google-only
+  // days fall back to 'google' precisely because there is no task status to
+  // read at all.
+  const dayStatus = useMemo(() => {
+    const map = new Map<string, 'open' | 'done' | 'cancelled' | 'google'>();
+    for (const [key, dayTasks] of byDay) {
+      if (dayTasks.some((tk) => tk.status === 'open')) map.set(key, 'open');
+      else if (dayTasks.some((tk) => tk.status === 'cancelled')) map.set(key, 'cancelled');
+      else if (dayTasks.some((tk) => tk.status === 'done')) map.set(key, 'done');
+    }
+    for (const key of googleByDay.keys()) {
+      if (!map.has(key)) map.set(key, 'google');
+    }
+    return map;
+  }, [byDay, googleByDay]);
   // Already excludes anything matched to a task above — the day card's own
   // list, same as the month cell's own pills.
   const detailGoogleEvents = detailDay ? googleByDay.get(detailDay.toDateString()) ?? [] : [];
+  // The sidebar's own "Jadwal Hari Ini" box, next to the mini calendar — same
+  // two sources as the day card, just always pinned to today rather than
+  // whatever date was last clicked, so today's agenda is visible without
+  // clicking anything.
+  const todayTasks = byDay.get(today.toDateString()) ?? [];
+  const todayGoogleEvents = googleByDay.get(today.toDateString()) ?? [];
 
   // Counts Google's events too, or a day carrying nothing but those would
   // show them *and* the "nothing here" line underneath at the same time.
@@ -557,15 +692,41 @@ export function TaskCalendar({
               <button type="button" className="btn ghost sm" onClick={() => setAnchor((a) => shiftAnchor(mode, a, 1))} aria-label={t.tasks.nextPeriod}>›</button>
             </div>
             <h3 className="calendar-period-label">{periodLabel(mode, anchor)}</h3>
+            <span className="calendar-quarter-badge">Q{Math.ceil((anchor.getMonth() + 1) / 3)}</span>
           </div>
           <div className="calendar-toolbar-left">
-            <select className="calendar-mode-select" value={mode}
-                    onChange={(e) => setMode(e.target.value as CalendarMode)} aria-label={t.tasks.viewCalendar}>
-              <option value="day">{t.tasks.viewDay}</option>
-              <option value="week">{t.tasks.viewWeek}</option>
-              <option value="month">{t.tasks.viewMonth}</option>
-              <option value="year">{t.tasks.viewYear}</option>
-            </select>
+            {/* Which period is anchored. Replaces the old <select> — three
+                options fit a row of pills; a fourth (Tahun) used to live here
+                too but is dropped from this toolbar by design, not by
+                oversight (the underlying year view is unused code, kept in
+                case it's wanted back rather than deleted outright). */}
+            <div className="calendar-pill-group" role="group" aria-label={t.tasks.viewCalendar}>
+              {(['day', 'week', 'month'] as const).map((m) => (
+                <button type="button" key={m} className={`calendar-pill-btn ${mode === m ? 'active' : ''}`}
+                        onClick={() => setMode(m)}>
+                  {m === 'day' ? t.tasks.viewDay : m === 'week' ? t.tasks.viewWeek : t.tasks.viewMonth}
+                </button>
+              ))}
+            </div>
+            {/* How the anchored period renders — only meaningful for Bulan,
+                which is the only mode with more than one way to look at the
+                same period. Hari/Minggu already render as an hourly grid,
+                which an "agenda" reading of a single day would only repeat. */}
+            {mode === 'month' ? (
+              <div className="calendar-pill-group" role="group" aria-label={t.tasks.contentViewGrid}>
+                <button type="button" className={`calendar-pill-btn ${contentView === 'grid' ? 'active' : ''}`}
+                        onClick={() => setContentView('grid')}>
+                  {t.tasks.contentViewGrid}
+                </button>
+                <button type="button" className={`calendar-pill-btn ${contentView === 'agenda' ? 'active' : ''}`}
+                        onClick={() => setContentView('agenda')}>
+                  {t.tasks.contentViewAgenda}
+                </button>
+                <button type="button" className="calendar-pill-btn" disabled title={t.tasks.contentViewTimelineSoon}>
+                  {t.tasks.contentViewTimeline}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -581,32 +742,125 @@ export function TaskCalendar({
                         googleByDayHour={googleByDayHour} today={today}
                         googleLinkedTaskIds={googleLinkedTaskIds} />
             ) : null}
-            {mode === 'month' ? (
+            {mode === 'month' && contentView === 'grid' ? (
               <MonthGrid anchor={anchor} eventsByDay={byDay} googleEventsByDay={googleByDay} today={today}
                          onSelectDay={setDetailDay} onSelectTask={onOpenTaskDetail}
                          googleLinkedTaskIds={googleLinkedTaskIds} />
             ) : null}
-            {mode === 'year' ? (
-              <YearGrid anchor={anchor} eventsByDay={byDay} today={today}
-                        onPickDay={(d) => { setAnchor(d); setMode('day'); }}
-                        onPickMonth={(d) => { setAnchor(d); setMode('month'); }} />
+            {mode === 'month' && contentView === 'agenda' ? (
+              <MonthAgenda anchor={anchor} byDay={byDay} googleByDay={googleByDay}
+                           onOpenTaskDetail={onOpenTaskDetail} />
             ) : null}
             {!hasAnyInPeriod ? <p className="empty calendar-empty-msg">{t.tasks.calendarEmpty}</p> : null}
           </div>
 
           <aside className="calendar-sidebar">
-            <MiniMonth month={startOfMonth(anchor)} selected={anchor} today={today} eventsByDay={byDay}
+            <MiniMonth month={startOfMonth(anchor)} selected={anchor} today={today} dayStatus={dayStatus}
                         onPick={(d) => setAnchor(d)}
                         onPrev={() => setAnchor((a) => addMonths(a, -1))}
                         onNext={() => setAnchor((a) => addMonths(a, 1))} />
+            <div className="agenda-panel">
+              <div className="agenda-head">
+                {todayTasks.length + todayGoogleEvents.length > 0 ? (
+                  <div className="agenda-head-count">
+                    <span className="agenda-count-pill">{t.tasks.todayScheduleCount(todayTasks.length + todayGoogleEvents.length)}</span>
+                  </div>
+                ) : null}
+                <div className="agenda-head-title">
+                  <span className="calendar-filter-dot" aria-hidden />
+                  <h4>{t.tasks.todayScheduleTitle(today.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }))}</h4>
+                </div>
+              </div>
+              {todayTasks.length === 0 && todayGoogleEvents.length === 0 ? (
+                <p className="dim" style={{ fontSize: 12, margin: 0 }}>{t.tasks.todayScheduleEmpty}</p>
+              ) : (
+                <>
+                  {todayTasks.map((tk) => {
+                    const party = taskPartyName(tk);
+                    return (
+                      <button type="button" key={tk.id} onClick={() => onOpenTaskDetail(tk)}
+                              className={`agenda-item ${pillClass(tk)}`} style={{ width: '100%', textAlign: 'left', background: 'none', cursor: 'pointer' }}>
+                        <div className="agenda-item-head">
+                          <span className="agenda-item-title">{tk.title}</span>
+                          {/* Open (the common case for something due today) gets
+                              no badge at all now — title, time, meeting link is
+                              the whole card. Done/cancelled still get one: that
+                              is real information a strikethrough title alone
+                              doesn't fully carry (looks the same for either). */}
+                          {tk.status !== 'open' ? (
+                            <span className="agenda-badge"
+                                  style={tk.status === 'done'
+                                    ? { color: 'var(--good)', background: 'var(--good-soft)' }
+                                    : { color: 'var(--danger)', background: 'var(--danger-soft)' }}>
+                              {t.tasks.statusLabel[tk.status] ?? tk.status}
+                            </span>
+                          ) : null}
+                        </div>
+                        <span className="agenda-item-time">
+                          <ClockIcon /> {clock(tk.dueAt)} WIB
+                        </span>
+                        <div className="agenda-item-foot">
+                          {/* One or the other, never both: a Meet link is
+                              something to join, an avatar is who it's with —
+                              this component has no attendee list to draw on
+                              (no `members` prop), so it shows the one name
+                              already available, the contact/brand the meeting
+                              is about. */}
+                          {tk.meetingLink ? (
+                            <span className="agenda-meet-pill">{t.tasks.googleMeetBadge}</span>
+                          ) : party ? (
+                            <span className="avatar agenda-item-avatar" title={party}>{initials(party)}</span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {/* Same read-only treatment as everywhere else a Google-only
+                      event shows up next to a task: a link out, not a button —
+                      there is nothing in this database to open a detail on.
+                      Styled identically to a task card rather than marked out
+                      as a different kind of row — this widget's whole point is
+                      "what's on today", and that reads the same whether the
+                      row behind it is a task or a bare Calendar event. That
+                      distinction still exists everywhere it actually matters
+                      (the month pills, the day card, the detail drawer); it
+                      just isn't this list's job to repeat it. */}
+                  {todayGoogleEvents.map((ev) => (
+                    <a key={ev.id} href={ev.htmlLink} target="_blank" rel="noreferrer" className="agenda-item">
+                      <div className="agenda-item-head">
+                        <span className="agenda-item-title">{ev.title}</span>
+                      </div>
+                      <span className="agenda-item-time">
+                        <ClockIcon /> {ev.allDay ? t.tasks.allDay : `${clock(ev.start)} WIB`}
+                      </span>
+                      {/* Present on some pulled-in events and not others — a
+                          Meet link Google generated when the meeting was
+                          booked, not something every Calendar event has. */}
+                      {ev.meetingLink ? (
+                        <div className="agenda-item-foot">
+                          <span className="agenda-meet-pill">{t.tasks.googleMeetBadge}</span>
+                        </div>
+                      ) : null}
+                    </a>
+                  ))}
+                </>
+              )}
+            </div>
             <div className="calendar-filters">
-              <h4>{t.tasks.filtersLabel}</h4>
+              <div className="calendar-filters-head">
+                <h4>{t.tasks.filtersLabel}</h4>
+                <button type="button" className="calendar-filters-reset"
+                        onClick={() => setVisible({ open: true, done: true, cancelled: true })}>
+                  {t.tasks.resetFilters}
+                </button>
+              </div>
               {STATUSES.map((s) => (
                 <label key={s} className="calendar-filter-row">
                   <input type="checkbox" checked={visible[s]}
                          onChange={() => setVisible((v) => ({ ...v, [s]: !v[s] }))} />
                   <span className={`calendar-filter-dot ${s}`} />
-                  {t.tasks.statusLabel[s]}
+                  <span style={{ flex: 1 }}>{t.tasks.statusLabel[s]}</span>
+                  <span className="calendar-filter-count">{statusCounts[s]}</span>
                 </label>
               ))}
             </div>
