@@ -3,6 +3,7 @@ import { t } from '@/lib/copy';
 import { SettingsTabs } from '@/components/SettingsTabs';
 import { InstagramBridgeForm } from '@/components/InstagramBridgeForm';
 import { InstagramMetaCard } from '@/components/InstagramMetaCard';
+import { DivisionBadge } from '@/components/DivisionBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,8 @@ export default async function InstagramSettingsPage() {
         <div>
           <h1>{t.instagramBridge.title}</h1>
         </div>
+        <span className="spacer" />
+        <DivisionBadge />
       </div>
       <SettingsTabs />
 

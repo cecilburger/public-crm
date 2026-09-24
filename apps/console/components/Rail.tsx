@@ -10,6 +10,7 @@ import type { NotificationItem } from '@/lib/notifications';
 import { WaBridgeRailList } from '@/components/WaBridgeRailList';
 import { NotificationBell } from '@/components/NotificationBell';
 import { GlobalSearch } from '@/components/GlobalSearch';
+import { DivisionSwitch } from '@/components/DivisionSwitch';
 
 const ICONS = {
   dashboard: <><rect x="3" y="3" width="8" height="10" rx="1.5" /><rect x="13" y="3" width="8" height="6" rx="1.5" /><rect x="13" y="13" width="8" height="8" rx="1.5" /><rect x="3" y="15" width="8" height="6" rx="1.5" /></>,
@@ -283,6 +284,8 @@ export function Rail({
         <span className="brand-name">{t.app.name}</span>
         <span className="brand-notif"><NotificationBell items={notifications} /></span>
       </div>
+
+      <DivisionSwitch active={me.division} divisions={me.divisions} collapsed={collapsed} />
 
       <button type="button" className="navitem navitem-toggle rail-toggle" onClick={toggleCollapsed}
               aria-pressed={collapsed} title={collapsed ? t.nav.expand : undefined}>

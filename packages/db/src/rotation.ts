@@ -51,9 +51,11 @@ export const ENCRYPTED_COLUMNS: EncryptedTable[] = [
   { table: 'bd_conversation_state', columns: ['email_enc'] },
   { table: 'ig_comments', columns: ['commenter_enc', 'text_enc', 'public_reply_enc'] },
   { table: 'facebook_comments', columns: ['author_external_id_enc', 'author_name_enc', 'body_enc'] },
-  { table: 'google_calendar_connections', columns: ['access_token_enc', 'refresh_token_enc'], cursor: 'user_id' },
-  { table: 'ig_meta_connections', columns: ['access_token_enc'], cursor: 'tenant_id' },
-  { table: 'ig_bridge_connections', columns: ['username_enc'], cursor: 'tenant_id' },
+  // One row per division (0059), so the tenant id no longer identifies a
+  // row; the division id does, and the calendar table grew a real `id`.
+  { table: 'google_calendar_connections', columns: ['access_token_enc', 'refresh_token_enc'] },
+  { table: 'ig_meta_connections', columns: ['access_token_enc'], cursor: 'division_id' },
+  { table: 'ig_bridge_connections', columns: ['username_enc'], cursor: 'division_id' },
   { table: 'tenant_email_settings', columns: ['smtp_url_enc'], cursor: 'tenant_id' },
 ];
 

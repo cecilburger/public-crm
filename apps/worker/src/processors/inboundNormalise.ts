@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import {
   withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, ingestInboundInstagramDmMessage,
   recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken,
-  recordIgComment, type Database,
+  recordIgComment, bridgeSessionHome, findInstagramBridgeChannel, type Database,
 } from '@kirana/db';
 import { isBdConversation } from './bdDraft.ts';
 
@@ -16,7 +16,7 @@ export interface NormaliseDeps {
   kek: Buffer;
   dispatch: (job: { queue: string; payload: unknown }) => Promise<void>;
   /** Told about every new message so an open console can refresh instead of polling. Optional: nothing breaks without a listener. */
-  publish?: (tenantId: string, event: { type: 'message'; conversationId: string }) => void;
+  publish?: (tenantId: string, event: { type: 'message'; conversationId: string; divisionId?: string }) => void;
 }
 
 /**
@@ -80,15 +80,17 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
   const phoneNumberId = value.metadata?.phone_number_id;
   if (!phoneNumberId) return await fail(deps, webhookEventId, 'no phone_number_id in payload');
 
-  // Channel → tenant. Read through the control pool: at this point we do not
-  // yet know which tenant context to open.
+  // Channel → tenant and division. Read through the control pool: at this
+  // point we do not yet know which tenant context to open. The channel is what
+  // decides the division — never the browser session of whoever is signed in.
   const channels = await withoutTenant(deps.control, 'resolving channel to tenant', (tx) =>
-    tx.query<{ id: string; tenant_id: string }>(
-      `select id, tenant_id from channels where kind = 'whatsapp' and external_id = $1`,
+    tx.query<{ id: string; tenant_id: string; division_id: string }>(
+      `select id, tenant_id, division_id from channels where kind = 'whatsapp' and external_id = $1`,
       [phoneNumberId],
     ));
   const channel = channels[0];
   if (!channel) return await fail(deps, webhookEventId, `unknown channel ${phoneNumberId}`);
+  const scope = { divisionId: channel.division_id };
 
   for (const message of value.messages ?? []) {
     const body = message.text?.body ?? `[${message.type ?? 'unsupported'} message]`;
@@ -96,13 +98,15 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
     const providerTs = message.timestamp ? new Date(Number(message.timestamp) * 1000) : undefined;
 
     const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
-      ingestInboundMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
+      ingestInboundMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek, divisionId: channel.division_id }, {
         channelId: channel.id, from: message.from, body,
         providerMessageId: message.id, displayName: profileName, providerTs,
-      }));
+      }), scope);
 
     if (!result.duplicate) {
-      deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
+      deps.publish?.(channel.tenant_id, {
+        type: 'message', conversationId: result.conversationId, divisionId: channel.division_id,
+      });
       await deps.dispatch({
         queue: 'autopilot.draft',
         payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
@@ -117,7 +121,7 @@ export async function processInboundWebhook(deps: NormaliseDeps, webhookEventId:
           where tenant_id = $1 and provider_message_id = $2 and status <> 'read'`,
         [channel.tenant_id, status.id, status.status],
       );
-    });
+    }, scope);
   }
 
   return { status: 'processed' };
@@ -162,12 +166,14 @@ async function processWaBridgeEvent(
   deps: NormaliseDeps, webhookEventId: string, payload: WaBridgeEventPayload,
 ): Promise<{ status: string }> {
   const channels = await withoutTenant(deps.control, 'resolving wa-bridge channel to tenant', (tx) =>
-    tx.query<{ id: string; tenant_id: string }>(
-      `select id, tenant_id from channels where kind = 'whatsapp_web' and id = $1`,
+    tx.query<{ id: string; tenant_id: string; division_id: string }>(
+      `select id, tenant_id, division_id from channels where kind = 'whatsapp_web' and id = $1`,
       [payload.channelId],
     ));
   const channel = channels[0];
   if (!channel) return await fail(deps, webhookEventId, `unknown wa-bridge channel ${payload.channelId}`);
+  const scope = { divisionId: channel.division_id };
+  const ctx = { tenantId: channel.tenant_id, kek: deps.kek, divisionId: channel.division_id };
 
   if (payload.event === 'message') {
     const m = payload.message;
@@ -193,25 +199,31 @@ async function processWaBridgeEvent(
     // against whatever the console itself already queued and sent.
     if (m.fromMe) {
       const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
-        recordPhoneReply({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
+        recordPhoneReply({ tx, ...ctx }, {
           channelId: channel.id, to: m.to, body: m.body || `[${m.type} message]`,
           displayName: m.displayName, providerMessageId, providerTs: new Date(m.timestampSec * 1000),
-        }));
-      if (!result.duplicate) deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
+        }), scope);
+      if (!result.duplicate) {
+        deps.publish?.(channel.tenant_id, {
+          type: 'message', conversationId: result.conversationId, divisionId: channel.division_id,
+        });
+      }
       return { status: 'processed' };
     }
 
     const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
-      ingestInboundMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
+      ingestInboundMessage({ tx, ...ctx }, {
         channelId: channel.id, from: m.from, body: m.body || `[${m.type} message]`,
         displayName: m.displayName, providerMessageId, providerTs: new Date(m.timestampSec * 1000),
-      }));
+      }), scope);
 
     if (!result.duplicate) {
-      deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
+      deps.publish?.(channel.tenant_id, {
+        type: 'message', conversationId: result.conversationId, divisionId: channel.division_id,
+      });
       // A brand is BD's to answer, not Autopilot's. Exactly one brain replies.
       const bd = await withTenant(deps.db, channel.tenant_id, (tx) =>
-        isBdConversation(tx, channel.tenant_id, result.conversationId));
+        isBdConversation(tx, channel.tenant_id, result.conversationId), scope);
       await deps.dispatch(bd
         ? {
             queue: 'bd.draft',
@@ -273,7 +285,7 @@ async function processWaBridgeEvent(
           [channel.tenant_id, channel.id]);
         break;
     }
-  });
+  }, scope);
 
   return { status: 'processed' };
 }
@@ -309,12 +321,14 @@ async function processInstagramEvent(
   if (m.is_echo) return { status: 'processed' };
 
   const channels = await withoutTenant(deps.control, 'resolving instagram channel to tenant', (tx) =>
-    tx.query<{ id: string; tenant_id: string }>(
-      `select id, tenant_id from channels where kind = 'instagram' and external_id = $1`,
+    tx.query<{ id: string; tenant_id: string; division_id: string }>(
+      `select id, tenant_id, division_id from channels where kind = 'instagram' and external_id = $1`,
       [payload.igAccountId],
     ));
   const channel = channels[0];
   if (!channel) return await fail(deps, webhookEventId, `unknown instagram channel ${payload.igAccountId}`);
+  const scope = { divisionId: channel.division_id };
+  const ctx = { tenantId: channel.tenant_id, kek: deps.kek, divisionId: channel.division_id };
 
   const psid = payload.messagingEvent.sender?.id;
   if (!psid) return await fail(deps, webhookEventId, 'instagram message with no sender psid');
@@ -324,7 +338,7 @@ async function processInstagramEvent(
   // something better than the bare psid. Best-effort: a contact still gets
   // recorded even when this fails, just without a name yet.
   const displayName = await withTenant(deps.db, channel.tenant_id, async (tx) => {
-    const ig = await getDecryptedIgToken({ tx, tenantId: channel.tenant_id, kek: deps.kek });
+    const ig = await getDecryptedIgToken({ tx, ...ctx });
     if (!ig) return null;
     try {
       const res = await fetch(`${IG_GRAPH_URL}/${psid}?${new URLSearchParams({
@@ -336,17 +350,19 @@ async function processInstagramEvent(
     } catch {
       return null;
     }
-  });
+  }, scope);
 
   const result = await withTenant(deps.db, channel.tenant_id, (tx) =>
-    ingestInboundInstagramMessage({ tx, tenantId: channel.tenant_id, kek: deps.kek }, {
+    ingestInboundInstagramMessage({ tx, ...ctx }, {
       channelId: channel.id, psid, body: m.text || '[unsupported message]',
       providerMessageId: m.mid!, displayName,
       providerTs: payload.messagingEvent.timestamp ? new Date(payload.messagingEvent.timestamp) : undefined,
-    }));
+    }), scope);
 
   if (!result.duplicate) {
-    deps.publish?.(channel.tenant_id, { type: 'message', conversationId: result.conversationId });
+    deps.publish?.(channel.tenant_id, {
+      type: 'message', conversationId: result.conversationId, divisionId: channel.division_id,
+    });
     await deps.dispatch({
       queue: 'autopilot.draft',
       payload: { tenantId: channel.tenant_id, conversationId: result.conversationId, messageId: result.messageId },
@@ -359,13 +375,13 @@ async function processInstagramEvent(
 
 export type IgBridgeDmEventPayload =
   | {
-      tenantId: string; event: 'message';
+      tenantId: string; sessionKey?: string; event: 'message';
       message: {
         threadId: string; participantUsername: string; senderUsername: string; text: string;
         direction: 'inbound' | 'outbound'; index: number;
       };
     }
-  | { tenantId: string; event: 'session_error'; error: string };
+  | { tenantId: string; sessionKey?: string; event: 'session_error'; error: string };
 
 /**
  * `apps/ig-bridge`'s scraped counterpart to `processInstagramEvent` — same
@@ -380,28 +396,38 @@ export type IgBridgeDmEventPayload =
 async function processIgBridgeDmEvent(
   deps: NormaliseDeps, webhookEventId: string, payload: IgBridgeDmEventPayload,
 ): Promise<{ status: string }> {
+  // The session key names which division's Instagram account this came off;
+  // a bridge that predates divisions sends none and is reporting for
+  // Marketing, whose key is the bare tenant id.
+  const sessionKey = payload.sessionKey ?? payload.tenantId;
+  const home = await bridgeSessionHome(deps.control, sessionKey);
+  if (!home || home.tenantId !== payload.tenantId) {
+    return await fail(deps, webhookEventId, `unknown ig-bridge session ${sessionKey}`);
+  }
+  const scope = { divisionId: home.divisionId };
+  const ctx = { tenantId: home.tenantId, kek: deps.kek, divisionId: home.divisionId };
+
   if (payload.event === 'session_error') {
     await withoutTenant(deps.control, 'recording an expired ig-bridge session', (tx) =>
       tx.query(
         `update ig_bridge_connections set status = 'error', last_error = $2, updated_at = now()
-          where tenant_id = $1`,
-        [payload.tenantId, payload.error],
+          where session_key = $1`,
+        [sessionKey, payload.error],
       ));
     await withoutTenant(deps.control, 'marking the ig-bridge channel disconnected', (tx) =>
-      tx.query(`update channels set status = 'error' where tenant_id = $1 and kind = 'instagram_bridge'`,
-        [payload.tenantId]));
+      tx.query(
+        `update channels set status = 'error'
+          where tenant_id = $1 and division_id = $2 and kind = 'instagram_bridge'`,
+        [home.tenantId, home.divisionId],
+      ));
     return { status: 'processed' };
   }
 
-  const channels = await withoutTenant(deps.control, 'resolving ig-bridge channel to tenant', (tx) =>
-    tx.query<{ id: string }>(
-      `select id from channels where tenant_id = $1 and kind = 'instagram_bridge'`,
-      [payload.tenantId],
-    ));
-  const channel = channels[0];
+  const channel = await withTenant(deps.db, home.tenantId, (tx) =>
+    findInstagramBridgeChannel({ tx, ...ctx }), scope);
   if (!channel) {
-    console.error(`[ig-bridge-dm] no 'instagram_bridge' channel found for tenant ${payload.tenantId} — reconnect from Pengaturan → Instagram so the channel row gets (re)created`);
-    return await fail(deps, webhookEventId, `no ig-bridge channel for tenant ${payload.tenantId}`);
+    console.error(`[ig-bridge-dm] no 'instagram_bridge' channel found for session ${sessionKey} — reconnect from Pengaturan → Instagram so the channel row gets (re)created`);
+    return await fail(deps, webhookEventId, `no ig-bridge channel for session ${sessionKey}`);
   }
 
   // Keyed on the sender and the message's position in the thread, not just
@@ -411,7 +437,7 @@ async function processIgBridgeDmEvent(
   // identically to its own earlier occurrence and vanish as a false
   // duplicate every time after the first.
   const externalId = crypto.createHash('sha256')
-    .update(`ig_dm:${payload.tenantId}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.index}:${payload.message.text}`)
+    .update(`ig_dm:${sessionKey}:${payload.message.threadId}:${payload.message.senderUsername}:${payload.message.index}:${payload.message.text}`)
     .digest('hex');
 
   // Scraping never sees a contact's real display name, only their @handle —
@@ -422,23 +448,25 @@ async function processIgBridgeDmEvent(
   // applies on first creation (`upsertContactByIgUsername` coalesces against
   // whatever's already there), so a name filled in by hand later stays put.
   const result = payload.message.direction === 'outbound'
-    ? await withTenant(deps.db, payload.tenantId, (tx) =>
-        recordIgBridgeAgentReply({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
-          channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
+    ? await withTenant(deps.db, home.tenantId, (tx) =>
+        recordIgBridgeAgentReply({ tx, ...ctx }, {
+          channelId: channel.channelId, username: payload.message.participantUsername, threadId: payload.message.threadId,
           body: payload.message.text, providerMessageId: externalId,
           displayName: payload.message.participantUsername,
-        }))
-    : await withTenant(deps.db, payload.tenantId, (tx) =>
-        ingestInboundInstagramDmMessage({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
-          channelId: channel.id, username: payload.message.participantUsername, threadId: payload.message.threadId,
+        }), scope)
+    : await withTenant(deps.db, home.tenantId, (tx) =>
+        ingestInboundInstagramDmMessage({ tx, ...ctx }, {
+          channelId: channel.channelId, username: payload.message.participantUsername, threadId: payload.message.threadId,
           body: payload.message.text, providerMessageId: externalId,
           displayName: payload.message.participantUsername,
-        }));
+        }), scope);
 
   console.log(`[ig-bridge-dm] ${result.duplicate ? 'duplicate, skipped' : 'ingested'} (${payload.message.direction}): ${payload.message.participantUsername} in thread ${payload.message.threadId}`);
 
   if (!result.duplicate) {
-    deps.publish?.(payload.tenantId, { type: 'message', conversationId: result.conversationId });
+    deps.publish?.(home.tenantId, {
+      type: 'message', conversationId: result.conversationId, divisionId: home.divisionId,
+    });
     // A reply the agent already sent — from the console or, here, from
     // their own phone — needs no autopilot draft; there is nothing new for
     // it to answer.
@@ -447,8 +475,8 @@ async function processIgBridgeDmEvent(
       // answer. Instagram DMs are where the inbound SOP's own examples come
       // from (an ad tap, a story reply), so routing them to a shop's product
       // catalogue would be the wrong brain on the highest-intent channel.
-      const bd = await withTenant(deps.db, payload.tenantId, (tx) =>
-        isBdConversation(tx, payload.tenantId, result.conversationId));
+      const bd = await withTenant(deps.db, home.tenantId, (tx) =>
+        isBdConversation(tx, home.tenantId, result.conversationId), scope);
       await deps.dispatch(bd
         ? {
             queue: 'bd.draft',
@@ -471,6 +499,7 @@ async function processIgBridgeDmEvent(
 
 export interface IgCommentEventPayload {
   tenantId: string;
+  sessionKey?: string;
   comment: {
     postRef: string; commentRef: string; commenter: string; text: string; at?: string;
     parentRef?: string | null;
@@ -491,12 +520,19 @@ async function processIgCommentEvent(
   deps: NormaliseDeps, payload: IgCommentEventPayload,
 ): Promise<{ status: string }> {
   const c = payload.comment;
-  const result = await withTenant(deps.db, payload.tenantId, (tx) =>
-    recordIgComment({ tx, tenantId: payload.tenantId, kek: deps.kek }, {
+  // Same rule as the DM path: the session key is the division, and a bridge
+  // that sends none is reporting for Marketing.
+  const sessionKey = payload.sessionKey ?? payload.tenantId;
+  const home = await bridgeSessionHome(deps.control, sessionKey);
+  if (!home || home.tenantId !== payload.tenantId) {
+    throw new Error(`[ig-comment] unknown ig-bridge session ${sessionKey}`);
+  }
+  const result = await withTenant(deps.db, home.tenantId, (tx) =>
+    recordIgComment({ tx, tenantId: home.tenantId, kek: deps.kek, divisionId: home.divisionId }, {
       postRef: c.postRef, commentRef: c.commentRef, commenter: c.commenter, text: c.text,
       parentRef: c.parentRef ?? null,
       commentedAt: c.at ? new Date(c.at) : null,
-    }));
+    }), { divisionId: home.divisionId });
 
   console.log(`[ig-comment] ${result.created ? 'baru' : 'sudah ada'}: @${c.commenter} on ${c.postRef}`);
 

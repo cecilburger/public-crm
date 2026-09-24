@@ -8,6 +8,8 @@ export interface TestTenant {
   tenantId: string;
   channelId: string;
   slug: string;
+  /** Both division ids; everything a test writes without choosing lands in `marketing`. */
+  divisions: { marketing: string; ai: string };
 }
 
 /**
@@ -20,12 +22,12 @@ export interface TestTenant {
  * locks, partial indexes and `ON CONFLICT … WHERE` are supposed to behave the
  * same in both, and the only way to know is to run them in both.
  */
-export async function freshDb(): Promise<Database> {
+export async function freshDb(opts: { upTo?: string } = {}): Promise<Database> {
   const adminUrl = process.env.TEST_DATABASE_URL;
 
   if (!adminUrl) {
     const db = await connectPglite();
-    await migrate(db);
+    await migrate(db, { upTo: opts.upTo });
     return db;
   }
 
@@ -40,7 +42,7 @@ export async function freshDb(): Promise<Database> {
   // Connects as the owner, so it must drop into kirana_app itself — exactly as
   // PGlite's bootstrap superuser does.
   const db = await connectPostgres(url.toString(), { max: 4, assumeRole: true });
-  await migrate(db);
+  await migrate(db, { upTo: opts.upTo });
 
   const closeConnection = db.close.bind(db);
   return {
@@ -55,7 +57,7 @@ export async function freshDb(): Promise<Database> {
 }
 
 export async function makeTenant(db: Database, slug: string): Promise<TestTenant> {
-  const { tenantId } = await provisionTenant(db, TEST_KEK, {
+  const { tenantId, divisions } = await provisionTenant(db, TEST_KEK, {
     slug,
     name: `Tenant ${slug}`,
     ownerEmail: `owner@${slug}.test`,
@@ -66,5 +68,5 @@ export async function makeTenant(db: Database, slug: string): Promise<TestTenant
   const channel = await addChannel(db, tenantId, {
     kind: 'whatsapp', displayName: `${slug} WA`, externalId: `wa-${slug}`, phoneE164: '+628110000001',
   });
-  return { tenantId, channelId: channel.id, slug };
+  return { tenantId, channelId: channel.id, slug, divisions };
 }

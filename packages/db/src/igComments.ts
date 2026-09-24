@@ -5,6 +5,8 @@ export type CommentStepStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 
 export interface IgCommentRow {
   id: string;
+  /** The division whose account this was left on — which bridge session answers it. */
+  divisionId: string;
   platform: 'instagram' | 'facebook';
   postRef: string;
   commentRef: string;
@@ -22,7 +24,7 @@ export interface IgCommentRow {
 }
 
 interface DbRow {
-  id: string; platform: 'instagram' | 'facebook'; post_ref: string; comment_ref: string;
+  id: string; division_id: string; platform: 'instagram' | 'facebook'; post_ref: string; comment_ref: string;
   parent_ref: string | null;
   commenter_enc: string; text_enc: string;
   public_status: CommentStepStatus; dm_status: CommentStepStatus;
@@ -30,13 +32,13 @@ interface DbRow {
   conversation_id: string | null; commented_at: Date | null; created_at: Date;
 }
 
-const COLUMNS = `id, platform, post_ref, comment_ref, parent_ref, commenter_enc, text_enc,
+const COLUMNS = `id, division_id, platform, post_ref, comment_ref, parent_ref, commenter_enc, text_enc,
                  public_status, dm_status, public_reply_enc, last_error,
                  conversation_id, commented_at, created_at`;
 
 function mapRow(r: DbRow, keys: Parameters<typeof openField>[0], tenantId: string): IgCommentRow {
   return {
-    id: r.id, platform: r.platform, postRef: r.post_ref, commentRef: r.comment_ref,
+    id: r.id, divisionId: r.division_id, platform: r.platform, postRef: r.post_ref, commentRef: r.comment_ref,
     parentRef: r.parent_ref,
     commenter: openField(keys, tenantId, r.commenter_enc),
     text: openField(keys, tenantId, r.text_enc),

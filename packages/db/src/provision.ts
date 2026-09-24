@@ -1,8 +1,9 @@
 import { hashPassword, type Role } from '@kirana/core';
 import type { Database } from './sql.ts';
-import { withTenant, withoutTenant } from './tenant.ts';
+import { withTenant, withoutTenant, type TenantScope } from './tenant.ts';
 import { provisionTenantKeys } from './keys.ts';
 import { audit } from './audit.ts';
+import { ensureTenantDivisions } from './divisions.ts';
 
 export interface ProvisionInput {
   slug: string;
@@ -30,8 +31,12 @@ export async function provisionTenant(db: Database, kek: Buffer, input: Provisio
     return rows[0]!;
   });
 
-  await withTenant(db, created.id, async (tx) => {
+  const divisions = await withTenant(db, created.id, async (tx) => {
     await provisionTenantKeys(tx, kek, created.id);
+
+    // Marketing and AI exist from the first moment, so every row this tenant
+    // ever writes has a division to default into.
+    const divisionIds = await ensureTenantDivisions(tx, created.id);
 
     const owner = await tx.query<{ id: string }>(
       `insert into users (tenant_id, email, name, password_hash, role, status)
@@ -72,10 +77,11 @@ export async function provisionTenant(db: Database, kek: Buffer, input: Provisio
       meta: { slug: input.slug, plan: input.plan ?? 'starter' },
     });
 
-    return owner[0]!.id;
+    void owner;
+    return divisionIds;
   });
 
-  return { tenantId: created.id };
+  return { tenantId: created.id, divisions };
 }
 
 export async function addUser(
@@ -99,7 +105,10 @@ export async function addUser(
 export async function addChannel(
   db: Database, tenantId: string,
   input: { kind: string; displayName: string; externalId?: string; phoneE164?: string; wabaId?: string },
+  scope: TenantScope = {},
 ) {
+  // Lands in the division the scope names, else Marketing — the same default
+  // every division-scoped insert has.
   return withTenant(db, tenantId, async (tx) => {
     const rows = await tx.query<{ id: string }>(
       `insert into channels (tenant_id, kind, display_name, external_id, phone_e164, waba_id)
@@ -112,5 +121,5 @@ export async function addChannel(
       meta: { kind: input.kind },
     });
     return rows[0]!;
-  });
+  }, scope);
 }

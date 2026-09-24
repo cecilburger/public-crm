@@ -1,6 +1,7 @@
 import type { Ctx } from './repo.ts';
 import { tenantKeys, sealField, openField } from './keys.ts';
 import { audit } from './audit.ts';
+import { divisionSql } from './divisions.ts';
 
 export interface IgMetaConnection {
   status: 'disconnected' | 'connected' | 'error';
@@ -9,13 +10,15 @@ export interface IgMetaConnection {
   updatedAt: Date | null;
 }
 
+
 /** The access token is never returned here — only `getDecryptedIgToken` (for sending) ever decrypts it. */
 export async function getIgMetaConnection(ctx: Ctx): Promise<IgMetaConnection> {
   const rows = await ctx.tx.query<{
     ig_username: string | null; status: IgMetaConnection['status']; last_error: string | null; updated_at: Date;
   }>(
-    `select ig_username, status, last_error, updated_at from ig_meta_connections where tenant_id = $1`,
-    [ctx.tenantId],
+    `select ig_username, status, last_error, updated_at from ig_meta_connections
+      where tenant_id = $1 and division_id = ${divisionSql(2)}`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
   const row = rows[0];
   if (!row) return { status: 'disconnected', igUsername: null, lastError: null, updatedAt: null };
@@ -25,8 +28,9 @@ export async function getIgMetaConnection(ctx: Ctx): Promise<IgMetaConnection> {
 /** The one place the real access token comes back out — for calling the Graph API, never for display. */
 export async function getDecryptedIgToken(ctx: Ctx): Promise<{ accessToken: string; igUserId: string } | null> {
   const rows = await ctx.tx.query<{ access_token_enc: string | null; ig_user_id: string | null }>(
-    `select access_token_enc, ig_user_id from ig_meta_connections where tenant_id = $1 and status = 'connected'`,
-    [ctx.tenantId],
+    `select access_token_enc, ig_user_id from ig_meta_connections
+      where tenant_id = $1 and status = 'connected' and division_id = ${divisionSql(2)}`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
   const row = rows[0];
   if (!row?.access_token_enc || !row.ig_user_id) return null;
@@ -41,13 +45,14 @@ export async function setIgMetaConnection(
   const tokenEnc = sealField(keys, ctx.tenantId, args.accessToken);
 
   await ctx.tx.query(
-    `insert into ig_meta_connections (tenant_id, access_token_enc, ig_user_id, ig_username, status, last_error, updated_by)
-     values ($1, $2, $3, $4, 'connected', null, $5)
-     on conflict (tenant_id) do update set
+    `insert into ig_meta_connections
+       (tenant_id, division_id, access_token_enc, ig_user_id, ig_username, status, last_error, updated_by)
+     values ($1, ${divisionSql(6)}, $2, $3, $4, 'connected', null, $5)
+     on conflict (tenant_id, division_id) do update set
        access_token_enc = excluded.access_token_enc, ig_user_id = excluded.ig_user_id,
        ig_username = excluded.ig_username, status = 'connected', last_error = null,
        updated_by = $5, updated_at = now()`,
-    [ctx.tenantId, tokenEnc, args.igUserId, args.igUsername, args.actorId],
+    [ctx.tenantId, tokenEnc, args.igUserId, args.igUsername, args.actorId, ctx.divisionId ?? null],
   );
 
   await audit(ctx.tx, ctx.tenantId, {
@@ -58,10 +63,11 @@ export async function setIgMetaConnection(
 
 export async function setIgMetaError(ctx: Ctx, args: { error: string; actorId: string }): Promise<void> {
   await ctx.tx.query(
-    `insert into ig_meta_connections (tenant_id, status, last_error, updated_by)
-     values ($1, 'error', $2, $3)
-     on conflict (tenant_id) do update set status = 'error', last_error = $2, updated_by = $3, updated_at = now()`,
-    [ctx.tenantId, args.error, args.actorId],
+    `insert into ig_meta_connections (tenant_id, division_id, status, last_error, updated_by)
+     values ($1, ${divisionSql(4)}, 'error', $2, $3)
+     on conflict (tenant_id, division_id) do update set
+       status = 'error', last_error = $2, updated_by = $3, updated_at = now()`,
+    [ctx.tenantId, args.error, args.actorId, ctx.divisionId ?? null],
   );
 }
 
@@ -70,16 +76,17 @@ export async function clearIgMetaConnection(ctx: Ctx, args: { actorId: string })
     `update ig_meta_connections
         set status = 'disconnected', access_token_enc = null, ig_user_id = null, ig_username = null,
             last_error = null, updated_by = $2, updated_at = now()
-      where tenant_id = $1`,
-    [ctx.tenantId, args.actorId],
+      where tenant_id = $1 and division_id = ${divisionSql(3)}`,
+    [ctx.tenantId, args.actorId, ctx.divisionId ?? null],
   );
   await audit(ctx.tx, ctx.tenantId, {
     actorType: 'user', actorId: args.actorId, action: 'ig_meta.disconnected',
     resourceType: 'tenant', resourceId: ctx.tenantId,
   });
   await ctx.tx.query(
-    `update channels set status = 'disabled' where tenant_id = $1 and kind = 'instagram'`,
-    [ctx.tenantId],
+    `update channels set status = 'disabled'
+      where tenant_id = $1 and kind = 'instagram' and division_id = ${divisionSql(2)}`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
 }
 
@@ -87,7 +94,9 @@ export async function clearIgMetaConnection(ctx: Ctx, args: { actorId: string })
  * The routing anchor for Chat IG — conversations/messages hang off this row,
  * not off `ig_meta_connections` directly, same as every other channel. The
  * token itself still only ever lives in `ig_meta_connections`; this row
- * carries no credential of its own.
+ * carries no credential of its own. Lands in the transaction's division; an
+ * account already owned by another division must be refused first
+ * (`channelHome`).
  */
 export async function ensureInstagramChannel(
   ctx: Ctx, args: { igUserId: string; igUsername: string },

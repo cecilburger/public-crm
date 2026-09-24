@@ -3,7 +3,15 @@ import type { Sql } from './sql.ts';
 import { sealField, openField, fieldIndex, tenantKeys, type TenantKeys } from './keys.ts';
 import { recordConversationActivity, incrementUsage, ensureBillingPeriod } from './metering.ts';
 
-export interface Ctx { tx: Sql; tenantId: string; kek: Buffer }
+/**
+ * `divisionId` is informational for most callers: the transaction already
+ * carries the division (`withTenant`'s scope) and every division-scoped table
+ * defaults new rows into it. It is named here for the reads that must pick a
+ * division explicitly — the per-division connection rows — where "the
+ * transaction's division, else Marketing" is spelled `coalesce($n::uuid,
+ * app_default_division())` in the SQL.
+ */
+export interface Ctx { tx: Sql; tenantId: string; kek: Buffer; divisionId?: string | null }
 
 /** Seals a phone for storage, or returns nulls when the form left it blank. */
 export function sealPhone(keys: TenantKeys, tenantId: string, raw: string | null): { enc: string | null; bidx: string | null } {
@@ -55,7 +63,7 @@ export async function upsertContactByPhone(
   const rows = await ctx.tx.query<{ id: string; created: boolean }>(
     `insert into contacts (tenant_id, display_name, phone_enc, phone_bidx, first_seen_at, last_seen_at)
      values ($1, $2, $3, $4, $5, $5)
-     on conflict (tenant_id, phone_bidx) where phone_bidx is not null
+     on conflict (tenant_id, division_id, phone_bidx) where phone_bidx is not null
      do update set last_seen_at = excluded.last_seen_at,
                    display_name = coalesce(contacts.display_name, excluded.display_name)
      returning id, (xmax = 0) as created`,
@@ -80,7 +88,7 @@ export async function upsertContactByIgPsid(
   const rows = await ctx.tx.query<{ id: string; created: boolean }>(
     `insert into contacts (tenant_id, display_name, ig_psid_enc, ig_psid_bidx, first_seen_at, last_seen_at)
      values ($1, $2, $3, $4, $5, $5)
-     on conflict (tenant_id, ig_psid_bidx) where ig_psid_bidx is not null
+     on conflict (tenant_id, division_id, ig_psid_bidx) where ig_psid_bidx is not null
      do update set last_seen_at = excluded.last_seen_at,
                    display_name = coalesce(contacts.display_name, excluded.display_name)
      returning id, (xmax = 0) as created`,
@@ -545,7 +553,7 @@ export async function upsertContactByIgUsername(
   const rows = await ctx.tx.query<{ id: string; created: boolean }>(
     `insert into contacts (tenant_id, display_name, ig_username_enc, ig_username_bidx, first_seen_at, last_seen_at)
      values ($1, $2, $3, $4, $5, $5)
-     on conflict (tenant_id, ig_username_bidx) where ig_username_bidx is not null
+     on conflict (tenant_id, division_id, ig_username_bidx) where ig_username_bidx is not null
      do update set last_seen_at = excluded.last_seen_at,
                    display_name = coalesce(contacts.display_name, excluded.display_name)
      returning id, (xmax = 0) as created`,

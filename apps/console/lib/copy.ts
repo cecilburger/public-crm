@@ -18,6 +18,21 @@ export const t = {
     tagline: 'Semua chat client di satu tempat',
   },
 
+  /**
+   * Marketing and AI are two divisions of one workspace: same menu, same
+   * pages, different data — and different WhatsApp, Instagram, Facebook and
+   * Calendar accounts. The switcher in the sidebar picks which one every page
+   * shows; the badge on a settings page says whose account is on screen.
+   */
+  division: {
+    label: 'Divisi',
+    marketing: 'Marketing',
+    ai: 'AI',
+    switch: 'Ganti divisi',
+    badge: (name: string) => `Divisi: ${name}`,
+    hint: 'Data, akun, dan kalender tiap divisi terpisah.',
+  },
+
   search: {
     trigger: 'Cari…',
     shortcut: 'Ctrl+K',

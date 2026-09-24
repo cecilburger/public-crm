@@ -14,6 +14,22 @@ const authDir = path.join(import.meta.dirname, '..', '.ig_bridge_auth');
 
 const app = Fastify({ logger: true });
 
+/**
+ * A session key is a division's profile name, issued by the CRM: Marketing's
+ * is the bare tenant id (what every profile was called before divisions
+ * existed), any other division's is `<tenantId>-<division>`. The tenant id
+ * the CRM wants on every event is therefore recoverable from the key alone;
+ * the copy persisted at login time is preferred when it exists.
+ */
+const SESSION_KEY = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-[a-z]+)?$/i;
+function tenantIdFromSessionKey(sessionKey: string): string | null {
+  const match = SESSION_KEY.exec(sessionKey);
+  return match ? match[1]!.toLowerCase() : null;
+}
+async function tenantOf(sessionKey: string): Promise<string> {
+  return (await sessions.getTenantId(sessionKey)) ?? tenantIdFromSessionKey(sessionKey) ?? sessionKey;
+}
+
 async function postEvent(ev: DmWatcherEvent | IgCommentEvent): Promise<void> {
   // Comments spool through their own route: they are not messages, and the
   // ig-bridge webhook keys DMs on (thread, sender, seq, text), which a
@@ -23,12 +39,14 @@ async function postEvent(ev: DmWatcherEvent | IgCommentEvent): Promise<void> {
     const res = await fetch(`${KIRANA_API_URL}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${IG_BRIDGE_SECRET}` },
-      body: JSON.stringify(ev),
+      // Both identities on the wire: the profile the event came off, and the
+      // tenant the CRM files it under.
+      body: JSON.stringify({ ...ev, tenantId: await tenantOf(ev.sessionKey) }),
     });
     if (!res.ok) {
       app.log.warn({ status: res.status, event: ev.event }, 'kirana api rejected an ig-bridge event');
     } else {
-      app.log.info({ event: ev.event, tenantId: ev.tenantId }, 'ig-bridge event posted to kirana api');
+      app.log.info({ event: ev.event, sessionKey: ev.sessionKey }, 'ig-bridge event posted to kirana api');
     }
   } catch (err) {
     app.log.error({ err, event: ev.event }, 'could not reach kirana api');
@@ -109,21 +127,30 @@ app.addHook('onRequest', async (req, reply) => {
 
 app.get('/healthz', async () => ({ status: 'ok' }));
 
-app.post<{ Params: { tenantId: string }; Body: { username: string; password: string } }>(
-  '/internal/sessions/:tenantId/login', async (req, reply) => {
-    const { username, password } = req.body ?? {};
+// The CRM names the tenant on every login request so events can carry it
+// without a lookup; a request that omits it (an older CRM) leaves the key to
+// speak for itself.
+const rememberTenant = async (sessionKey: string, tenantId: string | undefined): Promise<void> => {
+  if (tenantId) await sessions.persistTenantId(sessionKey, tenantId);
+};
+
+app.post<{ Params: { sessionKey: string }; Body: { username: string; password: string; tenantId?: string } }>(
+  '/internal/sessions/:sessionKey/login', async (req, reply) => {
+    const { username, password, tenantId } = req.body ?? {};
     if (!username || !password) return reply.status(400).send({ error: 'username and password are required' });
-    const result = await sessions.login(req.params.tenantId, username, password);
-    if (result.status === 'ready') await watcher.attachTenant(req.params.tenantId);
+    await rememberTenant(req.params.sessionKey, tenantId);
+    const result = await sessions.login(req.params.sessionKey, username, password);
+    if (result.status === 'ready') await watcher.attachTenant(req.params.sessionKey);
     return reply.send(result);
   });
 
-app.post<{ Params: { tenantId: string }; Body: { username: string; sessionId: string; csrfToken?: string; dsUserId?: string } }>(
-  '/internal/sessions/:tenantId/login-cookie', async (req, reply) => {
-    const { username, sessionId, csrfToken, dsUserId } = req.body ?? {};
+app.post<{ Params: { sessionKey: string }; Body: { username: string; sessionId: string; csrfToken?: string; dsUserId?: string; tenantId?: string } }>(
+  '/internal/sessions/:sessionKey/login-cookie', async (req, reply) => {
+    const { username, sessionId, csrfToken, dsUserId, tenantId } = req.body ?? {};
     if (!username || !sessionId) return reply.status(400).send({ error: 'username and sessionId are required' });
-    const result = await sessions.loginWithCookie(req.params.tenantId, username, sessionId, csrfToken, dsUserId);
-    if (result.status === 'ready') await watcher.attachTenant(req.params.tenantId);
+    await rememberTenant(req.params.sessionKey, tenantId);
+    const result = await sessions.loginWithCookie(req.params.sessionKey, username, sessionId, csrfToken, dsUserId);
+    if (result.status === 'ready') await watcher.attachTenant(req.params.sessionKey);
     return reply.send(result);
   });
 
@@ -135,22 +162,23 @@ app.post<{ Params: { tenantId: string }; Body: { username: string; sessionId: st
  * `/status`. Attaching the watcher happens here rather than in the CRM, because
  * the login settles long after the request that started it has been answered.
  */
-app.post<{ Params: { tenantId: string } }>(
-  '/internal/sessions/:tenantId/login-window', async (req, reply) => {
-    const result = await sessions.openLoginWindow(req.params.tenantId, (settled) => {
+app.post<{ Params: { sessionKey: string }; Body: { tenantId?: string } | undefined }>(
+  '/internal/sessions/:sessionKey/login-window', async (req, reply) => {
+    await rememberTenant(req.params.sessionKey, req.body?.tenantId);
+    const result = await sessions.openLoginWindow(req.params.sessionKey, (settled) => {
       if (settled.status !== 'ready') return;
-      void watcher.attachTenant(req.params.tenantId)
+      void watcher.attachTenant(req.params.sessionKey)
         .catch((err) => app.log.warn({ err }, 'ig-bridge: failed to attach after browser login'));
     });
     return reply.send(result);
   });
 
-app.post<{ Params: { tenantId: string }; Body: { code: string } }>(
-  '/internal/sessions/:tenantId/challenge', async (req, reply) => {
+app.post<{ Params: { sessionKey: string }; Body: { code: string } }>(
+  '/internal/sessions/:sessionKey/challenge', async (req, reply) => {
     const { code } = req.body ?? {};
     if (!code) return reply.status(400).send({ error: 'code is required' });
-    const result = await sessions.submitChallenge(req.params.tenantId, code);
-    if (result.status === 'ready') await watcher.attachTenant(req.params.tenantId);
+    const result = await sessions.submitChallenge(req.params.sessionKey, code);
+    if (result.status === 'ready') await watcher.attachTenant(req.params.sessionKey);
     return reply.send(result);
   });
 
@@ -161,12 +189,12 @@ app.post<{ Params: { tenantId: string }; Body: { code: string } }>(
  * session still work, and does the account have comments to read" before
  * anything is ingested, and it stays as the way to check that afterwards.
  */
-app.get<{ Params: { tenantId: string }; Querystring: { limit?: string; all?: string } }>(
-  '/internal/sessions/:tenantId/comments', async (req, reply) => {
-    const username = await sessions.getOwnUsername(req.params.tenantId);
+app.get<{ Params: { sessionKey: string }; Querystring: { limit?: string; all?: string } }>(
+  '/internal/sessions/:sessionKey/comments', async (req, reply) => {
+    const username = await sessions.getOwnUsername(req.params.sessionKey);
     if (!username) return reply.status(404).send({ error: 'no active session for this tenant' });
 
-    const page = await sessions.newPage(req.params.tenantId);
+    const page = await sessions.newPage(req.params.sessionKey);
     if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
     try {
       const limit = Math.min(Math.max(Number(req.query?.limit ?? 6) || 6, 1), 12);
@@ -179,7 +207,7 @@ app.get<{ Params: { tenantId: string }; Querystring: { limit?: string; all?: str
       // using — which it did, on the very first live run, from a plain
       // rate-limit page. Only the DM path, which can tell a redirect to the
       // login form apart from a throttle, is allowed to make that call.
-      app.log.warn({ err, tenantId: req.params.tenantId }, 'ig-bridge could not read comments');
+      app.log.warn({ err, sessionKey: req.params.sessionKey }, 'ig-bridge could not read comments');
       return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
     } finally {
       await page.close().catch(() => {});
@@ -196,14 +224,14 @@ app.get<{ Params: { tenantId: string }; Querystring: { limit?: string; all?: str
  * the parsed result is what let a double-post happen — the parser said
  * "no reply here" while two were plainly under the post.
  */
-app.get<{ Params: { tenantId: string }; Querystring: { path?: string } }>(
-  '/internal/sessions/:tenantId/ig-get', async (req, reply) => {
+app.get<{ Params: { sessionKey: string }; Querystring: { path?: string } }>(
+  '/internal/sessions/:sessionKey/ig-get', async (req, reply) => {
     const path = req.query?.path ?? '';
     if (!path.startsWith('/api/v1/')) {
       return reply.status(400).send({ error: 'path must start with /api/v1/' });
     }
 
-    const page = await sessions.newPage(req.params.tenantId);
+    const page = await sessions.newPage(req.params.sessionKey);
     if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
     try {
       if (!page.url().includes('instagram.com')) {
@@ -233,16 +261,16 @@ app.get<{ Params: { tenantId: string }; Querystring: { path?: string } }>(
  * the only way it was being tested was by posting — which is how a comment
  * ended up answered twice. This makes it checkable for free.
  */
-app.get<{ Params: { tenantId: string }; Querystring: { postRef?: string; commentRef?: string } }>(
-  '/internal/sessions/:tenantId/comments/replied', async (req, reply) => {
+app.get<{ Params: { sessionKey: string }; Querystring: { postRef?: string; commentRef?: string } }>(
+  '/internal/sessions/:sessionKey/comments/replied', async (req, reply) => {
     const { postRef, commentRef } = req.query ?? {};
     if (!postRef || !commentRef) return reply.status(400).send({ error: 'postRef and commentRef are required' });
     const mediaId = mediaIdFromShortcode(postRef);
     if (!mediaId) return reply.status(400).send({ error: `postRef tidak valid: ${postRef}` });
 
-    const ownUsername = await sessions.getOwnUsername(req.params.tenantId);
+    const ownUsername = await sessions.getOwnUsername(req.params.sessionKey);
     if (!ownUsername) return reply.status(404).send({ error: 'no active session for this tenant' });
-    const page = await sessions.newPage(req.params.tenantId);
+    const page = await sessions.newPage(req.params.sessionKey);
     if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
 
     try {
@@ -266,12 +294,12 @@ app.get<{ Params: { tenantId: string }; Querystring: { postRef?: string; comment
  * was being tested was by running the whole reply — which meant a public
  * post every time we wanted to learn one fact about the DM.
  */
-app.get<{ Params: { tenantId: string }; Querystring: { username?: string } }>(
-  '/internal/sessions/:tenantId/dm-probe', async (req, reply) => {
+app.get<{ Params: { sessionKey: string }; Querystring: { username?: string } }>(
+  '/internal/sessions/:sessionKey/dm-probe', async (req, reply) => {
     const username = req.query?.username;
     if (!username) return reply.status(400).send({ error: 'username is required' });
 
-    const page = await sessions.newPage(req.params.tenantId);
+    const page = await sessions.newPage(req.params.sessionKey);
     if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
     try {
       const threadId = await openThreadWithUser(page, username);
@@ -284,32 +312,32 @@ app.get<{ Params: { tenantId: string }; Querystring: { username?: string } }>(
   });
 
 /** Diagnostic for the above — see `probeCommentRequests`. Read-only. */
-app.get<{ Params: { tenantId: string } }>(
-  '/internal/sessions/:tenantId/comment-probe', async (req, reply) => {
-    const username = await sessions.getOwnUsername(req.params.tenantId);
+app.get<{ Params: { sessionKey: string } }>(
+  '/internal/sessions/:sessionKey/comment-probe', async (req, reply) => {
+    const username = await sessions.getOwnUsername(req.params.sessionKey);
     if (!username) return reply.status(404).send({ error: 'no active session for this tenant' });
 
-    const page = await sessions.newPage(req.params.tenantId);
+    const page = await sessions.newPage(req.params.sessionKey);
     if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
     try {
       return reply.send(await probeCommentRequests(page, username));
     } catch (err) {
-      app.log.warn({ err, tenantId: req.params.tenantId }, 'ig-bridge comment probe failed');
+      app.log.warn({ err, sessionKey: req.params.sessionKey }, 'ig-bridge comment probe failed');
       return reply.status(502).send({ error: err instanceof Error ? err.message : 'Probe gagal' });
     } finally {
       await page.close().catch(() => {});
     }
   });
 
-app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status', async (req, reply) => {
-  const hasSession = await sessions.hasSession(req.params.tenantId);
+app.get<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey/status', async (req, reply) => {
+  const hasSession = await sessions.hasSession(req.params.sessionKey);
 
   // A live session that never recorded whose it is. Recoverable, and worth
   // recovering here rather than making the operator disconnect and log in
   // again for a session that works. Only ever runs when one is missing.
-  let username = await sessions.getOwnUsername(req.params.tenantId);
-  if (hasSession && !username && !sessions.isAwaitingLogin(req.params.tenantId)) {
-    username = await sessions.recoverOwnUsername(req.params.tenantId).catch(() => null);
+  let username = await sessions.getOwnUsername(req.params.sessionKey);
+  if (hasSession && !username && !sessions.isAwaitingLogin(req.params.sessionKey)) {
+    username = await sessions.recoverOwnUsername(req.params.sessionKey).catch(() => null);
   }
 
   return reply.send({
@@ -317,23 +345,23 @@ app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status',
     // Only meaningful for the browser-login flow: a window is open on this
     // machine and a person is part-way through it. The CRM shows that rather
     // than "disconnected", which would invite them to start a second one.
-    awaitingLogin: sessions.isAwaitingLogin(req.params.tenantId),
+    awaitingLogin: sessions.isAwaitingLogin(req.params.sessionKey),
     username,
     // Masked. See `capturedFor` — `sessionid` is the credential itself.
-    captured: sessions.capturedFor(req.params.tenantId),
+    captured: sessions.capturedFor(req.params.sessionKey),
   });
 });
 
-app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string; username?: string } }>(
-  '/internal/sessions/:tenantId/threads/:threadId/send', async (req, reply) => {
+app.post<{ Params: { sessionKey: string; threadId: string }; Body: { text: string; username?: string } }>(
+  '/internal/sessions/:sessionKey/threads/:threadId/send', async (req, reply) => {
     const { text, username } = req.body ?? {};
     if (!text) return reply.status(400).send({ error: 'text is required' });
     try {
-      await sessions.sendDm(req.params.tenantId, req.params.threadId, text, username);
-      watcher.markSentByUs(req.params.tenantId, req.params.threadId, text);
+      await sessions.sendDm(req.params.sessionKey, req.params.threadId, text, username);
+      watcher.markSentByUs(req.params.sessionKey, req.params.threadId, text);
       return reply.send({ sent: true });
     } catch (err) {
-      app.log.warn({ err, tenantId: req.params.tenantId, threadId: req.params.threadId }, 'ig-bridge send failed');
+      app.log.warn({ err, sessionKey: req.params.sessionKey, threadId: req.params.threadId }, 'ig-bridge send failed');
       const status = err instanceof NoActiveSessionError ? 404 : 502;
       return reply.status(status).send({ error: err instanceof Error ? err.message : 'Gagal mengirim pesan Instagram' });
     }
@@ -348,9 +376,9 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text: string;
  * not be reachable), and that is a normal outcome, not an error.
  */
 app.post<{
-  Params: { tenantId: string };
+  Params: { sessionKey: string };
   Body: { postRef?: string; commentRef?: string; commenter?: string; publicReply?: string; dmText?: string };
-}>('/internal/sessions/:tenantId/comments/reply', async (req, reply) => {
+}>('/internal/sessions/:sessionKey/comments/reply', async (req, reply) => {
   const { postRef, commentRef, commenter, publicReply, dmText } = req.body ?? {};
   if (!postRef || !commentRef || !commenter) {
     return reply.status(400).send({ error: 'postRef, commentRef and commenter are required' });
@@ -362,10 +390,10 @@ app.post<{
   const mediaId = mediaIdFromShortcode(postRef);
   if (!mediaId) return reply.status(400).send({ error: `postRef tidak valid: ${postRef}` });
 
-  const ownUsername = await sessions.getOwnUsername(req.params.tenantId);
+  const ownUsername = await sessions.getOwnUsername(req.params.sessionKey);
   if (!ownUsername) return reply.status(404).send({ error: 'no active session for this tenant' });
 
-  const page = await sessions.newPage(req.params.tenantId);
+  const page = await sessions.newPage(req.params.sessionKey);
   if (!page) return reply.status(404).send({ error: 'no active session for this tenant' });
 
   const result: {
@@ -424,7 +452,7 @@ app.post<{
               || !(await dmLanded(page, commenter, dmText, { sinceMs: startedAt }))) throw err;
             app.log.info({ commenter }, 'ig-bridge: DM confirmed through the inbox, not the thread view');
           }
-          watcher.markSentByUs(req.params.tenantId, threadId, dmText);
+          watcher.markSentByUs(req.params.sessionKey, threadId, dmText);
           result.dm = { sent: true, threadId };
         }
       } catch (err) {
@@ -438,8 +466,8 @@ app.post<{
   }
 });
 
-app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', async (req, reply) => {
-  await sessions.logout(req.params.tenantId);
+app.delete<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey', async (req, reply) => {
+  await sessions.logout(req.params.sessionKey);
   return reply.status(204).send();
 });
 

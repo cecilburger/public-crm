@@ -64,9 +64,9 @@ export class CommentWatcher {
   }
 
   private async sweepAll(): Promise<void> {
-    for (const tenantId of await this.sessions.knownTenantIds()) {
-      await this.sweep(tenantId).catch((err) =>
-        this.log.warn({ err, tenantId }, 'fb-bridge: comment sweep failed'));
+    for (const sessionKey of await this.sessions.knownSessionKeys()) {
+      await this.sweep(sessionKey).catch((err) =>
+        this.log.warn({ err, sessionKey }, 'fb-bridge: comment sweep failed'));
     }
   }
 
@@ -77,15 +77,15 @@ export class CommentWatcher {
    * must not have the next interval start a second one beside it, both reading
    * the same feed and both deciding the same comment is new.
    */
-  async sweep(tenantId: string): Promise<void> {
-    if (this.running.has(tenantId)) return;
-    const marker = await this.sessions.getPageMarker(tenantId);
+  async sweep(sessionKey: string): Promise<void> {
+    if (this.running.has(sessionKey)) return;
+    const marker = await this.sessions.getPageMarker(sessionKey);
     if (!marker) return;
 
-    this.running.add(tenantId);
-    const page = await this.sessions.newPage(tenantId);
+    this.running.add(sessionKey);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) {
-      this.running.delete(tenantId);
+      this.running.delete(sessionKey);
       return;
     }
 
@@ -103,7 +103,7 @@ export class CommentWatcher {
 
       const html = await readContainerHtml(page, COMMENTS.feed);
       if (!html) {
-        this.log.warn({ tenantId }, 'fb-bridge: page feed container not found — COMMENTS.feed may be stale');
+        this.log.warn({ sessionKey }, 'fb-bridge: page feed container not found — COMMENTS.feed may be stale');
         return;
       }
 
@@ -129,7 +129,7 @@ export class CommentWatcher {
         const postHtml = await readPostSurfaceHtml(page, postId);
         if (!postHtml) {
           this.log.warn(
-            { tenantId, postId },
+            { sessionKey, postId },
             'fb-bridge: target post surface not found — refusing background feed fallback',
           );
           continue;
@@ -137,7 +137,7 @@ export class CommentWatcher {
         for (const comment of parseFacebookComments(postHtml, { defaultPostId: postId }).comments) {
           if (comment.postId !== postId) {
             this.log.warn(
-              { tenantId, expectedPostId: postId, parsedPostId: comment.postId, commentId: comment.commentId },
+              { sessionKey, expectedPostId: postId, parsedPostId: comment.postId, commentId: comment.commentId },
               'fb-bridge: comment surface contained a different post — dropped',
             );
             continue;
@@ -151,12 +151,12 @@ export class CommentWatcher {
         // idempotency key, so it is dropped instead of being re-ingested on
         // every sweep. All of them being dropped means the selectors moved.
         this.log.warn(
-          { tenantId, dropped: parsed.droppedNoId, matched: parsed.matchedComments },
+          { sessionKey, dropped: parsed.droppedNoId, matched: parsed.matchedComments },
           'fb-bridge: comments dropped for having no readable id — COMMENTS.permalink may be stale',
         );
       }
 
-      const seen = await this.loadSeen(tenantId);
+      const seen = await this.loadSeen(sessionKey);
       let fresh = 0;
       for (const comment of found.values()) {
         if (seen.has(comment.commentId)) continue;
@@ -164,7 +164,7 @@ export class CommentWatcher {
         fresh += 1;
         this.onEvent({
           event: 'comment',
-          tenantId,
+          sessionKey,
           at: new Date().toISOString(),
           comment: { ...comment, pageId: marker.pageId, pageName: marker.pageName },
         });
@@ -174,26 +174,26 @@ export class CommentWatcher {
       // ran or one whose selectors have gone stale, and this service has been
       // all three.
       this.log.info(
-        { tenantId, posts: parsed.postIds.length, read: found.size, fresh },
+        { sessionKey, posts: parsed.postIds.length, read: found.size, fresh },
         'fb-bridge: page comments swept',
       );
-      if (fresh > 0) await this.persistSeen(tenantId, seen);
+      if (fresh > 0) await this.persistSeen(sessionKey, seen);
     } catch (err) {
       const needsLogin = err instanceof SessionExpiredError || err instanceof CheckpointRequiredError;
       if (needsLogin) {
         const error = (err as Error).message;
-        this.sessions.forgetSession(tenantId, error);
-        this.onEvent({ event: 'session_error', tenantId, at: new Date().toISOString(), error, needsLogin: true });
+        this.sessions.forgetSession(sessionKey, error);
+        this.onEvent({ event: 'session_error', sessionKey, at: new Date().toISOString(), error, needsLogin: true });
       }
       throw err;
     } finally {
       await page.close().catch(() => {});
-      this.running.delete(tenantId);
+      this.running.delete(sessionKey);
     }
   }
 
-  private seenFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.seen-comments.json');
+  private seenFile(sessionKey: string): string {
+    return path.join(this.sessions.getProfileDir(sessionKey), '.seen-comments.json');
   }
 
   /**
@@ -205,26 +205,26 @@ export class CommentWatcher {
    * traffic on every save under `tsx watch`, which is noise that hides real
    * signal.
    */
-  private async loadSeen(tenantId: string): Promise<Set<string>> {
-    const cached = this.seen.get(tenantId);
+  private async loadSeen(sessionKey: string): Promise<Set<string>> {
+    const cached = this.seen.get(sessionKey);
     if (cached) return cached;
     let ids: string[] = [];
     try {
-      ids = JSON.parse(await fs.readFile(this.seenFile(tenantId), 'utf8')) as string[];
+      ids = JSON.parse(await fs.readFile(this.seenFile(sessionKey), 'utf8')) as string[];
     } catch {
       // Nothing persisted yet.
     }
     const set = new Set(ids);
-    this.seen.set(tenantId, set);
+    this.seen.set(sessionKey, set);
     return set;
   }
 
-  private async persistSeen(tenantId: string, seen: Set<string>): Promise<void> {
+  private async persistSeen(sessionKey: string, seen: Set<string>): Promise<void> {
     // Oldest first out of the file, so a Page with years of comments does not
     // grow this without bound. Trimming can only cause a re-report, which the
     // CRM's unique index absorbs — it can never cause a duplicate.
     const trimmed = [...seen].slice(-SEEN_LIMIT);
-    this.seen.set(tenantId, new Set(trimmed));
-    await fs.writeFile(this.seenFile(tenantId), JSON.stringify(trimmed), 'utf8').catch(() => {});
+    this.seen.set(sessionKey, new Set(trimmed));
+    await fs.writeFile(this.seenFile(sessionKey), JSON.stringify(trimmed), 'utf8').catch(() => {});
   }
 }

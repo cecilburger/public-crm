@@ -2,6 +2,7 @@ import { api, type FbBridgeConnection, type FacebookComment } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { SettingsTabs } from '@/components/SettingsTabs';
 import { FacebookBridgeForm } from '@/components/FacebookBridgeForm';
+import { DivisionBadge } from '@/components/DivisionBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,8 @@ export default async function FacebookSettingsPage() {
         <div>
           <h1>{t.facebookBridge.title}</h1>
         </div>
+        <span className="spacer" />
+        <DivisionBadge />
       </div>
       <SettingsTabs />
 

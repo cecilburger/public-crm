@@ -1,3 +1,4 @@
+import { parseBridgeSessionKey, type DivisionKey } from '@kirana/core';
 import type { Database } from './sql.ts';
 import { withoutTenant } from './tenant.ts';
 
@@ -54,6 +55,43 @@ export async function resolveWorkspace(
     tx.query<{ id: string; status: string }>(
       'select id, status from tenants where slug = $1', [slug]));
   return rows[0] ?? null;
+}
+
+/**
+ * Which tenant and division already own a provider identity (a Page id, an
+ * Instagram handle, a WhatsApp phone-number id) — ids only. Read before a
+ * connect upserts the channel, because the channel's unique key is global
+ * and the upsert would otherwise silently move the row between divisions, or
+ * fail under row-level security which hides the other division's row from it.
+ */
+export async function channelHome(
+  control: Database, kind: string, externalId: string,
+): Promise<{ channelId: string; tenantId: string; divisionId: string } | null> {
+  const rows = await withoutTenant(control, 'finding which division a provider identity belongs to', (tx) =>
+    tx.query<{ id: string; tenant_id: string; division_id: string }>(
+      'select id, tenant_id, division_id from channels where kind = $1 and external_id = $2',
+      [kind, externalId]));
+  const row = rows[0];
+  return row ? { channelId: row.id, tenantId: row.tenant_id, divisionId: row.division_id } : null;
+}
+
+/**
+ * A bridge event's session key back into the tenant and division it was
+ * issued for. Keys are deterministic (`app_bridge_session_key`, 0059), so this
+ * is a parse plus a check that the division really exists — a key nobody
+ * issued resolves to nothing rather than to somebody's Marketing.
+ */
+export async function bridgeSessionHome(
+  control: Database, sessionKey: string,
+): Promise<{ tenantId: string; divisionId: string; divisionKey: DivisionKey } | null> {
+  const parsed = parseBridgeSessionKey(sessionKey);
+  if (!parsed) return null;
+  const rows = await withoutTenant(control, 'resolving a bridge session key to its division', (tx) =>
+    tx.query<{ id: string }>(
+      'select id from divisions where tenant_id = $1 and key = $2',
+      [parsed.tenantId, parsed.key]));
+  const row = rows[0];
+  return row ? { tenantId: parsed.tenantId, divisionId: row.id, divisionKey: parsed.key } : null;
 }
 
 export interface PlatformHealthSnapshot {

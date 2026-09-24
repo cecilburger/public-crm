@@ -1,6 +1,7 @@
 import { t } from '@/lib/copy';
 import { TaskTable } from '@/components/TaskTable';
 import { GcalNotice } from '@/components/GcalNotice';
+import { DivisionBadge } from '@/components/DivisionBadge';
 import { loadTaskPageData } from '../tugas/loadTaskPageData';
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +21,8 @@ export default async function CalendarPage({
 
   return (
     <div className="scroll pad odoo-page stack">
+      {/* Which division's Google Calendar this is — each division connects its own. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}><DivisionBadge /></div>
       {params.gcal === 'connected' ? <GcalNotice variant="connected" /> : null}
       {params.gcal === 'error' ? <GcalNotice variant="error" detail={params.detail} /> : null}
       <TaskTable tasks={tasks} members={members} deals={deals} taskKinds={taskKinds}

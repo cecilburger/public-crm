@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid } from '@kirana/core';
-import { getIgBridgeConnection, setIgBridgeConnection, clearIgBridgeConnection, ensureInstagramBridgeChannel } from '@kirana/db';
+import { invalid, conflict, bridgeSessionKey, DEFAULT_DIVISION, type Actor } from '@kirana/core';
+import {
+  getIgBridgeConnection, setIgBridgeConnection, clearIgBridgeConnection, ensureInstagramBridgeChannel, channelHome,
+} from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
@@ -17,6 +19,10 @@ import type { AppCtx } from '../app.ts';
  * webhook-fed QR flow) — Instagram's login either resolves or asks for a
  * challenge code within the one request, so there is no separate event
  * pipeline to keep in sync, just "call the bridge, mirror what it said".
+ *
+ * One account per Marketing/AI division: the bridge files each division's
+ * login under its own browser profile (`sessionOf`), and the connection row
+ * this mirrors into is the request's division's.
  */
 export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx): void {
   const bridgeCall = async <T>(path: string, init: RequestInit): Promise<{ ok: boolean; status: number; body: T | null }> => {
@@ -45,6 +51,28 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     captured: { sessionIdMasked: string; csrfToken: string | null; dsUserId: string | null; capturedAt: string } | null;
   }
 
+  /** Marketing's profile is the bare tenant id (every profile that existed
+   * before divisions); any other division's carries a suffix. */
+  const sessionOf = (actor: Actor): string => bridgeSessionKey(actor.tenantId, actor.divisionKey ?? DEFAULT_DIVISION);
+
+  /**
+   * An Instagram handle is unique across the whole system
+   * (`channels_provider_key`), so an account another division — or another
+   * tenant — already holds has to be refused before the channel upsert runs:
+   * that upsert would move the row, and under row-level security it cannot
+   * even see the row it would collide with. A read over the control pool,
+   * ids only.
+   */
+  const handleIsFree = async (actor: Actor, username: string): Promise<boolean> => {
+    const home = await channelHome(ctx.control, 'instagram_bridge', username.trim());
+    return !home || (home.tenantId === actor.tenantId && home.divisionId === actor.divisionId);
+  };
+  const CROSS_DIVISION = 'Akun Instagram ini sudah terhubung di divisi lain — putuskan di sana dulu';
+
+  /** What every login request tells the bridge beside its own fields, so the
+   * events it posts later can name the tenant without asking. */
+  const identity = (actor: Actor) => ({ tenantId: actor.tenantId, sessionKey: sessionOf(actor) });
+
   /**
    * The stored row, reconciled against what the bridge can actually see.
    *
@@ -65,10 +93,20 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     const stored = await ctx.asTenant(req, (tx) =>
       getIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }));
 
-    const live = await bridgeCall<BridgeStatus>(`/internal/sessions/${actor.tenantId}/status`, { method: 'GET' });
+    const live = await bridgeCall<BridgeStatus>(`/internal/sessions/${sessionOf(actor)}/status`, { method: 'GET' });
     if (!live.ok || !live.body) return { ...stored, bridgeReachable: false, captured: null };
 
     const b = live.body;
+
+    // A finished login on an account the other division already holds is
+    // recorded as an error, never as a channel move.
+    const refuse = async (username: string) => {
+      await ctx.asTenant(req, (tx) =>
+        setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+          status: 'error', username, challengeType: null, lastError: CROSS_DIVISION, actorId: actor.userId,
+        }));
+      return { ...stored, status: 'error' as const, username, lastError: CROSS_DIVISION, bridgeReachable: true, captured: null };
+    };
 
     // The transition this route exists for: a login window that has since been
     // finished. Writing it here means the console sees `ready` on its next poll
@@ -80,6 +118,7 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     // each of these polls, so this resolves itself within seconds.
     if (stored.status === 'awaiting_login' && b.hasSession && !b.awaitingLogin && b.username) {
       const username = b.username;
+      if (!(await handleIsFree(actor, username))) return refuse(username);
       await ctx.asTenant(req, async (tx) => {
         await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username });
         await setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
@@ -95,6 +134,7 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     // downstream rendered as "Terhubung sebagai @" and Chat IG read as "not
     // connected at all". Healed rather than left for the operator to notice.
     if (stored.status === 'ready' && !stored.username && b.username) {
+      if (!(await handleIsFree(actor, b.username))) return refuse(b.username);
       await ctx.asTenant(req, async (tx) => {
         await ensureInstagramBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { username: b.username! });
         await setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
@@ -133,7 +173,10 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     const actor = ctx.guard(req, 'channel:manage');
 
     const call = await bridgeCall<{ status: string; error?: string }>(
-      `/internal/sessions/${actor.tenantId}/login-window`, { method: 'POST' });
+      `/internal/sessions/${sessionOf(actor)}/login-window`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(identity(actor)),
+      });
     if (!call.ok || !call.body) {
       throw invalid('Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge)');
     }
@@ -159,15 +202,18 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
       username: z.string().min(1).max(120), password: z.string().min(1).max(200),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Isi username dan password Instagram');
+    // Refused before the bridge ever sees the password.
+    if (!(await handleIsFree(actor, body.data.username))) throw conflict(CROSS_DIVISION);
 
-    const call = await bridgeCall<LoginResult>(`/internal/sessions/${actor.tenantId}/login`, {
+    const call = await bridgeCall<LoginResult>(`/internal/sessions/${sessionOf(actor)}/login`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: body.data.username, password: body.data.password }),
+      body: JSON.stringify({ username: body.data.username, password: body.data.password, ...identity(actor) }),
     });
     if (!call.ok || !call.body) {
       throw invalid('Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge)');
     }
     const result = call.body;
+    if (result.status === 'ready' && !(await handleIsFree(actor, result.username))) throw conflict(CROSS_DIVISION);
 
     await ctx.asTenant(req, async (tx) => {
       if (result.status === 'ready') {
@@ -206,18 +252,21 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
       csrfToken: z.string().max(200).optional(), dsUserId: z.string().max(60).optional(),
     }).safeParse(req.body);
     if (!body.success) throw invalid('Isi username dan session cookie Instagram');
+    if (!(await handleIsFree(actor, body.data.username))) throw conflict(CROSS_DIVISION);
 
-    const call = await bridgeCall<LoginResult>(`/internal/sessions/${actor.tenantId}/login-cookie`, {
+    const call = await bridgeCall<LoginResult>(`/internal/sessions/${sessionOf(actor)}/login-cookie`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         username: body.data.username, sessionId: body.data.sessionId,
         csrfToken: body.data.csrfToken, dsUserId: body.data.dsUserId,
+        ...identity(actor),
       }),
     });
     if (!call.ok || !call.body) {
       throw invalid('Layanan Instagram Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:ig-bridge)');
     }
     const result = call.body;
+    if (result.status === 'ready' && !(await handleIsFree(actor, result.username))) throw conflict(CROSS_DIVISION);
 
     await ctx.asTenant(req, async (tx) => {
       if (result.status === 'ready') {
@@ -241,12 +290,13 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     const body = z.object({ code: z.string().min(1).max(20) }).safeParse(req.body);
     if (!body.success) throw invalid('Isi kode verifikasi');
 
-    const call = await bridgeCall<LoginResult>(`/internal/sessions/${actor.tenantId}/challenge`, {
+    const call = await bridgeCall<LoginResult>(`/internal/sessions/${sessionOf(actor)}/challenge`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: body.data.code }),
     });
     if (!call.ok || !call.body) throw invalid('Layanan Instagram Bridge tidak bisa dihubungi');
     const result = call.body;
+    if (result.status === 'ready' && !(await handleIsFree(actor, result.username))) throw conflict(CROSS_DIVISION);
 
     await ctx.asTenant(req, async (tx) => {
       if (result.status === 'ready') {
@@ -275,7 +325,7 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
 
   app.post('/v1/instagram-bridge/disconnect', async (req) => {
     const actor = ctx.guard(req, 'channel:manage');
-    await bridgeCall(`/internal/sessions/${actor.tenantId}`, { method: 'DELETE' });
+    await bridgeCall(`/internal/sessions/${sessionOf(actor)}`, { method: 'DELETE' });
     await ctx.asTenant(req, (tx) => clearIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
       actorId: actor.userId,
     }));

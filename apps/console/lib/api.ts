@@ -15,6 +15,8 @@ interface CallOptions {
   token?: string | null;
   /** Reads are never cached: an inbox that is 30 seconds stale is a wrong inbox. */
   cache?: RequestCache;
+  /** Which Marketing/AI division the request acts in; the API defaults to marketing when absent. */
+  division?: string;
 }
 
 export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> {
@@ -22,6 +24,7 @@ export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> 
     method: opts.method ?? 'GET',
     headers: {
       ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.division ? { 'x-division': opts.division } : {}),
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -43,11 +46,11 @@ export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> 
  * than rendering a half-empty page.
  */
 export async function api<T>(path: string, opts: Omit<CallOptions, 'token'> = {}): Promise<T> {
-  const { accessToken } = await getSession();
+  const { accessToken, division } = await getSession();
   if (!accessToken) redirect('/masuk');
 
   try {
-    return await call<T>(path, { ...opts, token: accessToken });
+    return await call<T>(path, { division, ...opts, token: accessToken });
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) redirect('/masuk?reason=expired');
     throw err;
@@ -56,9 +59,21 @@ export async function api<T>(path: string, opts: Omit<CallOptions, 'token'> = {}
 
 /* ------------------------------------------------------------------ types */
 
+export type { DivisionKey } from './session';
+
+export interface Division {
+  id: string;
+  key: 'marketing' | 'ai';
+  name: string;
+}
+
 export interface Me {
   user: { id: string; name: string; email: string; role: Role };
   workspace: { name: string; slug: string; status: string };
+  /** The division this request acted in — what the switcher shows as active. */
+  division: Division;
+  /** Both divisions of the workspace, Marketing first. */
+  divisions: Division[];
 }
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';

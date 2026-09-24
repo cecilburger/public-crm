@@ -23,9 +23,11 @@ export type FbBridgeError = Error & {
 };
 
 /** A comment, as the bridge needs it named: which Page session, which post,
- * which comment on it — and what to say. */
+ * which comment on it — and what to say. The session is a division's, not a
+ * tenant's: `sessionKey` is what the bridge files that division's browser
+ * profile under (`bridgeSessionKey` in @kirana/core). */
 export interface CommentTarget {
-  tenantId: string;
+  sessionKey: string;
   postId: string;
   commentId: string;
   text: string;
@@ -38,9 +40,9 @@ export class FbBridgeClient {
   constructor(private baseUrl: string, private secret: string) {}
 
   /** Types a message into a Messenger thread's composer. */
-  async send(args: { tenantId: string; threadId: string; body: string }): Promise<void> {
+  async send(args: { sessionKey: string; threadId: string; body: string }): Promise<void> {
     await this.post(
-      `/internal/sessions/${args.tenantId}/threads/${args.threadId}/send`, { text: args.body }, 'send',
+      `/internal/sessions/${args.sessionKey}/threads/${args.threadId}/send`, { text: args.body }, 'send',
     );
   }
 
@@ -55,7 +57,7 @@ export class FbBridgeClient {
    */
   async replyToComment(args: CommentTarget): Promise<void> {
     await this.post(
-      `/internal/sessions/${args.tenantId}/comments/reply`,
+      `/internal/sessions/${args.sessionKey}/comments/reply`,
       { postId: args.postId, commentId: args.commentId, text: args.text },
       'comment reply',
     );
@@ -69,7 +71,7 @@ export class FbBridgeClient {
    */
   async privateReplyToComment(args: CommentTarget): Promise<{ threadId: string }> {
     const body = await this.post(
-      `/internal/sessions/${args.tenantId}/comments/private-reply`,
+      `/internal/sessions/${args.sessionKey}/comments/private-reply`,
       { postId: args.postId, commentId: args.commentId, text: args.text },
       'private reply',
     );

@@ -6,8 +6,10 @@
 export class IgBridgeClient {
   constructor(private baseUrl: string, private secret: string) {}
 
-  async send(args: { tenantId: string; threadId: string; body: string; username?: string }): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/internal/sessions/${args.tenantId}/threads/${args.threadId}/send`, {
+  /** `sessionKey` is the division's browser profile on the bridge
+   * (`bridgeSessionKey` in @kirana/core), not the tenant id. */
+  async send(args: { sessionKey: string; threadId: string; body: string; username?: string }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/internal/sessions/${args.sessionKey}/threads/${args.threadId}/send`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
       // `username` is optional and only used to confirm a send the thread
@@ -36,13 +38,13 @@ export class IgBridgeClient {
    * caller records both.
    */
   async replyToComment(args: {
-    tenantId: string; postRef: string; commentRef: string; commenter: string;
+    sessionKey: string; postRef: string; commentRef: string; commenter: string;
     publicReply?: string; dmText?: string;
   }): Promise<{
     public: { sent: boolean; error?: string };
     dm: { sent: boolean; alreadyThere?: boolean; threadId?: string; error?: string };
   }> {
-    const res = await fetch(`${this.baseUrl}/internal/sessions/${args.tenantId}/comments/reply`, {
+    const res = await fetch(`${this.baseUrl}/internal/sessions/${args.sessionKey}/comments/reply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
       body: JSON.stringify({
