@@ -59,6 +59,7 @@ export class MessengerWatcher {
   private observerPages = new Map<string, Page>();
   private signatures = new Map<string, Map<string, string>>();
   private anchors = new Map<string, Map<string, Anchor[]>>();
+  private nextSeq = new Map<string, Map<string, number>>();
   /** Per tenant, per thread: who the conversation is with. Only Business Suite
    * needs it — messenger.com names the sender inside every message — but it is
    * kept for both so the watcher itself has no transport-shaped branches. */
@@ -238,6 +239,15 @@ export class MessengerWatcher {
     }
 
     const { rows, rowCount } = reading;
+    // Said on every sweep, not only when something is wrong. A watcher that
+    // logs only failures is indistinguishable from one that is not running —
+    // and this one genuinely was silent for minutes while nothing was wrong
+    // with it, which is a worse place to debug from than an error would have
+    // been. `rendered` is what the list showed; `read` is what could be named.
+    this.log.info(
+      { tenantId, transport: transport.kind, rendered: rowCount, read: rows.length },
+      'fb-bridge: inbox swept',
+    );
     if (rowCount === 0) {
       // The container rendered but holds no conversation links at all. That is
       // either a genuinely empty inbox or a stale selector, and the two are
@@ -350,10 +360,7 @@ export class MessengerWatcher {
         maxMessages: this.maxBackfill,
       });
 
-      const usable = missing.filter((m) => this.hasIdentity(m));
-      this.reportUndated(tenantId, threadId, missing.length - usable.length);
-
-      for (const message of usable) {
+      for (const message of missing) {
         this.onEvent({
           event: 'message',
           tenantId,
@@ -366,10 +373,11 @@ export class MessengerWatcher {
             text: message.text,
             sentAt: message.sentAt,
             direction: message.direction,
+            seq: this.takeSeq(tenantId, threadId),
           },
         });
       }
-      return usable.length;
+      return missing.length;
     } finally {
       await page.close().catch(() => {});
     }
@@ -413,10 +421,11 @@ export class MessengerWatcher {
       }
 
       const fresh = this.diffNew(tenantId, threadId, parsed.messages);
-      const usable = fresh.filter((m) => this.hasIdentity(m));
-      this.reportUndated(tenantId, threadId, fresh.length - usable.length);
-
-      for (const message of usable) {
+      this.log.info(
+        { tenantId, threadId, matched: parsed.matchedRows, inbound: parsed.messages.length, fresh: fresh.length },
+        'fb-bridge: thread read',
+      );
+      for (const message of fresh) {
         this.onEvent({
           event: 'message',
           tenantId,
@@ -432,6 +441,7 @@ export class MessengerWatcher {
             text: message.text,
             sentAt: message.sentAt,
             direction: 'inbound',
+            seq: this.takeSeq(tenantId, threadId),
           },
         });
       }
@@ -552,27 +562,12 @@ export class MessengerWatcher {
     return [...merged.values()];
   }
 
-  /**
-   * The one thing a message must have before it can be ingested: an identity
-   * that is the same on the next read.
-   *
-   * Facebook's `mid.$...` is one. Its `data-utime` is the other, and between
-   * them they cover everything either transport has ever produced. A row with
-   * neither cannot be deduplicated at all — re-reading the thread would file it
-   * again on every pass — so it is refused here and counted, where an operator
-   * can see it, rather than delivered and quietly multiplied.
-   */
-  private hasIdentity(message: { externalMessageId: string | null; sentAt: string | null }): boolean {
-    return Boolean(message.externalMessageId) || Boolean(message.sentAt);
-  }
-
-  private reportUndated(tenantId: string, threadId: string, dropped: number): void {
-    if (dropped === 0) return;
-    this.log.error(
-      { tenantId, threadId, dropped },
-      'fb-bridge: messages had neither a message id nor a timestamp and were not ingested — '
-      + 'the THREAD time selectors may be stale',
-    );
+  private takeSeq(tenantId: string, threadId: string): number {
+    const byThread = this.nextSeq.get(tenantId) ?? new Map<string, number>();
+    this.nextSeq.set(tenantId, byThread);
+    const seq = byThread.get(threadId) ?? 0;
+    byThread.set(threadId, seq + 1);
+    return seq;
   }
 
   private anchorFile(tenantId: string): string {

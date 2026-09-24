@@ -1,8 +1,7 @@
 import path from 'node:path';
 import Fastify from 'fastify';
 import {
-  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError,
-  ThreadRequiresAcceptanceError, SessionManager,
+  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
 } from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
@@ -214,6 +213,69 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string
     }
   });
 
+/**
+ * Replies to a comment publicly, under the Page's name, on the customer's post.
+ *
+ * The CRM never reports this as done on the strength of the HTTP status: it
+ * marks `public_replied` only on 200, and 200 is returned only once the reply
+ * is visible under the comment. 502 is "typed but not seen", which the worker
+ * treats as terminal for that comment rather than retrying — retyping onto a
+ * real person's post is the one outcome worse than a missed reply.
+ */
+app.post<{ Params: { tenantId: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
+  '/internal/sessions/:tenantId/comments/reply', async (req, reply) => {
+    const { postId, commentId, text } = req.body ?? {};
+    if (!postId || !commentId || !text) {
+      return reply.status(400).send({ error: 'postId, commentId and text are required' });
+    }
+    try {
+      await sessions.replyToComment(req.params.tenantId, { postId, commentId, text });
+      return reply.send({ replied: true });
+    } catch (err) {
+      return reply.status(commentActionStatus(err)).send(commentActionBody(err));
+    }
+  });
+
+/**
+ * Sends a private Messenger message to a commenter, through Facebook's own
+ * "message" affordance on the comment — the only route by which a Page may
+ * open a conversation with someone who has not messaged it first. When
+ * Facebook does not offer it for this comment or this person, that is a 409
+ * the CRM records as `dm_error`, not a failure to retry.
+ */
+app.post<{ Params: { tenantId: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
+  '/internal/sessions/:tenantId/comments/private-reply', async (req, reply) => {
+    const { postId, commentId, text } = req.body ?? {};
+    if (!postId || !commentId || !text) {
+      return reply.status(400).send({ error: 'postId, commentId and text are required' });
+    }
+    try {
+      const { threadId } = await sessions.privateReplyToComment(req.params.tenantId, { postId, commentId, text });
+      return reply.send({ sent: true, threadId });
+    } catch (err) {
+      return reply.status(commentActionStatus(err)).send(commentActionBody(err));
+    }
+  });
+
+/** The status the worker keys its permanent/transient decision on. */
+function commentActionStatus(err: unknown): number {
+  if (err instanceof CommentActionNotImplementedError) return 501;
+  if (err instanceof CommentNotFoundError) return 409;
+  if (err instanceof CommentActionUnavailableError) return 409;
+  if (err instanceof NoActiveSessionError) return 404;
+  return 502;
+}
+
+function commentActionBody(err: unknown): { error: string; code?: string } {
+  const message = err instanceof Error ? err.message : 'Gagal menindaklanjuti komentar Facebook';
+  if (err instanceof CommentActionNotImplementedError) return { error: message, code: 'comment_action_not_implemented' };
+  if (err instanceof CommentNotFoundError) return { error: message, code: 'comment_not_found' };
+  if (err instanceof CommentActionUnavailableError) return { error: message, code: err.code };
+  if (err instanceof NoActiveSessionError) return { error: message };
+  if (err instanceof SendNotConfirmedError) return { error: message, code: 'reply_not_confirmed' };
+  return { error: message };
+}
+
 /** Deletes the stored Chromium profile. This is what makes "disconnect" in the
  * CRM actually revoke the session rather than just hide it. */
 app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', async (req, reply) => {
@@ -221,5 +283,30 @@ app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', asy
   return reply.status(204).send();
 });
 
-await app.listen({ port: PORT, host: '127.0.0.1' });
+/**
+ * Exactly one bridge per profile, and it says so when it is not.
+ *
+ * Two of these against one Chromium profile is not a degraded setup, it is a
+ * broken one: Chrome refuses the second launch outright, so whichever instance
+ * the CRM happens to reach answers "failed to launch the browser". That is
+ * what happened live — three comment actions failed against a second bridge
+ * that could never have worked, and the port collision was buried in a log
+ * line because `uncaughtException` below kept the process alive after the bind
+ * failed. A bridge that cannot bind must die, loudly.
+ */
+const alreadyRunning = await fetch(`http://127.0.0.1:${PORT}/healthz`, { signal: AbortSignal.timeout(2_000) })
+  .then((res) => res.ok).catch(() => false);
+if (alreadyRunning) {
+  app.log.error({ port: PORT },
+    `fb-bridge is already running on 127.0.0.1:${PORT} — stop it before starting another, `
+    + 'or two instances will fight over the same Chromium profile');
+  process.exit(1);
+}
+
+try {
+  await app.listen({ port: PORT, host: '127.0.0.1' });
+} catch (err) {
+  app.log.error({ err, port: PORT }, 'fb-bridge could not bind its port — refusing to run half-started');
+  process.exit(1);
+}
 app.log.info(`fb-bridge listening on 127.0.0.1:${PORT}`);

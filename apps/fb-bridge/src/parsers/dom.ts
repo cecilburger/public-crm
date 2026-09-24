@@ -96,10 +96,19 @@ export function closestRow(el: El, maxHops = 6): El {
   return el;
 }
 
-/** Collapses whitespace so two readings of the same text compare equal. */
+/**
+ * Collapses whitespace so two readings of the same text compare equal.
+ *
+ * Zero-width characters go too. `String.trim` does not consider U+200B
+ * whitespace, and Business Suite renders one at the end of its thread header —
+ * left in, the same name read from two places compares unequal, which is
+ * exactly how the inbox sweep once failed to confirm any row selection.
+ */
 export function normaliseWhitespace(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+  return text.replace(ZERO_WIDTH_RE, '').replace(/\s+/g, ' ').trim();
 }
+
+const ZERO_WIDTH_RE = /[\u200B-\u200D\u2060\uFEFF]/g;
 
 /**
  * A row's text with the parts that change on their own removed — relative
@@ -135,10 +144,35 @@ export function textRuns(el: El, selectors: readonly string[]): string[] {
     const text = textOf(node);
     if (!text || seen.has(text)) continue;
     if (runs.some((existing) => existing.includes(text))) continue;
+    if (repeatsOnly(text, runs)) continue;
     seen.add(text);
     runs.unshift(text);
   }
   return runs;
+}
+
+/**
+ * Whether this node's text is nothing but the runs already taken from inside
+ * it — the wrapper case, where Facebook nests a name and two buttons under a
+ * chain of divs that each read back as one glued-together string.
+ *
+ * Only an exact repeat is dropped. A wrapper carrying any text of its own is
+ * kept, because the alternative is losing whatever it added: a parent reading
+ * "halo kak" around a child reading "halo" must survive, or the customer's
+ * message arrives at the CRM with a word missing.
+ */
+function repeatsOnly(text: string, runs: readonly string[]): boolean {
+  let residue = text;
+  let removed = false;
+  // Longest first, so a run that contains another does not leave the shorter
+  // one's letters behind as residue.
+  for (const run of [...runs].sort((a, b) => b.length - a.length)) {
+    const at = residue.indexOf(run);
+    if (at === -1) continue;
+    residue = `${residue.slice(0, at)} ${residue.slice(at + run.length)}`;
+    removed = true;
+  }
+  return removed && normaliseWhitespace(residue) === '';
 }
 
 /** True when the string is nothing but a relative or short timestamp. */

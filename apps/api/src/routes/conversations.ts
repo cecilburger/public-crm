@@ -7,6 +7,25 @@ import {
 import { audit, listInbox, queueOutboundMessage, tenantKeys, openField, createDeal } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
+/**
+ * Channels driven by a real, logged-in session instead of Meta's API.
+ *
+ * `guardOutbound` enforces Meta's 24-hour window, template and quality rules,
+ * and none of them exist on these: a bridge types into the same composer a
+ * person would, so whatever Facebook or WhatsApp allows there is already the
+ * policy. Worse than redundant, the guard is unanswerable — its refusal tells
+ * the agent to "send an approved template instead", and a bridge cannot send a
+ * template at all, so the conversation simply becomes unanswerable from the
+ * CRM.
+ *
+ * `messenger_bridge` belongs here for exactly the same reason as the other
+ * two, and its absence was a real defect: the worker's send path skips the
+ * guard for it, so the API was refusing messages the worker would have
+ * delivered — an inconsistency that only showed up once a Facebook
+ * conversation went 24 hours without an inbound message.
+ */
+const BRIDGE_CHANNEL_KINDS = new Set(['whatsapp_web', 'instagram_bridge', 'messenger_bridge']);
+
 export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
   app.get('/v1/conversations', async (req) => {
@@ -158,13 +177,10 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       const channel = await tx.query<{ kind: string; quality: string }>(
         'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
-      // The same gate the worker applies — and the same exception: a
-      // WA-bridge (whatsapp_web) or IG-bridge (instagram_bridge) session has
-      // no Meta 24-hour/template rule, so both skip the guard entirely
-      // rather than failing here before the message ever reaches the queue.
-      // Failing here for a real Meta channel gives the agent an explanation
-      // now instead of a silent rejection later.
-      if (channel[0]?.kind !== 'whatsapp_web' && channel[0]?.kind !== 'instagram_bridge') {
+      // The same gate the worker applies — and the same exception, see
+      // BRIDGE_CHANNEL_KINDS. Failing here for a real Meta channel gives the
+      // agent an explanation now instead of a silent rejection later.
+      if (!BRIDGE_CHANNEL_KINDS.has(channel[0]?.kind ?? '')) {
         const guard = guardOutbound({
           lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
           now: new Date(),
@@ -251,8 +267,8 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       const channel = await tx.query<{ kind: string; quality: string }>(
         'select kind, quality from channels where tenant_id = $1 and id = $2', [actor.tenantId, conv[0].channel_id]);
 
-      // Same whatsapp_web/instagram_bridge exception as the plain-reply route above.
-      if (channel[0]?.kind !== 'whatsapp_web' && channel[0]?.kind !== 'instagram_bridge') {
+      // Same bridge exception as the plain-reply route above.
+      if (!BRIDGE_CHANNEL_KINDS.has(channel[0]?.kind ?? '')) {
         const guard = guardOutbound({
           lastInboundAt: conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null,
           now: new Date(),

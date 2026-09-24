@@ -21,8 +21,8 @@ const TABS = [
   // { href: '/pengaturan/autopilot', label: t.autopilot.title },
   // { href: '/pengaturan/katalog', label: t.catalogue.title },
   // { href: '/pengaturan/balasan-cepat', label: t.quickReply.title },
-  // { href: '/pengaturan/keamanan', label: t.security.title },
-  // { href: '/pengaturan/riwayat', label: t.settings.tabHistory },
+  { href: '/pengaturan/keamanan', label: t.security.title },
+  { href: '/pengaturan/riwayat', label: t.settings.tabHistory },
 ];
 
 export function SettingsTabs() {

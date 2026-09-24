@@ -16,7 +16,24 @@ import { audit } from './audit.ts';
  * The per-tenant settings tables have no surrogate key — one row per tenant,
  * or one per user — so they name the column they are actually keyed by.
  */
-export const ENCRYPTED_COLUMNS: { table: string; columns: string[]; cursor?: string }[] = [
+export interface EncryptedTable {
+  table: string;
+  columns: string[];
+  /**
+   * The uuid column a batch walks in order, unique within a tenant. Defaults
+   * to `id`.
+   *
+   * Not every table that holds encrypted data has an `id`: the per-tenant
+   * connection and settings tables are keyed on `tenant_id` alone, and
+   * `google_calendar_connections` on `(tenant_id, user_id)`. Naming the real
+   * key here is what lets them be walked like anything else, rather than left
+   * out of this list and rotated silently never — readable only by the key a
+   * rotation was about to destroy.
+   */
+  cursor?: string;
+}
+
+export const ENCRYPTED_COLUMNS: EncryptedTable[] = [
   {
     table: 'contacts',
     columns: [

@@ -20,17 +20,12 @@ import { parseMessengerInbox } from '../apps/fb-bridge/src/parsers/messengerInbo
 import {
   parseMessengerThread, parseMessengerTranscript, countOwnMessages, selectBackfill,
 } from '../apps/fb-bridge/src/parsers/messengerThread.ts';
-import { parseFacebookComments } from '../apps/fb-bridge/src/parsers/comments.ts';
+import { parseFacebookComments, countOwnCommentReplies } from '../apps/fb-bridge/src/parsers/comments.ts';
 import { compositeMessageKey } from '../apps/fb-bridge/src/events.ts';
 import { freshDb, makeTenant, TEST_KEK, type TestTenant } from './helpers/db.ts';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'facebook');
-// Newlines are normalised on the way in. Several tests reach into the markup
-// with string literals that spell a line break as `\n`, and git hands these
-// files over with CRLF endings on Windows — which would make those edits
-// silently miss and the assertion afterwards pass or fail for the wrong reason.
-const fixture = async (name: string) =>
-  (await readFile(join(FIXTURES, name), 'utf8')).replace(/\r\n/g, '\n');
+const fixture = (name: string) => readFile(join(FIXTURES, name), 'utf8');
 
 const PAGE = { id: '900000000000001', name: 'Toko Demo' };
 
@@ -257,8 +252,8 @@ describe('the Messenger thread parser, on the shape the real site renders', () =
 
   it('reports one message per bubble, not one per labelled element', async () => {
     // Each message renders as a labelled container wrapping a labelled button.
-    // Counting both would double every message, and both copies would carry the
-    // same id and send time, so nothing downstream could tell them apart.
+    // Counting both would double every message, and each copy would take its
+    // own sequence number, so nothing downstream could collapse them again.
     const parsed = parseMessengerThread(await fixture('messenger-thread-live.html'), { selfName: 'Red Panda Test' });
 
     expect(parsed.messages).toHaveLength(3);
@@ -383,10 +378,10 @@ describe('choosing what history still needs importing', () => {
   });
 
   it('leaves messages with no Facebook id to the live watcher', async () => {
-    // Reconciliation asks the CRM which ids it already holds, and that question
-    // can only name provider ids. A message with none cannot be asked about, so
-    // backfilling it would manufacture a second copy on every sweep. The live
-    // watcher handles those, where the composite key applies.
+    // The fallback key contains a sequence number the bridge hands out when it
+    // first sees a message. It cannot be reconstructed after a restart, so
+    // backfilling on it would not deduplicate — it would manufacture a second
+    // copy of every message on every reconciliation.
     const mixed = [{ ...msg(1), externalMessageId: null }, msg(2), { ...msg(3), externalMessageId: null }];
     const picked = selectBackfill(mixed, { isKnown: () => false, maxMessages: 50 });
 
@@ -404,8 +399,8 @@ describe('choosing what history still needs importing', () => {
       .toEqual(['inbound', 'inbound', 'inbound', 'outbound']);
 
     // Three of the four carry a Facebook id, so backfill can reconcile them.
-    // The fourth has none, so there is no id to ask the CRM about, and it is
-    // left to the live watcher and its composite key.
+    // The fourth has none and is left to the live watcher, which holds the
+    // sequence its fallback key needs.
     const eligible = selectBackfill(parsed.messages, { isKnown: () => false, maxMessages: 50 });
     expect(eligible.map((m) => m.externalMessageId)).toEqual([
       'mid.$cAAABsynthetic001', 'mid.$cAAABsynthetic002', 'mid.$cAAABsynthetic003',
@@ -529,8 +524,7 @@ describe('the Page comment parser', () => {
 describe('the idempotency key', () => {
   const message = {
     threadId: '100000000000001', externalMessageId: null, senderId: '100000000000001',
-    senderName: 'Budi Santoso', text: 'halo',
-    sentAt: '2026-09-19T07:26:40.000Z', direction: 'inbound' as const,
+    senderName: 'Budi Santoso', text: 'halo', sentAt: null, direction: 'inbound' as const, seq: 0,
   };
 
   it('is computed identically by the API and the worker', () => {
@@ -548,25 +542,13 @@ describe('the idempotency key', () => {
     expect(facebookMessageKey('tenant-1', withId)).toBe('fb_dm:tenant-1:mid.$cAAB1111');
   });
 
-  it('tells two identical texts apart by when they were sent', () => {
+  it('tells two identical texts apart by their position in the thread', () => {
     // A customer sending "halo" twice is two messages. Hashing the text alone
     // would silently drop the second one.
     const first = facebookMessageKey('tenant-1', message);
-    const second = facebookMessageKey('tenant-1', { ...message, sentAt: '2026-09-19T07:27:40.000Z' });
+    const second = facebookMessageKey('tenant-1', { ...message, seq: 1 });
 
     expect(second).not.toBe(first);
-  });
-
-  it('gives the same message the same key across a bridge restart', () => {
-    // The regression this replaced: the key interpolated a per-thread counter
-    // the watcher held in memory, so the same message read before and after a
-    // restart hashed differently -- and, worse, a NEW message after a restart
-    // took the counter value an older identical text already owned and was
-    // discarded as a redelivery. Nothing here belongs to the reading process.
-    const beforeRestart = facebookMessageKey('tenant-1', message);
-    const afterRestart = facebookMessageKey('tenant-1', { ...message });
-
-    expect(afterRestart).toBe(beforeRestart);
   });
 
   it('does not collide across tenants or threads', () => {
@@ -580,8 +562,8 @@ describe('the idempotency key', () => {
     // deploy separately. This is what keeps the copies honest.
     expect(compositeMessageKey({
       tenantId: 'tenant-1', threadId: message.threadId, senderId: message.senderId,
-      sentAt: message.sentAt, text: message.text,
-    })).toBe('fb_dm:tenant-1:100000000000001:100000000000001:2026-09-19T07:26:40.000Z:halo');
+      seq: message.seq, text: message.text,
+    })).toBe('fb_dm:tenant-1:100000000000001:100000000000001:0:halo');
   });
 });
 
@@ -604,7 +586,7 @@ describe('a Facebook event reaching the CRM', () => {
     message: {
       threadId: '100000000000001', externalMessageId: 'mid.$cAAB1111111111111111',
       senderId: '100000000000001', senderName: 'Budi Santoso', text: 'Sis, ini masih ready?',
-      sentAt: new Date(1789000000 * 1000).toISOString(), direction: 'inbound', ...over,
+      sentAt: new Date(1789000000 * 1000).toISOString(), direction: 'inbound', seq: 0, ...over,
     },
   });
 
@@ -658,9 +640,7 @@ describe('a Facebook event reaching the CRM', () => {
     for (const broken of [
       messageEvent({ senderId: undefined }),
       messageEvent({ text: undefined }),
-      // Neither an id nor a send time: nothing to dedupe the message on, so it
-      // would be filed again on every re-read of the thread.
-      messageEvent({ externalMessageId: null, sentAt: null }),
+      messageEvent({ seq: undefined }),
       messageEvent({ direction: 'sideways' }),
     ]) {
       expect((await post(broken)).statusCode).toBe(400);
@@ -686,7 +666,7 @@ describe('a Facebook event reaching the CRM', () => {
     // The same person, renamed on Facebook. A name-keyed identity would create
     // a second contact; an id-keyed one does not.
     await post(messageEvent({
-      externalMessageId: 'mid.$cAAB9999999999999999', senderName: 'Budi S.', text: 'halo lagi',
+      externalMessageId: 'mid.$cAAB9999999999999999', senderName: 'Budi S.', text: 'halo lagi', seq: 9,
     }));
 
     const contacts = await withTenant(db, t.tenantId, (tx) =>
@@ -707,11 +687,11 @@ describe('a Facebook event reaching the CRM', () => {
   });
 
   it('does not collapse a repeated word into one message', async () => {
-    // Two "halo" at different points in a thread are two messages. Their send
-    // times are what keeps them apart once no provider id is available.
+    // Two "halo" at different points in a thread are two messages. Only the
+    // per-message `seq` keeps them apart once no provider id is available.
     const base = { externalMessageId: null, text: 'halo', threadId: '100000000000007', senderId: '100000000000007' };
-    await post(messageEvent({ ...base, sentAt: new Date(1789000000 * 1000).toISOString() }));
-    await post(messageEvent({ ...base, sentAt: new Date(1789000600 * 1000).toISOString() }));
+    await post(messageEvent({ ...base, seq: 0 }));
+    await post(messageEvent({ ...base, seq: 1 }));
 
     const rows = await withTenant(db, t.tenantId, (tx) =>
       tx.query<{ n: number }>(
@@ -893,9 +873,9 @@ describe('a Facebook event reaching the CRM', () => {
     // agent reading that cannot tell the question was already answered.
     const thread = '100000000000042';
     const history = [
-      { direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
-      { direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
-      { direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
+      { seq: 0, direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
+      { seq: 1, direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
+      { seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
     ];
     for (const m of history) {
       const res = await post(messageEvent({ ...m, threadId: thread, senderId: thread }));
@@ -937,9 +917,9 @@ describe('a Facebook event reaching the CRM', () => {
 
     const thread = '100000000000042';
     for (const m of [
-      { direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
-      { direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
-      { direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
+      { seq: 0, direction: 'inbound', text: 'halo, masih buka?', externalMessageId: 'mid.$hist001' },
+      { seq: 1, direction: 'outbound', text: 'halo kak, masih', externalMessageId: 'mid.$hist002' },
+      { seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003' },
     ]) {
       await post(messageEvent({ ...m, threadId: thread, senderId: thread }));
     }
@@ -957,7 +937,7 @@ describe('a Facebook event reaching the CRM', () => {
 
     // A later sweep sees only the newest message of that thread.
     await post(messageEvent({
-      direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003',
+      seq: 2, direction: 'inbound', text: 'oke saya mampir', externalMessageId: 'mid.$hist003',
       threadId: '100000000000042', senderId: '100000000000042',
     }));
 
@@ -995,7 +975,7 @@ describe('a Facebook event reaching the CRM', () => {
     // row every time the thread is re-read, or each sweep would add a copy.
     const base = {
       threadId: '100000000000043', senderId: '100000000000043',
-      externalMessageId: null, text: 'tanpa id', direction: 'inbound',
+      externalMessageId: null, text: 'tanpa id', seq: 0, direction: 'inbound',
     };
     await post(messageEvent(base));
     await post(messageEvent(base));
@@ -1303,5 +1283,218 @@ describe('a comment being worked on', () => {
 
     const work = await pending();
     expect(work.filter((c) => c.id === id)).toHaveLength(1);
+  });
+});
+
+/* --------------------------------------- a comment as the Page renders it */
+
+describe('a comment on the Page timeline, on the shape the real site renders', () => {
+  const OWN_REPLY = (name: string, text: string) =>
+    `<div role="article" aria-label="Reply by ${name} 1m"><a href="/profile.php?id=900000000000001">${name}</a><div>${text}</div><div>Like</div></div>`;
+
+  it('reads the stable comment id, the pfbid post slug, and the commenter', async () => {
+    const { comments, droppedNoId, droppedNoPost } = parseFacebookComments(await fixture('page-comment-live.html'));
+
+    expect(droppedNoId).toBe(0);
+    expect(droppedNoPost).toBe(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      commentId: '900000000000031',
+      // A `pfbid…` slug, not digits — a first guard accepted only digits and
+      // dropped every comment on the Page as "no post".
+      postId: expect.stringMatching(/^pfbid0SYNTHETIC/),
+      authorId: '100000000000009',
+      authorName: 'Sinta Dewi',
+      text: 'mau tau jasa ini gimana?',
+    });
+  });
+
+  it('names the commenter by the profile link, not by the label with the time glued on', async () => {
+    // The label is "Comment by Sinta Dewi a few seconds ago" with nothing the
+    // regex could stop at; the link says "Sinta Dewi".
+    const { comments } = parseFacebookComments(await fixture('page-comment-live.html'));
+
+    expect(comments[0]!.authorName).toBe('Sinta Dewi');
+    expect(comments[0]!.authorName).not.toMatch(/ago|lalu/);
+  });
+
+  it('counts only the Page\'s own replies carrying exactly that text', async () => {
+    const html = await fixture('page-comment-live.html');
+    const withOwn = html.replace('</div>\n', OWN_REPLY('Toko Demo', 'Check DM ya kak!!!') + '</div>\n');
+
+    expect(countOwnCommentReplies(html, { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(0);
+    expect(countOwnCommentReplies(withOwn, { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(1);
+    // Same words from the customer are not ours.
+    expect(countOwnCommentReplies(html.replace('mau tau jasa ini gimana?', 'Check DM ya kak!!!'),
+      { pageName: 'Toko Demo', text: 'Check DM ya kak!!!' })).toBe(0);
+    // Ours, different words.
+    expect(countOwnCommentReplies(withOwn, { pageName: 'Toko Demo', text: 'lain' })).toBe(0);
+  });
+});
+
+/* ------------------------------------ a failure that can be tried again */
+
+describe('an event that failed before the Page was connected', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let t: TestTenant;
+  let e: Env;
+
+  const post = (body: unknown) => app.inject({
+    method: 'POST', url: '/v1/webhooks/fb-bridge',
+    headers: { authorization: `Bearer ${e.FB_BRIDGE_SECRET}`, 'content-type': 'application/json' },
+    payload: JSON.stringify(body),
+  });
+
+  const event = () => ({
+    event: 'message', tenantId: t.tenantId, at: new Date().toISOString(),
+    message: {
+      threadId: '100000000000021', externalMessageId: 'mid.$cAAretry0001',
+      senderId: '100000000000021', senderName: 'Rudi', text: 'halo, masih buka?',
+      sentAt: null, direction: 'inbound', seq: 0,
+    },
+  });
+
+  const stored = () => withTenant(db, t.tenantId, (tx) =>
+    tx.query<{ id: string }>(
+      `select m.id from messages m
+         join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+        where m.tenant_id = $1 and ch.kind = 'messenger_bridge'`, [t.tenantId]));
+
+  beforeAll(async () => {
+    db = await freshDb();
+    t = await makeTenant(db, 'fbretry');
+    e = env();
+    app = buildApp({
+      db, control: db, kek: TEST_KEK, env: e,
+      dispatch: async ({ queue, payload }) => {
+        if (queue !== 'inbound.normalise') return;
+        await processInboundWebhook(
+          { db, control: db, kek: TEST_KEK, dispatch: async () => {} },
+          (payload as { webhookEventId: string }).webhookEventId,
+        ).catch(() => {});
+      },
+    });
+    await app.ready();
+    // Deliberately NO channel yet: this is a message arriving before the
+    // operator has connected the Page, which is exactly what happened live.
+  });
+
+  afterAll(async () => { await app.close(); await db.close(); });
+
+  it('is kept, not stored, while there is nowhere to put it', async () => {
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it('lands once the Page is connected and the bridge re-sends it', async () => {
+    // The bridge re-emits on every reconciliation until the CRM holds it. A
+    // failed spool row must therefore be re-processable — treated as a
+    // duplicate it would be dropped forever, and the customer never answered.
+    await withTenant(db, t.tenantId, (tx) =>
+      ensureMessengerBridgeChannel({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        pageId: PAGE.id, pageName: PAGE.name, status: 'connected',
+      }));
+
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(1);
+  });
+
+  it('still refuses a third copy of a message it already holds', async () => {
+    expect((await post(event())).statusCode).toBe(200);
+
+    expect(await stored()).toHaveLength(1);
+  });
+});
+
+/**
+ * Replying to a Facebook conversation from the CRM, a day later.
+ *
+ * `guardOutbound` encodes Meta's rules for the WhatsApp Cloud API: reply
+ * free-form within 24 hours of the customer's last message, or send an
+ * approved template. A bridge has neither — it types into the same composer a
+ * person would, and it cannot send a template at all.
+ *
+ * The worker's send path already knew that and skipped the guard for
+ * `messenger_bridge`. The API did not, so a Facebook conversation that went
+ * quiet for a day became unanswerable from the CRM: the reply was refused with
+ * "send an approved template instead", naming a thing this channel has no way
+ * to send. The two sides now read the same list.
+ */
+describe('replying to a Facebook conversation the day after', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let t: TestTenant;
+  let token: string;
+  const jobs: { queue: string }[] = [];
+
+  beforeAll(async () => {
+    db = await freshDb();
+    t = await makeTenant(db, 'fbwindow');
+    const e = env();
+
+    app = buildApp({
+      db, control: db, kek: TEST_KEK, env: e,
+      dispatch: async ({ queue, payload }) => {
+        jobs.push({ queue });
+        if (queue !== 'inbound.normalise') return;
+        await processInboundWebhook(
+          { db, control: db, kek: TEST_KEK, dispatch: async () => {} },
+          (payload as { webhookEventId: string }).webhookEventId,
+        );
+      },
+    });
+    await app.ready();
+
+    await withTenant(db, t.tenantId, (tx) =>
+      ensureMessengerBridgeChannel({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+        pageId: PAGE.id, pageName: PAGE.name, status: 'connected',
+      }));
+
+    // Their message landed three days ago, so the service window is long shut.
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+    const sent = await app.inject({
+      method: 'POST', url: '/v1/webhooks/fb-bridge',
+      headers: { authorization: `Bearer ${e.FB_BRIDGE_SECRET}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        event: 'message', tenantId: t.tenantId, at: threeDaysAgo,
+        message: {
+          threadId: '100000000000077', externalMessageId: 'mid.$cAABwindow0000000001',
+          senderId: '100000000000077', senderName: 'Gabe', text: 'masih buka kak?',
+          sentAt: threeDaysAgo, direction: 'inbound', seq: 0,
+        },
+      }),
+    });
+    expect(sent.statusCode).toBe(200);
+
+    const login = await app.inject({
+      method: 'POST', url: '/v1/auth/login',
+      payload: { workspace: 'fbwindow', email: 'owner@fbwindow.test', password: 'correct horse battery staple' },
+    });
+    expect(login.statusCode).toBe(200);
+    token = (login.json() as { accessToken: string }).accessToken;
+  });
+
+  afterAll(async () => { await app.close(); await db.close(); });
+
+  it('queues the reply instead of demanding a template it cannot send', async () => {
+    const list = await app.inject({
+      method: 'GET', url: '/v1/conversations', headers: { authorization: `Bearer ${token}` },
+    });
+    const conv = (list.json() as { id: string; channel_kind: string }[])
+      .find((row) => row.channel_kind === 'messenger_bridge');
+    expect(conv).toBeDefined();
+
+    jobs.length = 0;
+    const res = await app.inject({
+      method: 'POST', url: `/v1/conversations/${conv!.id}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { body: 'Halo kak, masih buka ya' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(jobs.map((job) => job.queue)).toContain('outbound.send');
   });
 });
