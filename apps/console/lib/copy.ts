@@ -742,6 +742,7 @@ export const t = {
     tabPending: 'Perlu dibalas',
     empty: 'Belum ada komentar masuk.',
     onPost: 'di postingan',
+    commentCount: 'komentar',
     draftLabel: 'Draft balasan publik',
     copy: 'Salin',
     copied: 'Tersalin',
