@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply } from '@/lib/api';
 import { clock, ago, rp } from '@/lib/format';
 import { t } from '@/lib/copy';

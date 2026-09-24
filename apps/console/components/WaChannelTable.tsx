@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useActionState, useEffect, useRef, useState } from 'react';
 import {
   disconnectWaBridgeSession, deleteWaBridgeSession, reconnectWaBridgeSession,

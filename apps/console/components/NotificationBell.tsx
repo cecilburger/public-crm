@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import { ago } from '@/lib/format';

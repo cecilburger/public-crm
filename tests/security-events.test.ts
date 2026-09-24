@@ -123,10 +123,13 @@ describe('recording and working through events', () => {
     expect((await verifyAllAuditChains(db, db, sink)).broken).toEqual([]);
     expect(sink.alerts).toHaveLength(0);
 
-    // Tamper with history the way only a database-level actor could.
+    // Tamper with history the way only a database-level actor could. The app
+    // role is refused; the catch sits outside the transaction because
+    // postgres-js rejects a transaction whose query failed even when that
+    // query's error was caught inside it — PGlite just rolls back.
     await withTenant(db, t.tenantId, (tx) =>
-      tx.query(`update audit_events set action = 'nothing.happened' where tenant_id = $1`, [t.tenantId])
-        .catch(() => undefined));
+      tx.query(`update audit_events set action = 'nothing.happened' where tenant_id = $1`, [t.tenantId]))
+      .catch(() => undefined);
     await db.exec(`update audit_events set action = 'nothing.happened'
                     where id = (select min(id) from audit_events)`);
 

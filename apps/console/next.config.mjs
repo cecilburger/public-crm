@@ -2,6 +2,12 @@
 export default {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Keep a page the browser has already rendered for 30 s, so going back to
+  // it (or clicking a link that was just hovered) opens instantly instead of
+  // waiting on a fresh server render. Every mutating server action calls
+  // revalidatePath, which drops this cache, and the live pages refresh
+  // themselves (AutoRefresh) — so what you just changed is never shown stale.
+  experimental: { staleTimes: { dynamic: 30 } },
   eslint: { ignoreDuringBuilds: true },
   env: { KIRANA_API_URL: process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080' },
   // konva's package resolves to a Node build that `require`s the native

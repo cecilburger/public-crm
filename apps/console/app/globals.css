@@ -202,6 +202,12 @@ h3 { font-size: 13px; font-weight: 700; }
 button.rail-sub-row, a.rail-sub-row { cursor: pointer; }
 button.rail-sub-row:hover, a.rail-sub-row:hover { background: var(--panel-2); color: var(--ink); }
 .rail-sub-row[aria-current="page"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+/* A clicked link whose page is still on its way (see FastLink) looks selected
+   straight away, so the click visibly lands even before the page swaps in. */
+.navitem:has(> .link-pending), .rail-sub-row:has(> .link-pending) {
+  background: var(--brand-soft); color: var(--brand);
+}
+a:has(> .link-pending) { cursor: progress; }
 .rail-sub-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-sub-more {
   list-style: none; cursor: pointer; flex: none; width: 22px; height: 22px; border-radius: 6px;

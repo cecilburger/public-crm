@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { api, type ConversationSummary, type IgMetaConnection, type IgBridgeConnection } from '@/lib/api';
 import { awaitingReply } from '@/lib/format';
 import { t } from '@/lib/copy';
@@ -30,7 +30,7 @@ export default async function ChatIgLayout({ children }: { children: React.React
         </div>
         {waiting > 0 ? <span className="chip warn">{waiting} {t.chats.filterNeedsReply.toLowerCase()}</span> : null}
         <span className="spacer" />
-        <AutoRefresh seconds={10} />
+        <AutoRefresh seconds={10} renderedAt={Date.now()} />
         {connectedUsername ? (
           <span className="chip good">
             <span className="google-dot" aria-hidden /> @{connectedUsername}

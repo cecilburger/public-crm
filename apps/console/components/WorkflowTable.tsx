@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { t } from '@/lib/copy';
 import { ago } from '@/lib/format';
 import { DUMMY_WORKFLOWS, triggerLabel, actionLabels } from '@/lib/dummyWorkflows';

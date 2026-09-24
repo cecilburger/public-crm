@@ -18,7 +18,7 @@ export function DocumentModelField({
   id: string; name: string; value: string; onChange: (v: string) => void; initialCustomModels: DocumentModel[];
 }) {
   const csrf = useCsrfToken();
-  const [customModels, setCustomModels] = useState(initialCustomModels);
+  const [customModels, setCustomModels] = useState<Pick<DocumentModel, 'id' | 'name'>[]>(initialCustomModels);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [pending, setPending] = useState(false);

@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import {
   api, ApiError, type ConversationDetail, type Member, type Deal, type Me, type QuickReply,
   type WaBridgeChannel,

@@ -18,7 +18,7 @@ export function DocumentKindField({
   id: string; name: string; value: string; onChange: (v: string) => void; initialCustomKinds: DocumentKind[];
 }) {
   const csrf = useCsrfToken();
-  const [customKinds, setCustomKinds] = useState(initialCustomKinds);
+  const [customKinds, setCustomKinds] = useState<Pick<DocumentKind, 'id' | 'name'>[]>(initialCustomKinds);
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [pending, setPending] = useState(false);

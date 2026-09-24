@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useMemo, useRef, useState } from 'react';
 import type { Order } from '@/lib/api';
 import { rp, ago, initials } from '@/lib/format';

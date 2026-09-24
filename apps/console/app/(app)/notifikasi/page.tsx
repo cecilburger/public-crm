@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { api, type ConversationSummary, type Task, type IgComment } from '@/lib/api';
 import { buildNotifications } from '@/lib/notifications';
 import { ago } from '@/lib/format';

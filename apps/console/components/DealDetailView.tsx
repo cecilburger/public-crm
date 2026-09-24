@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { useActionState } from 'react';
 import { updateDealDetails, type ActionResult } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';

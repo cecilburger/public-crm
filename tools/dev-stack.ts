@@ -6,7 +6,7 @@
  * stack. It runs the same API code, the same migrations and the same row-level
  * security policies, so anything that works here works there.
  *
- * The data directory persists to disk across restarts (`.dev-stack-data/`,
+ * The data persists to disk across restarts (Postgres in `.dev-stack-pg/`,
  * gitignored) rather than living only in memory: this same process is also
  * the one you reconnect real external sessions against (a WhatsApp Web QR
  * pairing, an Instagram Playwright login) that take real, slow, rate-limit-
@@ -19,8 +19,9 @@
  */
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
 import {
-  connectPglite, migrate, withoutTenant, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
+  connectPglite, connectPostgres, type Database, migrate, withoutTenant, provisionTenant, addChannel, addUser, withTenant, ingestInboundMessage,
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
   createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
@@ -37,6 +38,8 @@ import {
   processCommentPublicReply, processCommentDm, processCommentAutopilot, type CommentActionJob,
 } from '../apps/worker/src/processors/facebookComments.ts';
 import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billingRollup.ts';
+import { startLocalPostgres } from './local-postgres.ts';
+import { importFromPglite } from './pglite-import.ts';
 import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from '../apps/worker/src/autopilot/model.ts';
 import { GraphMetaClient } from '../apps/worker/src/meta.ts';
 import { WaBridgeClient } from '../apps/worker/src/waBridge.ts';
@@ -58,9 +61,41 @@ const e = {
 };
 const kek = loadKek(e.KIRANA_KEK);
 
-const dataDir = path.join(import.meta.dirname, '..', '.dev-stack-data');
-const db = await connectPglite(dataDir);
-await migrate(db);
+// Real Postgres by default — see tools/local-postgres.ts for why PGlite was
+// too slow here. `DEV_STACK_DB=pglite` brings the old in-process engine back.
+const rootDir = path.join(import.meta.dirname, '..');
+const dataDir = path.join(rootDir, '.dev-stack-data');
+const usePglite = process.env.DEV_STACK_DB === 'pglite';
+let db: Database;
+let stopPostgres = async () => {};
+
+if (usePglite) {
+  db = await connectPglite(dataDir);
+  await migrate(db);
+} else {
+  const pg = await startLocalPostgres(rootDir);
+  stopPostgres = pg.stop;
+  // Connects as the owner, so it drops into kirana_app per transaction
+  // itself — the same arrangement PGlite's superuser had, and the test suite's.
+  db = await connectPostgres(pg.url, { max: 10, assumeRole: true });
+  await migrate(db);
+
+  // First run on Postgres: bring the old PGlite workspace across once, so
+  // nothing already set up there has to be redone.
+  const marker = path.join(dataDir, '.imported-to-postgres');
+  const [tenantCount] = await db.query<{ n: string }>('select count(*)::text as n from tenants');
+  if (tenantCount?.n === '0' && existsSync(path.join(dataDir, 'PG_VERSION')) && !existsSync(marker)) {
+    console.log(`[dev-stack] copying the existing workspace from ${dataDir} into Postgres (one time)`);
+    await importFromPglite(db, dataDir);
+    writeFileSync(marker, new Date().toISOString() + '\n');
+  }
+}
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    void db.close().catch(() => {}).then(stopPostgres).finally(() => process.exit(0));
+  });
+}
 
 const existingTenant = await withoutTenant(db, 'checking for an existing dev-stack workspace', (tx) =>
   tx.query<{ id: string }>(`select id from tenants where slug = 'toko-demo'`));
@@ -88,7 +123,7 @@ const runAutopilot = (payload: unknown) =>
 
 if (existingTenant[0]) {
   tenantId = existingTenant[0].id;
-  console.log(`[dev-stack] reusing existing workspace ${tenantId} from ${dataDir} — skipping demo seed`);
+  console.log(`[dev-stack] reusing existing workspace ${tenantId} — skipping demo seed`);
 } else {
 
 ({ tenantId } = await provisionTenant(db, kek, {
@@ -789,7 +824,7 @@ const app = buildApp({ db, control: db, kek, env: e, realtime, dispatch });
 await app.listen({ port: e.PORT, host: '127.0.0.1' });
 
 console.log(`
-  MCNASIA dev stack (persistent Postgres in .dev-stack-data/, real API)
+  MCNASIA dev stack (${usePglite ? 'PGlite in .dev-stack-data/' : 'Postgres 16 in .dev-stack-pg/'}, real API)
 
   API        http://localhost:${e.PORT}
   workspace  toko-demo

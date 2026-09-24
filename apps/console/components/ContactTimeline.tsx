@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import Link from '@/components/FastLink';
 import { ago, CHANNEL_LABEL } from '@/lib/format';
 import { t } from '@/lib/copy';
 import type { ContactTimelineEvent, Member } from '@/lib/api';

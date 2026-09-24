@@ -1,6 +1,7 @@
 import { api, type IgComment } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { ago } from '@/lib/format';
+import Link from '@/components/FastLink';
 import { CopyButton } from '@/components/CopyButton';
 import { CsrfField } from '@/components/Csrf';
 import { recordCommentOutcome } from '../actions';
@@ -38,10 +39,10 @@ export default async function IgCommentsPage({
 
       <div className="scroll pad stack">
         <div style={{ display: 'flex', gap: 8 }}>
-          <a href="/komentar-ig" className={`btn sm ${pendingOnly ? 'ghost' : 'primary'}`}>{t.igComments.tabAll}</a>
-          <a href="/komentar-ig?tab=pending" className={`btn sm ${pendingOnly ? 'primary' : 'ghost'}`}>
+          <Link href="/komentar-ig" className={`btn sm ${pendingOnly ? 'ghost' : 'primary'}`}>{t.igComments.tabAll}</Link>
+          <Link href="/komentar-ig?tab=pending" className={`btn sm ${pendingOnly ? 'primary' : 'ghost'}`}>
             {t.igComments.tabPending}
-          </a>
+          </Link>
         </div>
 
         {comments.length === 0 ? (
