@@ -125,12 +125,18 @@ function packAttributes(args: {
   address: string | null; notes: string | null;
   storeName: string | null; storeStatus: string | null; scheduleMeeting: string | null;
   clientStatus?: string | null;
-}): string {
-  return JSON.stringify({
+}): Record<string, unknown> {
+  // A plain object, not a `JSON.stringify`'d string: postgres-js already
+  // serialises a jsonb-bound parameter itself (see `connectPostgres` in
+  // `sql.ts`), so stringifying it here first meant the column ended up
+  // holding a jsonb *string* (the escaped JSON text) instead of the object —
+  // `attributes->>'clientStatus'` then always read null, and the console's
+  // fallback silently made every contact look like `on_progress` forever.
+  return {
     address: args.address, notes: args.notes,
     storeName: args.storeName, storeStatus: args.storeStatus, scheduleMeeting: args.scheduleMeeting,
     clientStatus: args.clientStatus ?? 'on_progress',
-  });
+  };
 }
 
 /** A customer added by hand from the Pelanggan page, not by messaging in. */
@@ -155,7 +161,7 @@ export async function createContact(
     `insert into contacts
        (tenant_id, display_name, phone_enc, phone_bidx, email_enc, email_bidx,
         ig_username_enc, ig_username_bidx, tags, attributes, first_seen_at, last_seen_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11)
      returning id`,
     [ctx.tenantId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx,
      igUsername.enc, igUsername.bidx, args.tags,
@@ -218,7 +224,7 @@ export async function updateContact(
     const rows = await ctx.tx.query<{ id: string }>(
       `update contacts
           set display_name = $3, email_enc = $4, email_bidx = $5,
-              ig_username_enc = $6, ig_username_bidx = $7, tags = $8, attributes = $9
+              ig_username_enc = $6, ig_username_bidx = $7, tags = $8, attributes = $9::jsonb
         where tenant_id = $1 and id = $2 and deleted_at is null
         returning id`,
       [ctx.tenantId, args.contactId, args.displayName, email.enc, email.bidx,
@@ -231,7 +237,7 @@ export async function updateContact(
   const rows = await ctx.tx.query<{ id: string }>(
     `update contacts
         set display_name = $3, phone_enc = $4, phone_bidx = $5, email_enc = $6, email_bidx = $7,
-            ig_username_enc = $8, ig_username_bidx = $9, tags = $10, attributes = $11
+            ig_username_enc = $8, ig_username_bidx = $9, tags = $10, attributes = $11::jsonb
       where tenant_id = $1 and id = $2 and deleted_at is null
       returning id`,
     [ctx.tenantId, args.contactId, args.displayName, phone.enc, phone.bidx, email.enc, email.bidx,

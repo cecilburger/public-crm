@@ -1492,8 +1492,23 @@ export const t = {
     viewWeek: 'Minggu',
     viewMonth: 'Bulan',
     viewYear: 'Tahun',
+    // The second toolbar toggle — how the currently-anchored period renders,
+    // as opposed to `viewDay/Week/Month` above (which period). "Grid Bulan"
+    // only ever shows next to Bulan mode, since Hari/Minggu already have
+    // their own hourly grid and don't need a second way to look at the same
+    // few hours.
+    contentViewGrid: 'Grid Bulan',
+    contentViewAgenda: 'Agenda',
+    contentViewTimeline: 'Timeline',
+    contentViewTimelineSoon: 'Timeline: belum tersedia — tugas hanya menyimpan jam mulai, belum ada durasi untuk digambar sebagai batang waktu.',
     prevPeriod: 'Sebelumnya',
     nextPeriod: 'Berikutnya',
     filtersLabel: 'Filter Status',
+    resetFilters: 'Reset',
+    todayScheduleTitle: (date: string) => `Agenda Hari Ini (${date})`,
+    todayScheduleCount: (n: number) => `${n} Jadwal`,
+    monthAgendaEmpty: 'Tidak ada jadwal bulan ini.',
+    todayScheduleEmpty: 'Tidak ada jadwal hari ini.',
+    googleMeetBadge: 'Google Meet',
   },
 };
