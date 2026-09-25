@@ -31,6 +31,10 @@ import type { AppCtx } from '../app.ts';
  * enqueue rather than act — the worker's claim decides whether anything reaches
  * the bridge.
  */
+/** Comments already logged as handed to a console (`fb_comment_inbox_visible`). */
+const inboxShown = new Set<string>();
+const INBOX_SHOWN_LIMIT = 5_000;
+
 export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx): void {
   const bridgeCall = async <T>(path: string, init: RequestInit): Promise<{ ok: boolean; body: T | null }> => {
     try {
@@ -265,6 +269,17 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
 
     const comments = await ctx.asTenant(req, (tx) =>
       listFacebookComments({ tx, tenantId: actor.tenantId, kek: ctx.kek }, query.data));
+    // The last boundary of the inbound trace: the first time each comment is
+    // actually handed to a console. Once per comment per process, ids only.
+    for (const c of comments) {
+      if (inboxShown.has(c.id)) continue;
+      if (inboxShown.size >= INBOX_SHOWN_LIMIT) inboxShown.clear();
+      inboxShown.add(c.id);
+      req.log.info({
+        event: 'fb_comment_inbox_visible', tenantId: actor.tenantId, divisionId: c.divisionId,
+        rowId: c.id, postId: c.postId, commentId: c.commentId, parentCommentId: c.parentCommentId,
+      }, 'fb_comment_inbox_visible');
+    }
     return { comments };
   });
 

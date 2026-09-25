@@ -18,7 +18,8 @@ const TABS = [
   { href: '/pengaturan/instagram', label: t.settings.tabInstagram },
   { href: '/pengaturan/facebook', label: t.settings.tabFacebook },
   // { href: '/pengaturan', label: t.settings.tabBill },
-  // { href: '/pengaturan/autopilot', label: t.autopilot.title },
+  // The trained-cb chatbot took the Autopilot slot; /pengaturan/autopilot still answers by URL.
+  { href: '/pengaturan/chatbot', label: t.chatbot.title },
   // { href: '/pengaturan/katalog', label: t.catalogue.title },
   // { href: '/pengaturan/balasan-cepat', label: t.quickReply.title },
   { href: '/pengaturan/keamanan', label: t.security.title },

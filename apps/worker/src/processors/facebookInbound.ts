@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import {
   withTenant, findMessengerBridgeChannel, ingestInboundMessengerMessage, recordMessengerAgentReply,
-  recordFacebookComment, setFbBridgeConnection, bridgeSessionHome,
+  claimMessengerEcho, recordFacebookComment, setFbBridgeConnection, bridgeSessionHome,
 } from '@kirana/db';
 import type { NormaliseDeps } from './inboundNormalise.ts';
+import { chatbotDispatch } from './chatbotReply.ts';
 
 /**
  * `apps/fb-bridge`'s events, turned into rows.
@@ -33,7 +34,8 @@ export type FbBridgeEventPayload =
   | {
       tenantId: string; sessionKey?: string; event: 'comment'; at?: string;
       comment: {
-        commentId: string; postId: string; authorId: string | null; authorName: string;
+        commentId: string; postId: string; parentCommentId?: string | null;
+        authorId: string | null; authorName: string;
         text: string; commentedAt: string | null; pageId: string; pageName: string | null;
       };
     }
@@ -120,10 +122,16 @@ export async function processFbBridgeEvent(
     const result = await withTenant(deps.db, home.tenantId, (tx) =>
       recordFacebookComment(ctxOf(tx), {
         pageId: c.pageId, pageName: c.pageName, postId: c.postId, commentId: c.commentId,
+        parentCommentId: c.parentCommentId ?? null,
         authorExternalId: c.authorId, authorName: c.authorName, body: c.text,
         commentedAt: parseAt(c.commentedAt) ?? null,
       }), scope);
-    console.log(`[fb-bridge] comment ${result.duplicate ? 'duplicate, skipped' : 'recorded'}: ${c.commentId} on post ${c.postId}`);
+    // Ids only — never the words, never the commenter's name.
+    const event = result.duplicate ? 'fb_comment_duplicate' : 'fb_comment_persisted';
+    console.log(JSON.stringify({
+      event, at: new Date().toISOString(), tenantId: home.tenantId, divisionId: home.divisionId, sessionKey, pageId: c.pageId,
+      postId: c.postId, commentId: c.commentId, parentCommentId: c.parentCommentId ?? null, rowId: result.id,
+    }));
     return { status: 'processed' };
   }
 
@@ -156,9 +164,11 @@ export async function processFbBridgeEvent(
 
   // An 'outbound' event is history: a reply the Page already sent, found while
   // reconciling a thread. It is written straight in as sent, with no outbox row
-  // — queueing it would deliver it to a real person a second time.
+  // — queueing it would deliver it to a real person a second time. A reply the
+  // CRM itself sent is already a row; that row takes the id instead.
   const result = m.direction === 'outbound'
-    ? await withTenant(deps.db, home.tenantId, (tx) => recordMessengerAgentReply(ctxOf(tx), common), scope)
+    ? await withTenant(deps.db, home.tenantId, async (tx) =>
+        (await claimMessengerEcho(ctxOf(tx), common)) ?? recordMessengerAgentReply(ctxOf(tx), common), scope)
     : await withTenant(deps.db, home.tenantId, (tx) => ingestInboundMessengerMessage(ctxOf(tx), common), scope);
 
   console.log(`[fb-bridge] ${m.direction} message ${result.duplicate ? 'duplicate, skipped' : 'ingested'}: thread ${m.threadId}`);
@@ -169,15 +179,16 @@ export async function processFbBridgeEvent(
     });
   }
 
-  // NO AUTOPILOT, NO BD, NO CHATBOT. The original reason — that `outboundSend`
-  // had no `messenger_bridge` branch, so a draft would fall through to the Meta
-  // Graph sender this feature exists to avoid — no longer holds: that branch
-  // exists and drives the bridge. What remains is a product decision rather
-  // than a technical one. Every Facebook send goes through a real browser on
-  // somebody's machine, against Terms of Service, with a session that can be
-  // checkpointed; putting a generated reply on that path without anyone asking
-  // for it is not a default worth choosing. Wiring it up is a deliberate
-  // follow-up, not an oversight.
+  // Never Autopilot. trained-cb answers only when this Page's channel was
+  // switched on for the chatbot — new Messenger channels start off, because
+  // every Facebook send is a real browser typing into the site, and that
+  // switch is flipped only after a live acceptance test.
+  if (!result.duplicate && m.direction === 'inbound') {
+    await chatbotDispatch(deps, {
+      tenantId: home.tenantId, divisionId: home.divisionId,
+      conversationId: result.conversationId, channelId: channel.channelId, messageId: result.messageId,
+    });
+  }
 
   return { status: 'processed' };
 }

@@ -1084,6 +1084,79 @@ export async function setAutopilotMode(_prev: ActionResult | null, form: FormDat
   }
 }
 
+/* --------------------------------------------------------------- chatbot */
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A form's `enabled` field, which only ever carries the strings the page wrote. */
+function readEnabled(form: FormData): boolean | null {
+  const raw = String(form.get('enabled') ?? '');
+  return raw === 'true' ? true : raw === 'false' ? false : null;
+}
+
+function revalidateThreads(): void {
+  revalidatePath('/obrolan', 'layout');
+  revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/chat-ig', 'layout');
+}
+
+/** The division's trained-cb switch. */
+export async function saveChatbotEnabled(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const enabled = readEnabled(form);
+  if (enabled === null) return { ok: false, error: t.chatbot.failed };
+  try {
+    await api('/v1/chatbot', { method: 'PUT', body: { enabled } });
+    revalidatePath('/pengaturan/chatbot');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.failed };
+  }
+}
+
+/** One DM account's own opt-in to the chatbot. */
+export async function saveChannelChatbot(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const channelId = String(form.get('channelId') ?? '');
+  const enabled = readEnabled(form);
+  if (!UUID.test(channelId) || enabled === null) return { ok: false, error: t.chatbot.channelFailed };
+  try {
+    await api(`/v1/channels/${channelId}/chatbot`, { method: 'PATCH', body: { enabled } });
+    revalidatePath('/pengaturan/chatbot');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.channelFailed };
+  }
+}
+
+/** Stop the bot on one conversation; a person answers it from here on. */
+export async function takeoverConversation(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  if (!UUID.test(conversationId)) return { ok: false, error: t.chatbot.takeoverFailed };
+  try {
+    await api(`/v1/conversations/${conversationId}/takeover`, { method: 'POST' });
+    revalidateThreads();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.takeoverFailed };
+  }
+}
+
+/** Hand a conversation back to the bot. The API refuses (409) a contact who opted out. */
+export async function resumeBot(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  if (!UUID.test(conversationId)) return { ok: false, error: t.chatbot.resumeFailed };
+  try {
+    await api(`/v1/conversations/${conversationId}/bot/resume`, { method: 'POST' });
+    revalidateThreads();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.resumeFailed };
+  }
+}
+
 /* ------------------------------------------------------------ two-factor */
 
 export interface MfaResult extends ActionResult {

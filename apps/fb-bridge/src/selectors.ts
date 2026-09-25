@@ -100,6 +100,13 @@ export const COMMENT_ID_RE = /(?:comment_id=|comment_fbid=)(\d{6,})/;
 export const COMMENT_ID_B64_RE = /(?:comment_id|comment_fbid)=([A-Za-z0-9+/_-]{12,}(?:%3D|=){0,2})/i;
 export const COMMENT_ID_DECODED_RE = /^comment:(\d{6,})_(\d{6,})$/;
 export const COMMENT_ID_ATTR_RE = /^(?:comment-)?(\d{10,})$/;
+/**
+ * A reply's own permalink, as the live Page renders it: `comment_id=<the
+ * comment it answers>&reply_comment_id=<the reply itself>`. Read on its own,
+ * `comment_id` there is the PARENT — so this is both the reply's id and the
+ * only place its parent is named.
+ */
+export const REPLY_COMMENT_ID_RE = /reply_comment_id=(\d{6,})/;
 
 /** `story_fbid=<id>` / `/posts/<id>` / `/videos/<id>` — the post a comment sits on. */
 /**

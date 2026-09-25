@@ -37,6 +37,15 @@ export async function provisionTenant(db: Database, kek: Buffer, input: Provisio
     // Marketing and AI exist from the first moment, so every row this tenant
     // ever writes has a division to default into.
     const divisionIds = await ensureTenantDivisions(tx, created.id);
+    // Same starting point migration 0061 gave existing tenants: Marketing's
+    // chatbot on, AI's off. Each connected account still has to opt in.
+    for (const [key, id] of Object.entries(divisionIds)) {
+      await tx.query(
+        `insert into chatbot_settings (tenant_id, division_id, enabled) values ($1, $2, $3)
+         on conflict (tenant_id, division_id) do nothing`,
+        [created.id, id, key === 'marketing'],
+      );
+    }
 
     const owner = await tx.query<{ id: string }>(
       `insert into users (tenant_id, email, name, password_hash, role, status)

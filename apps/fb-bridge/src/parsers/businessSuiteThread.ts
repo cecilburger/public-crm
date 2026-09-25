@@ -1,5 +1,5 @@
 import { BIZ_THREAD, DIRECTION_ATTR, MESSAGE_ID_RE } from '../selectors.ts';
-import { parseHtml, queryAll, queryFirst, textOf, textRuns, type El } from './dom.ts';
+import { normaliseWhitespace, parseHtml, queryAll, queryFirst, textOf, textRuns, type El } from './dom.ts';
 import type {
   Direction, ParsedThread, ParsedTranscript, ParsedTranscriptMessage,
 } from './messengerThread.ts';
@@ -102,11 +102,21 @@ export function parseBusinessSuiteThread(
  *
  * Stricter here than on messenger.com, and able to afford it: direction is
  * measured from the layout rather than read off a display name.
+ *
+ * The words are compared, not the characters: the page shows a reply back with
+ * each line in its own run and nothing between them, and an emoji as a picture
+ * with no text at all, so a multi-line reply never read back equal to what was
+ * typed — and was failed as unconfirmed after Facebook had delivered it.
  */
 export function countOwnBusinessSuiteMessages(html: string, opts: { text: string }): number {
   const parsed = parseBusinessSuiteTranscript(html);
-  const wanted = opts.text.trim();
-  return parsed.messages.filter((m) => m.direction === 'outbound' && m.text.trim() === wanted).length;
+  const wanted = comparableText(opts.text);
+  return parsed.messages.filter((m) => m.direction === 'outbound' && comparableText(m.text) === wanted).length;
+}
+
+/** Letters and digits only, lower-cased; a message with none keeps its collapsed text. */
+function comparableText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '') || normaliseWhitespace(text);
 }
 
 /**

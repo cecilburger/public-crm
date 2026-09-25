@@ -1,11 +1,11 @@
 import path from 'node:path';
 import Fastify from 'fastify';
 import {
-  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
+  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, SendNotAttemptedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
 } from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
-import type { FbBridgeEvent } from './events.ts';
+import { createCrmClient } from './crmClient.ts';
 
 const PORT = Number(process.env.PORT ?? 8092);
 const FB_BRIDGE_SECRET = process.env.FB_BRIDGE_SECRET ?? 'dev-fb-bridge-secret-change-me';
@@ -13,37 +13,6 @@ const KIRANA_API_URL = process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080';
 const authDir = path.join(import.meta.dirname, '..', '.fb_bridge_auth');
 
 const app = Fastify({ logger: true });
-
-/**
- * Everything this service knows how to tell the CRM goes through one endpoint,
- * authenticated by a shared secret — the same arrangement `apps/wa-bridge` and
- * `apps/ig-bridge` use. It is an internal service on loopback, not a public
- * provider, so there is no per-payload signature to verify.
- *
- * A failure here is logged and dropped rather than retried. The CRM's own spool
- * is the retry mechanism for anything that got through, and the watcher's
- * reconciliation pass re-reads whatever did not — a retry loop in here would
- * only queue events in memory that a restart throws away anyway.
- */
-async function postEvent(ev: FbBridgeEvent): Promise<void> {
-  try {
-    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
-      // Both identities on the wire: the profile the event came off, and the
-      // tenant the CRM files it under (see `tenantOf`).
-      body: JSON.stringify({ ...ev, tenantId: await tenantOf(ev.sessionKey) }),
-    });
-    if (!res.ok) {
-      app.log.warn({ status: res.status, event: ev.event, sessionKey: ev.sessionKey },
-        'kirana api rejected an fb-bridge event');
-      return;
-    }
-    app.log.info({ event: ev.event, sessionKey: ev.sessionKey }, 'fb-bridge event posted to kirana api');
-  } catch (err) {
-    app.log.error({ err, event: ev.event }, 'could not reach kirana api');
-  }
-}
 
 const sessions = new SessionManager(authDir);
 
@@ -64,38 +33,11 @@ async function tenantOf(sessionKey: string): Promise<string> {
   return marker?.tenantId ?? tenantIdFromSessionKey(sessionKey) ?? sessionKey;
 }
 
-/**
- * What the CRM already holds, asked over the same internal channel everything
- * else uses. The bridge keeps no ledger of its own: a file here would be a
- * second opinion about what has been stored, and the two drift apart the moment
- * either side is restored or redeployed.
- *
- * An unreachable CRM answers "nothing is known", which makes a backfill skip
- * rather than re-import — the limit in `selectBackfill` bounds the damage, and
- * the CRM's own unique indexes absorb whatever slips through.
- */
-async function knownIds(sessionKey: string, externalIds: string[]): Promise<Set<string>> {
-  if (externalIds.length === 0) return new Set();
-  try {
-    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge/known`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
-      body: JSON.stringify({ tenantId: await tenantOf(sessionKey), sessionKey, externalIds }),
-    });
-    if (!res.ok) {
-      app.log.warn({ status: res.status, sessionKey }, 'fb-bridge: could not read known message ids');
-      return new Set();
-    }
-    const body = await res.json() as { known?: string[] };
-    return new Set(body.known ?? []);
-  } catch (err) {
-    app.log.warn({ err, sessionKey }, 'fb-bridge: could not reach kirana api for known message ids');
-    return new Set();
-  }
-}
+/** Events in, "what do you already hold?" out — see `crmClient.ts`. */
+const crm = createCrmClient({ apiUrl: KIRANA_API_URL, secret: FB_BRIDGE_SECRET, tenantOf, log: app.log });
 
-const messenger = new MessengerWatcher(sessions, (ev) => void postEvent(ev), app.log, knownIds);
-const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
+const messenger = new MessengerWatcher(sessions, (ev) => void crm.postEvent(ev), app.log, crm.knownIds);
+const comments = new CommentWatcher(sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds);
 
 // Both watchers' own first pass resumes every tenant with a persisted profile.
 // `tsx watch` restarts on every code change and in production a redeploy or a
@@ -177,6 +119,9 @@ app.post<{
     };
     const state = await sessions.openLoginWindow(req.params.sessionKey, marker, (settled) => {
       if (settled.status !== 'ready') return;
+      // The first comment sweep happens now, not up to fifteen minutes later —
+      // and on its own, so a Messenger attach that fails cannot cancel it.
+      comments.onSessionReady(req.params.sessionKey);
       void messenger.loadAnchors(req.params.sessionKey)
         .then(() => messenger.attachTenant(req.params.sessionKey))
         .catch((err) => app.log.warn({ err }, 'fb-bridge: failed to attach after login'));
@@ -192,8 +137,8 @@ app.get<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey/stat
  * manual verification during setup. */
 app.post<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey/sweep-comments', async (req, reply) => {
   try {
-    await comments.sweep(req.params.sessionKey);
-    return reply.send({ swept: true });
+    const summary = await comments.sweep(req.params.sessionKey, 'manual');
+    return reply.send({ swept: summary !== null, ...(summary ?? {}) });
   } catch (err) {
     return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
   }
@@ -227,9 +172,14 @@ app.post<{ Params: { sessionKey: string; threadId: string }; Body: { text?: stri
       if (err instanceof NoActiveSessionError) {
         return reply.status(404).send({ error: err.message });
       }
+      if (err instanceof SendNotAttemptedError) {
+        // Given up on before anything was typed: the CRM may try again with
+        // no risk of the customer receiving the message twice.
+        return reply.status(503).send({ error: err.message, code: 'send_not_attempted' });
+      }
       if (err instanceof SendNotConfirmedError) {
-        // Not permanent: the message may have been rate-limited, and the next
-        // attempt can legitimately succeed.
+        // Typed, but never seen in the transcript. The CRM does not retry a
+        // DM on this: typing it again could deliver it twice.
         return reply.status(502).send({ error: err.message, code: 'send_not_confirmed' });
       }
       app.log.warn({ err, sessionKey: req.params.sessionKey }, 'fb-bridge send failed');

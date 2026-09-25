@@ -52,6 +52,7 @@ export const t = {
     taskDueToday: 'jatuh tempo hari ini',
     commentPending: 'komentar IG perlu dibalas',
     commentFailed: 'balasan komentar IG gagal terkirim',
+    botNeedsHelp: 'bot minta bantuan',
     seeAll: 'Lihat semua',
   },
 
@@ -169,12 +170,17 @@ export const t = {
     quickReplyButton: 'Balasan Cepat',
     quickReplyEmpty: 'Belum ada balasan cepat. Tambahkan di Pengaturan.',
 
+    /** Keyed by `senderLabelKey` in `lib/chatbot.ts`. */
     sender: {
       contact: 'Client',
       agent: 'Anda / tim',
       autopilot: 'Dijawab otomatis',
       system: 'Sistem',
+      bot: 'Bot',
+      autopilotApproved: 'Draf AI · disetujui',
+      autopilotAuto: 'Autopilot (otomatis)',
     } as Record<string, string>,
+    undelivered: 'tidak terkirim',
 
     redacted: 'sudah dihapus',
     noMessages: 'Belum ada pesan.',
@@ -274,6 +280,67 @@ export const t = {
     mode_off: 'Balasan otomatis sedang mati',
     mode_suggest: 'Mode siapkan draf',
   } as Record<string, string>,
+
+  /**
+   * The trained-cb bot that answers WhatsApp Web, Instagram and Messenger DMs
+   * until a person takes the conversation over. Not Autopilot: Autopilot
+   * writes drafts for the Meta channels and keeps its own page.
+   */
+  chatbot: {
+    title: 'Chatbot',
+    subtitle: 'Bot yang membalas DM WhatsApp, Instagram, dan Facebook Messenger sendiri — sampai ada orang yang mengambil alih.',
+    switchTitle: 'Chatbot (trained-cb)',
+    on: 'Aktif',
+    onNote: 'Bot membalas DM di akun yang chatbot-nya dinyalakan di bawah.',
+    off: 'Nonaktif',
+    offNote: 'Bot tidak membalas apa pun di divisi ini. Semua DM dijawab orang.',
+    save: 'Simpan',
+    saving: 'Menyimpan…',
+    saved: 'Tersimpan.',
+    failed: 'Gagal menyimpan pengaturan chatbot',
+
+    brainMissingTitle: 'Bot belum tersambung ke layanannya',
+    brainMissing: 'Dalam 24 jam terakhir ada pesan yang dilewati bot karena layanan trained-cb belum diatur di server. Selama itu bot tidak membalas apa pun — hubungi admin teknis.',
+
+    countsTitle: 'Obrolan yang masih berjalan',
+    handling: {
+      bot: 'Bot aktif', human: 'Ditangani manusia', needs_human: 'Perlu bantuan',
+    } as Record<string, string>,
+
+    channelsTitle: 'Akun DM',
+    channelsNote: 'Bot hanya membalas di akun yang dinyalakan di sini. Akun yang baru disambungkan mulai dalam keadaan mati.',
+    divisionOffNote: 'Chatbot divisi ini sedang nonaktif, jadi akun yang menyala pun belum dibalas bot.',
+    noChannels: 'Belum ada akun WhatsApp Web, Instagram, atau Facebook di divisi ini.',
+    channelName: 'Akun',
+    channelKind: 'Jenis',
+    channelStatus: 'Koneksi',
+    channelChatbot: 'Chatbot aktif',
+    channelOn: 'Nyala',
+    channelOff: 'Mati',
+    turnOn: 'Nyalakan',
+    turnOff: 'Matikan',
+    channelFailed: 'Gagal mengubah chatbot akun ini',
+    messengerNote: 'Nyalakan hanya setelah uji kirim langsung ke Messenger berhasil.',
+    channelStatuses: {
+      connecting: 'Menyambung', connected: 'Tersambung', error: 'Bermasalah', disabled: 'Terputus',
+    } as Record<string, string>,
+
+    takeover: 'Ambil alih',
+    resume: 'Aktifkan bot kembali',
+    working: 'Sebentar…',
+    takeoverFailed: 'Gagal mengambil alih dari bot',
+    resumeFailed: 'Gagal mengaktifkan bot kembali',
+    optOut: 'Minta bot berhenti',
+    optOutHint: 'Kontak ini minta tidak dibalas bot lagi, jadi bot tidak bisa diaktifkan kembali. Orang yang melanjutkan.',
+    /** Reasons the CRM itself records; anything else is trained-cb's own words, shown as they are. */
+    reasons: {
+      verify_booking: 'cek jadwal meeting, booking belum pasti tercatat',
+      booked_during_takeover: 'bot sudah menjadwalkan meeting, konfirmasinya belum dikirim ke kontak',
+    } as Record<string, string>,
+
+    inboxBot: 'Bot',
+    inboxNeedsHelp: 'Perlu bantuan',
+  },
 
   catalogue: {
     title: 'Katalog',
@@ -583,8 +650,8 @@ export const t = {
   facebookBridge: {
     title: 'Facebook',
     sectionTitle: 'Facebook Messenger & Komentar (Tidak Resmi)',
-    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint.',
-    inboundOnly: 'Pesan masuk dan balasan sudah jalan, termasuk balasan publik ke komentar. Pemindahan ke WhatsApp dan chatbot belum tersedia untuk Facebook.',
+    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Balasan DM dikirim dari Obrolan.',
+    inboundOnly: 'Pesan masuk dan balasan sudah jalan, termasuk balasan publik ke komentar. Chatbot untuk Messenger dinyalakan per Halaman di Pengaturan → Chatbot, setelah uji kirim langsung berhasil. Pemindahan ke WhatsApp belum tersedia untuk Facebook.',
     pageId: 'ID Halaman',
     pageIdPlaceholder: 'mis. 61594393176093',
     pageIdHint: 'Angka di URL Halaman Anda. Buka Halaman di Facebook, lihat bagian profile.php?id=… atau Pengaturan Halaman.',
