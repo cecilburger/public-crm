@@ -92,6 +92,13 @@ export class SenderNotImplementedError extends Error {}
 export class ThreadRequiresAcceptanceError extends Error {}
 /** Typed into the composer, but never seen arriving in the transcript. */
 export class SendNotConfirmedError extends Error {}
+/**
+ * A DM given up on before a single character was typed, so nothing reached
+ * Facebook and trying again cannot send it twice. A subclass so every place
+ * that handles an unconfirmed send still does; only the DM route tells the two
+ * apart.
+ */
+export class SendNotAttemptedError extends SendNotConfirmedError {}
 
 /**
  * A comment action whose DOM path has not been verified against the live site
@@ -629,15 +636,17 @@ export class SessionManager {
         page, async () => (await transport.readSurfaceHtml(page)) ?? '', SURFACE_BUDGET_MS,
       );
       trace('send', () => `surface ${settled ? 'settled' : 'still moving'} at ${page.url().slice(0, 80)}`);
+      // Everything thrown up to the typing below is SendNotAttemptedError:
+      // nothing has reached Facebook yet, so the CRM may try again.
       if (!settled) {
-        throw new SendNotConfirmedError(
+        throw new SendNotAttemptedError(
           'Percakapan Facebook masih berubah — pesan tidak diketik agar tidak terkirim ke percakapan lain',
         );
       }
       if (transport.kind === 'business_suite') {
         const correctThread = await assertBusinessSuiteThreadSurface(page, threadId);
         if (!correctThread) {
-          throw new SendNotConfirmedError(
+          throw new SendNotAttemptedError(
             'Business Suite tidak membuktikan percakapan Messenger tujuan yang benar — pesan tidak diketik',
           );
         }
@@ -646,10 +655,10 @@ export class SessionManager {
 
       const focused = await withDeadline(focusComposer(page, transport.composerSelectors), transport.composerWaitMs, 'membuka kotak pesan');
       if (!focused) {
-        throw new SendNotConfirmedError('Kotak pesan Facebook tidak dapat difokuskan — pesan tidak diketik');
+        throw new SendNotAttemptedError('Kotak pesan Facebook tidak dapat difokuskan — pesan tidak diketik');
       }
       if (transport.kind === 'business_suite' && !(await assertBusinessSuiteThreadSurface(page, threadId))) {
-        throw new SendNotConfirmedError(
+        throw new SendNotAttemptedError(
           'Business Suite mengubah percakapan sebelum pesan diisi — pesan tidak diketik',
         );
       }

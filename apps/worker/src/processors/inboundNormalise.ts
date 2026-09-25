@@ -4,7 +4,7 @@ import {
   recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken,
   recordIgComment, bridgeSessionHome, findInstagramBridgeChannel, type Database,
 } from '@kirana/db';
-import { isBdConversation } from './bdDraft.ts';
+import { chatbotDispatch } from './chatbotReply.ts';
 
 import { processFbBridgeEvent, type FbBridgeEventPayload } from './facebookInbound.ts';
 
@@ -221,24 +221,11 @@ async function processWaBridgeEvent(
       deps.publish?.(channel.tenant_id, {
         type: 'message', conversationId: result.conversationId, divisionId: channel.division_id,
       });
-      // A brand is BD's to answer, not Autopilot's. Exactly one brain replies.
-      const bd = await withTenant(deps.db, channel.tenant_id, (tx) =>
-        isBdConversation(tx, channel.tenant_id, result.conversationId), scope);
-      await deps.dispatch(bd
-        ? {
-            queue: 'bd.draft',
-            payload: {
-              tenantId: channel.tenant_id, conversationId: result.conversationId,
-              text: m.body || '',
-            },
-          }
-        : {
-            queue: 'autopilot.draft',
-            payload: {
-              tenantId: channel.tenant_id, conversationId: result.conversationId,
-              messageId: result.messageId,
-            },
-          });
+      // A bridge DM is trained-cb's or a person's, never Autopilot's.
+      await chatbotDispatch(deps, {
+        tenantId: channel.tenant_id, divisionId: channel.division_id,
+        conversationId: result.conversationId, channelId: channel.id, messageId: result.messageId,
+      });
     }
     return { status: 'processed' };
   }
@@ -468,30 +455,13 @@ async function processIgBridgeDmEvent(
       type: 'message', conversationId: result.conversationId, divisionId: home.divisionId,
     });
     // A reply the agent already sent — from the console or, here, from
-    // their own phone — needs no autopilot draft; there is nothing new for
-    // it to answer.
+    // their own phone — needs no answer; there is nothing new to reply to.
     if (payload.message.direction === 'inbound') {
-      // Same rule as the wa-bridge ingress: a brand writing in is BD's to
-      // answer. Instagram DMs are where the inbound SOP's own examples come
-      // from (an ad tap, a story reply), so routing them to a shop's product
-      // catalogue would be the wrong brain on the highest-intent channel.
-      const bd = await withTenant(deps.db, home.tenantId, (tx) =>
-        isBdConversation(tx, home.tenantId, result.conversationId), scope);
-      await deps.dispatch(bd
-        ? {
-            queue: 'bd.draft',
-            payload: {
-              tenantId: payload.tenantId, conversationId: result.conversationId,
-              text: payload.message.text,
-            },
-          }
-        : {
-            queue: 'autopilot.draft',
-            payload: {
-              tenantId: payload.tenantId, conversationId: result.conversationId,
-              messageId: result.messageId,
-            },
-          });
+      // Same rule as the wa-bridge ingress: trained-cb or a person, never Autopilot.
+      await chatbotDispatch(deps, {
+        tenantId: home.tenantId, divisionId: home.divisionId,
+        conversationId: result.conversationId, channelId: channel.channelId, messageId: result.messageId,
+      });
     }
   }
   return { status: 'processed' };

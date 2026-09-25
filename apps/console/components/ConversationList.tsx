@@ -9,6 +9,7 @@ import {
   groupCommentsByPost, inboxHref, shouldShowCommentsUnavailable, shouldShowInstagramNotReady, toInboxItems,
   type InboxItem,
 } from '@/lib/inbox';
+import { inboxBotChip } from '@/lib/chatbot';
 
 /**
  * Three filters, and the useful one is first.
@@ -276,6 +277,7 @@ export function ConversationList(
             }
 
             const c = item.conversation;
+            const botChip = inboxBotChip(c);
             return (
               <Link
                 key={c.id}
@@ -300,6 +302,8 @@ export function ConversationList(
                 </span>
                 <span className="row2">
                   <span className="chip">{t.channels[c.channel_kind] ?? c.channel_kind}</span>
+                  {botChip === 'bot' ? <span className="chip accent">{t.chatbot.inboxBot}</span> : null}
+                  {botChip === 'needs_human' ? <span className="chip danger">{t.chatbot.inboxNeedsHelp}</span> : null}
                   {waiting ? <span className="chip warn">{t.chats.needsReply}</span> : null}
                   {c.status === 'resolved' ? <span className="chip good">{t.chats.done}</span> : null}
                   {c.assignee_id === null && c.status !== 'resolved'

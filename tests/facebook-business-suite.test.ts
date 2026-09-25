@@ -211,6 +211,28 @@ describe('confirming a Business Suite send', () => {
     expect(before).toBe(1);
     expect(after).toBe(2);
   });
+
+  // The CRM types a reply with line breaks and an emoji; the page shows it back
+  // as one run per line with nothing between them and the emoji as a picture.
+  // Compared raw, a multi-line reply was never seen as sent — and was failed as
+  // unconfirmed after Facebook had already delivered it.
+  it('recognises a multi-line reply with an emoji however the page lays it out', async () => {
+    const html = await fixture('business-suite-thread.html');
+    const anchor = `<div data-message-id="mid.$cAAQAAsynthetic0003" ${DIRECTION_ATTR}="inbound">mau tanya harga</div>`;
+    const sent = 'Halo, Kak, salam kenal 😊\nSaya Grace dari MCNAsia.biz.\n\nBoleh dibantu isi data berikut?';
+    const bubble = (direction: string) => `<div data-message-id="mid.$cAAQAAsynthetic0007" ${DIRECTION_ATTR}="${direction}">`
+      + '<div dir="auto">Halo, Kak, salam kenal <img alt="😊" src="e.png"></div>'
+      + '<div dir="auto">Saya Grace dari MCNAsia.biz.</div><div dir="auto">Boleh dibantu isi data berikut?</div></div>';
+    expect(html).toContain(anchor);
+
+    expect(countOwnBusinessSuiteMessages(html, { text: sent })).toBe(0);
+    expect(countOwnBusinessSuiteMessages(html.replace(anchor, anchor + bubble('outbound')), { text: sent })).toBe(1);
+    // Still only our own side, and still only these words.
+    expect(countOwnBusinessSuiteMessages(html.replace(anchor, anchor + bubble('inbound')), { text: sent })).toBe(0);
+    expect(countOwnBusinessSuiteMessages(html.replace(anchor, anchor + bubble('outbound')), {
+      text: 'Saya Grace dari MCNAsia.biz.',
+    })).toBe(0);
+  });
 });
 
 describe('reconciling a Business Suite thread more than once', () => {

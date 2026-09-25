@@ -153,6 +153,76 @@ None of them can read a message, a contact or an order. Everything else still
 goes through `withTenant`, and the six remaining raw `withoutTenant` calls all
 run before a tenant context can exist.
 
+## 4c. The trained-cb DM chatbot
+
+Direct messages on the three bridge channels (`whatsapp_web`, `instagram_bridge`,
+`messenger_bridge`) are answered by `trained-cb`, a separate Python service
+reached over HTTP (`/v1/step`, `/v1/book`, `/v1/propose-slots`). It is the only
+chatbot engine. Its replies are ordinary outbox rows with `sender_type = 'bot'`
+and leave through `outbound.send` like any other message; the bot never talks
+to a provider itself. `bot` marks new rows only — earlier messages keep the
+sender type they were written with. Rows and helpers are in
+`packages/db/src/chatbot.ts` (migration `0061`), the job in
+`apps/worker/src/processors/chatbotReply.ts`, the routes in
+`apps/api/src/routes/chatbot.ts`.
+
+**Routing rule.** The bot answers a conversation only when all four hold:
+
+```
+chatbot_settings.enabled        (the conversation's division)
+AND channels.chatbot_enabled    (the connected account)
+AND channel kind ∈ {whatsapp_web, instagram_bridge, messenger_bridge}
+AND conversations.handling = 'bot'
+```
+
+Ingest calls `chatbotDispatch`, which queues `chatbot.reply` with the division
+taken from the channel. The job claims its run, checks the rule again, calls the
+brain outside any transaction, then writes state and replies in one transaction
+that first re-reads `handling` under a row lock.
+
+**Enablement.** Per division, `chatbot_settings` (a missing row is off;
+Marketing starts on, AI off; `PUT /v1/chatbot`, needs `autopilot:manage`). Per
+account, `channels.chatbot_enabled` (new channels start off;
+`PATCH /v1/channels/:id/chatbot`, needs `channel:manage`, and refuses any other
+channel kind). Migration `0061` switched it on for the existing WhatsApp Web and
+Instagram bridge channels only; a Messenger account is switched on after a live
+acceptance test. `GET /v1/chatbot` returns both switches, open conversations
+per handling state, and whether a run was recently skipped for want of a brain.
+
+**Handling states.**
+
+| `handling` | Console | Enters when | Leaves when |
+|---|---|---|---|
+| `bot` | Bot aktif | the default; *Aktifkan bot kembali* (`POST /v1/conversations/:id/bot/resume`) | any of the below |
+| `human` | Ditangani manusia | *Ambil alih* (`POST /v1/conversations/:id/takeover`): assigns the taker if nobody holds the thread and cancels bot replies still queued; or the contact opts out | resume — except after an opt-out, which is permanent (409) |
+| `needs_human` | Perlu bantuan | the flow reaches `handover` or `meeting_done`; a booking may have happened and must be checked (`verify_booking`); the queue gives up on the message | resume, which puts the flow back into Q&A the way trained-cb's own `release` does |
+
+A takeover landing while the brain is thinking wins three ways: the takeover
+transaction cancels queued `bot` rows, the apply transaction re-checks
+`handling` under `FOR UPDATE`, and `outbound.send` cancels a queued `bot` row
+if the conversation is no longer the bot's (the bot's own hand-over message
+still goes out).
+
+**Failures.** No `BD_BRAIN_URL`: the run is skipped as `brain_not_configured`,
+never retried. Brain 5xx or timeout: retried by the queue, then `needs_human`.
+Brain 400/401/404: not retried, `needs_human`. Provider failures follow the
+outbox's own retries and never call the brain again. The inbound message always
+stays in the CRM.
+
+**One owner per conversation, and Autopilot.** trained-cb and Autopilot never
+both answer one conversation: bridge channels never dispatch `autopilot.draft`,
+`processAutopilotDraft` returns early for a bridge channel kind, and sending a
+pending Autopilot draft on a chatbot-owned conversation returns 409. The Meta
+Cloud API channels (`whatsapp`, `instagram`) keep their legacy Autopilot
+drafting in V1 and cannot be switched on for the chatbot. That is a
+**transitional state**, not a second supported architecture: production traffic
+runs on the bridges, and the target is that any DM channel the chatbot serves is
+served by trained-cb alone.
+
+Instagram and Facebook **comment** automation is a separate path and is not
+gated by these switches. The `bd.draft` queue survives only as a worker that
+drains jobs queued before this release into the same processor.
+
 ## 5. Tenancy
 
 Single database, shared schema, **row-level security on every tenant table**.
@@ -210,6 +280,7 @@ network blip, so each one states what protects it:
 | `inbound.normalise` | Claims the spool row with a conditional update; message ingest dedupes on the provider's id |
 | `outbound.send` | Refuses anything not still `queued` |
 | `autopilot.draft` | One draft per inbound message — a pre-check, and a unique index behind it for the race |
+| `chatbot.reply` | One `chatbot_runs` row per inbound message (unique index), so a redelivery is skipped as a duplicate; a partial unique index on running runs lets only one message per conversation be in flight; a booking attempt is committed before `/v1/book`, so a retry never books twice |
 | `billing.rollup` | One invoice per billing period, by partial unique index |
 | `email.send` | One row per (template, reference); a failed send is marked failed so a retry is allowed |
 | `billing.dunning` | Reminder count is the cursor; re-evaluating returns "none" for what is done |

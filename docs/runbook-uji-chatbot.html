@@ -389,7 +389,7 @@
     benar-benar terbentuk di Google Calendar serta CRM. Jalankan berurutan — tiap skenario
     memakai kondisi yang ditinggalkan sebelumnya.
   </p>
-  <p class="meta">Diperbarui 22 September 2026 · centang tersimpan di browser ini saja</p>
+  <p class="meta">Diperbarui 25 September 2026 · centang tersimpan di browser ini saja</p>
 
   <hr class="rule">
 
@@ -455,6 +455,7 @@ python -m bd_bot brain-serve</code></pre>
   <div class="callout">
     <p><strong>Gejala yang paling sering menipu:</strong> pesan masuk terlihat di halaman Chat, tapi bot tidak membalas. Yang mati biasanya <code>worker</code> atau <code>brain-serve</code> — bukan bridge-nya, karena pesannya jelas berhasil sampai.</p>
     <p><strong>Cek cepat:</strong> halaman Channel WhatsApp harus berstatus tersambung, bukan <code>MEMULAI…</code>. Status yang menggantung di <code>MEMULAI…</code> berarti sesi tidak pernah naik — restart wa-bridge.</p>
+    <p><strong>Saklar chatbot:</strong> di <strong>Pengaturan → Chatbot</strong>, <strong>Chatbot (trained-cb)</strong> divisi ini harus <em>Aktif</em> dan <strong>Chatbot aktif</strong> harus menyala untuk channel yang diuji. Kalau salah satunya mati, pesan tetap masuk tapi bot diam — itu disengaja, bukan kerusakan.</p>
     <p><strong>Dua proses per servis itu normal.</strong> Tiap <code>npm run dev:*</code> memunculkan dua proses node: satu pengawas perubahan file, satu aplikasinya. Satu servis, dua proses.</p>
   </div>
 
@@ -619,8 +620,8 @@ python -m bd_bot brain-serve</code></pre>
       <tbody>
         <tr>
           <td>Bot berhenti membalas sama sekali</td>
-          <td><span class="chip warn">handover</span> Dua pesan berturut-turut tidak dipahami, percakapan diserahkan ke manusia</td>
-          <td>Minta reset percakapan; bot tidak akan bicara lagi sampai statusnya dikembalikan</td>
+          <td><span class="chip warn">handover</span> Dua pesan berturut-turut tidak dipahami, percakapan diserahkan ke manusia — di CRM berstatus <strong>Perlu bantuan</strong></td>
+          <td>Buka percakapannya dan klik <strong>Aktifkan bot kembali</strong>. Kalau bot tetap diam, cek <strong>Pengaturan → Chatbot</strong>: <strong>Chatbot (trained-cb)</strong> divisi ini harus <em>Aktif</em> dan <strong>Chatbot aktif</strong> menyala untuk channel itu</td>
         </tr>
         <tr>
           <td>“Boleh, saya setuju meeting” tidak dimengerti</td>

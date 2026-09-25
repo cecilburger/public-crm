@@ -4,7 +4,7 @@ import {
 } from '@kirana/core';
 import {
   withTenant, tenantKeys, openField, sealField, queueOutboundMessage,
-  ensureBillingPeriod, incrementUsage, audit, type Database, type Sql,
+  ensureBillingPeriod, incrementUsage, audit, isChatbotChannelKind, type Database, type Sql,
 } from '@kirana/db';
 import type { AutopilotModel, DraftRequest } from '../autopilot/model.ts';
 import { createToolBox, auditToolUse } from '../autopilot/tools.ts';
@@ -61,18 +61,23 @@ export async function processAutopilotDraft(
   const context = await withTenant(deps.db, job.tenantId, async (tx) => {
     const rows = await tx.query<{
       id: string; contact_id: string; autopilot_mode: string; status: string; assignee_id: string | null;
-      shop_name: string; contact_name: string | null;
+      shop_name: string; contact_name: string | null; channel_kind: string;
     }>(
       `select c.id, c.contact_id, c.autopilot_mode, c.status, c.assignee_id,
-              t.name as shop_name, ct.display_name as contact_name
+              t.name as shop_name, ct.display_name as contact_name, ch.kind as channel_kind
          from conversations c
          join tenants t on t.id = c.tenant_id
          join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
+         join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
         where c.tenant_id = $1 and c.id = $2`,
       [job.tenantId, job.conversationId],
     );
     const conversation = rows[0];
     if (!conversation) return null;
+
+    // One owner per conversation: a DM bridge thread is trained-cb's or a
+    // person's, whether or not the chatbot is switched on for it.
+    if (isChatbotChannelKind(conversation.channel_kind)) return null;
 
     const policy = await loadPolicy(tx, job.tenantId);
     // A conversation can opt out even when the workspace is on.

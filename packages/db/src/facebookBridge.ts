@@ -1,4 +1,4 @@
-import { ensureConversation, type Ctx, type InboundResult } from './repo.ts';
+import { ensureConversation, isOwnEcho, type Ctx, type InboundResult } from './repo.ts';
 import { tenantKeys, sealField, openField, fieldIndex, type TenantKeys } from './keys.ts';
 import { recordConversationActivity } from './metering.ts';
 import { audit } from './audit.ts';
@@ -391,6 +391,66 @@ export async function recordMessengerAgentReply(
   return { messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id, duplicate: false };
 }
 
+/** How far back a reply the CRM sent can still be recognised in the Page's history. */
+const MESSENGER_ECHO_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * A message the CRM itself sent — an agent's reply or the bot's — read back
+ * off the Page while reconciling a thread.
+ *
+ * Such a message was stored without a provider id: Business Suite reveals a
+ * message's id only by clicking it, so the send cannot learn it. Left to
+ * `recordMessengerAgentReply`, which knows messages only by that id, the
+ * reconcile's copy became a second message in the thread. This finds the row
+ * the CRM sent, by its words over a day's window, and gives it the id instead —
+ * which also makes the next reconcile stop there. A reply the bridge could not
+ * confirm, found here, did go out, so it is marked sent.
+ *
+ * Null when nothing matches: the message was said on Facebook itself, and is
+ * history for `recordMessengerAgentReply` to import.
+ */
+export async function claimMessengerEcho(
+  ctx: Ctx,
+  args: { channelId: string; fbUserId: string; body: string; providerMessageId: string; now?: Date },
+): Promise<{ messageId: string; conversationId: string; contactId: string; duplicate: true } | null> {
+  const known = await ctx.tx.query<{ id: string }>(
+    `select id from messages where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (known[0]) return null;
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const since = new Date((args.now ?? new Date()).getTime() - MESSENGER_ECHO_WINDOW_MS);
+  const candidates = await ctx.tx.query<{ id: string; conversation_id: string; contact_id: string; body_enc: string | null }>(
+    `select m.id, m.conversation_id, c.contact_id, m.body_enc
+       from messages m
+       join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
+       join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
+      where m.tenant_id = $1 and m.channel_id = $2 and ct.fb_user_id_bidx = $3
+        and m.direction = 'outbound' and m.provider_message_id is null and m.created_at > $4
+        -- Not a bot reply a takeover cancelled: it never reached the bridge.
+        -- Null-safe on purpose: most failures store their error as a JSON
+        -- string, which has no 'reason' key to read.
+        and (m.status <> 'failed' or m.error->>'reason' is distinct from 'bot_cancelled_by_takeover')
+      order by m.created_at, m.id
+      limit 50`,
+    [ctx.tenantId, args.channelId, fieldIndex(keys.indexKey, args.fbUserId.trim()), since],
+  );
+  const match = candidates.find((r) =>
+    r.body_enc !== null && isOwnEcho(openField(keys, ctx.tenantId, r.body_enc), args.body));
+  if (!match) return null;
+
+  await ctx.tx.query(
+    `update messages
+        set provider_message_id = $3,
+            status = case when status = 'failed' then 'sent' else status end,
+            error = case when status = 'failed' then null else error end
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, match.id, args.providerMessageId],
+  );
+  return { messageId: match.id, conversationId: match.conversation_id, contactId: match.contact_id, duplicate: true };
+}
+
 /**
  * Which of these provider message ids the CRM already holds for a thread.
  *
@@ -409,6 +469,25 @@ export async function knownMessengerMessageIds(
     [ctx.tenantId, args.channelId, args.providerMessageIds],
   );
   return new Set(rows.map((r) => r.provider_message_id));
+}
+
+/**
+ * Which of these Facebook comment ids the CRM already stores.
+ *
+ * The comment sweep's only memory of what it has delivered: it offers every
+ * comment not named here and nothing else, so a comment is ingested once, a
+ * restart re-sends nothing, and a CRM rebuilt from scratch gets every comment
+ * still on the Page — which a file of "seen" ids on the bridge could not do.
+ */
+export async function knownFacebookCommentIds(
+  ctx: Ctx, args: { commentIds: string[] },
+): Promise<Set<string>> {
+  if (args.commentIds.length === 0) return new Set();
+  const rows = await ctx.tx.query<{ comment_id: string }>(
+    `select comment_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
+    [ctx.tenantId, args.commentIds],
+  );
+  return new Set(rows.map((r) => r.comment_id));
 }
 
 /* --------------------------------------------------------------- comments */
@@ -437,6 +516,8 @@ export async function recordFacebookComment(
   ctx: Ctx,
   args: {
     pageId: string; pageName?: string | null; postId: string; commentId: string;
+    /** The comment this one answers, when it is a reply. */
+    parentCommentId?: string | null;
     authorExternalId?: string | null; authorName?: string | null; body: string;
     commentedAt?: Date | null;
   },
@@ -446,13 +527,14 @@ export async function recordFacebookComment(
 
   const inserted = await ctx.tx.query<{ id: string }>(
     `insert into facebook_comments
-       (tenant_id, page_id, page_name, post_id, comment_id,
+       (tenant_id, page_id, page_name, post_id, comment_id, parent_comment_id,
         author_external_id_enc, author_external_id_bidx, author_name_enc, body_enc, commented_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      on conflict (tenant_id, comment_id) do nothing
      returning id`,
     [
       ctx.tenantId, args.pageId, args.pageName ?? null, args.postId, args.commentId,
+      args.parentCommentId?.trim() || null,
       authorId ? sealField(keys, ctx.tenantId, authorId) : null,
       authorId ? fieldIndex(keys.indexKey, authorId) : null,
       args.authorName ? sealField(keys, ctx.tenantId, args.authorName) : null,
@@ -677,6 +759,8 @@ export interface FacebookCommentRow {
   pageName: string | null;
   postId: string;
   commentId: string;
+  /** The comment this one answers, when it is a reply; null for a top-level comment. */
+  parentCommentId: string | null;
   authorExternalId: string | null;
   authorName: string | null;
   body: string;
@@ -696,19 +780,21 @@ export interface FacebookCommentRow {
 /** A comment row as stored, before its sealed columns are opened. */
 interface StoredCommentRow {
   id: string; division_id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
+  parent_comment_id: string | null;
   author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
   commented_at: Date | null; created_at: Date; status: CommentStatus;
   public_reply_at: Date | null; public_reply_error: string | null;
   dm_at: Date | null; dm_error: string | null; attempts: number;
 }
 
-const COMMENT_COLUMNS = `id, division_id, page_id, page_name, post_id, comment_id,
+const COMMENT_COLUMNS = `id, division_id, page_id, page_name, post_id, comment_id, parent_comment_id,
             author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
             status, public_reply_at, public_reply_error, dm_at, dm_error, attempts`;
 
 function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow): FacebookCommentRow {
   return {
     id: r.id, divisionId: r.division_id, pageId: r.page_id, pageName: r.page_name, postId: r.post_id, commentId: r.comment_id,
+    parentCommentId: r.parent_comment_id,
     authorExternalId: r.author_external_id_enc ? openField(keys, tenantId, r.author_external_id_enc) : null,
     authorName: r.author_name_enc ? openField(keys, tenantId, r.author_name_enc) : null,
     body: r.body_enc ? openField(keys, tenantId, r.body_enc) : '',

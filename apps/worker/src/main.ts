@@ -14,8 +14,10 @@ import { ClaudeAutopilot, ScriptedAutopilot, type AutopilotModel } from './autop
 import { purgeExpiredData, verifyAllAuditChains, expireUnpaidOrders, sweepSecurityClocks } from './processors/retention.ts';
 import { runHealthChecks } from './processors/healthChecks.ts';
 import { closePeriodAndIssueInvoice, checkUsageThresholds, runDunning } from './processors/billingRollup.ts';
-import { BdBrainClient } from './bdBrain.ts';
-import { processBdDraft } from './processors/bdDraft.ts';
+import { bdBrainFromEnv } from './bdBrain.ts';
+import { processChatbotReply, CHATBOT_REPLY_QUEUE, type ChatbotJob } from './processors/chatbotReply.ts';
+import { processLegacyBdDraft, LEGACY_BD_DRAFT_QUEUE } from './processors/bdDraft.ts';
+import { deferWhileBusy, handOverFailedChatbotJob } from './processors/chatbotQueue.ts';
 import { processIgCommentReply } from './processors/igCommentReply.ts';
 import {
   processCommentPublicReply, processCommentDm, processCommentAutopilot, dispatchCommentSweeps,
@@ -95,16 +97,14 @@ const accessTokenFor = async (tenantId: string, channelId: string): Promise<stri
   });
 };
 
-// The BD flow lives in `trained-cb` (Python) and is reached over HTTP. It is
-// optional: a deployment that only sells a catalogue never routes here. When
-// it is unset and a brand does reply, the job fails loudly naming this
-// variable rather than answering a brand with a product catalogue.
-const bdBrain = process.env.BD_BRAIN_URL
-  ? new BdBrainClient(process.env.BD_BRAIN_URL, process.env.BD_BRAIN_SECRET ?? '')
-  : null;
+// The DM chatbot's brain is `trained-cb` (Python), reached over HTTP. Without
+// it every run is recorded as skipped (`brain_not_configured`) — never retried,
+// and never answered by Autopilot instead.
+const bdBrain = bdBrainFromEnv();
 if (!bdBrain) {
-  console.warn('BD_BRAIN_URL is not set — BD conversations will not be answered');
+  console.warn('BD_BRAIN_URL is not set — the DM chatbot will not answer (runs recorded as brain_not_configured)');
 }
+const chatbotDeps = { db, kek, brain: bdBrain, dispatch };
 
 /**
  * What the bot says to a comment, asked of the bot itself.
@@ -141,14 +141,8 @@ const workers = [
   new Worker('autopilot.draft', async (job: Job) =>
     processAutopilotDraft({ db, kek, model: autopilot, dispatch }, job.data), { connection, concurrency: 6 }),
 
-  new Worker('bd.draft', async (job: Job) => {
-    if (!bdBrain) {
-      const err = new Error('BD_BRAIN_URL is not configured — cannot answer a BD conversation');
-      (err as Error & { permanent?: boolean }).permanent = true;
-      throw err;
-    }
-    return processBdDraft({ db, kek, brain: bdBrain, dispatch }, job.data);
-  }, {
+  new Worker(CHATBOT_REPLY_QUEUE, async (job: Job, token?: string) =>
+    processChatbotReply(chatbotDeps, job.data as ChatbotJob, { onBusy: deferWhileBusy(job, token) }), {
     connection, concurrency: 6,
     // `BdBrainClient.book()` (apps/worker/src/bdBrain.ts) gives Google
     // Calendar and an LLM read up to 45s to answer, comfortably past
@@ -162,6 +156,11 @@ const workers = [
     // what stops the duplicate run from happening to begin with.
     lockDuration: 60_000,
   }),
+
+  // Drains jobs queued under the old name before this release; remove with the next one.
+  new Worker(LEGACY_BD_DRAFT_QUEUE, async (job: Job, token?: string) =>
+    processLegacyBdDraft(chatbotDeps, job.data, { onBusy: deferWhileBusy(job, token) }),
+  { connection, concurrency: 6, lockDuration: 60_000 }),
 
   new Worker('igComment.reply', async (job: Job) => {
     // Off by default is the wrong default for a feature someone turned on,
@@ -227,6 +226,11 @@ for (const w of workers) {
       const { tenantId, messageId } = job.data as { tenantId: string; messageId: string };
       void markSendExhausted(db, tenantId, messageId, err.message)
         .catch((e: Error) => console.error('[outbound.send] could not mark message failed:', e.message));
+    }
+    // The contact is still waiting for an answer the bot will not give.
+    if (job) {
+      void handOverFailedChatbotJob(db, w.name, job, err)
+        .catch((e: Error) => console.error(`[${w.name}] could not hand the conversation over:`, e.message));
     }
   });
 }

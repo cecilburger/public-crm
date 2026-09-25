@@ -2,6 +2,7 @@ import { normalisePhone } from '@kirana/core';
 import type { Sql } from './sql.ts';
 import { sealField, openField, fieldIndex, tenantKeys, type TenantKeys } from './keys.ts';
 import { recordConversationActivity, incrementUsage, ensureBillingPeriod } from './metering.ts';
+import { CHATBOT_CHANNEL_KINDS, type Handling } from './chatbot.ts';
 
 /**
  * `divisionId` is informational for most callers: the transaction already
@@ -685,6 +686,27 @@ function normaliseForEcho(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+/**
+ * Whether `readBack` — a message scraped off the provider's page — is our own
+ * `sent` text coming back, under the rules above and the length rule below.
+ */
+export function isOwnEcho(sent: string, readBack: string): boolean {
+  const a = normaliseForEcho(sent);
+  const b = normaliseForEcho(readBack);
+  if (a === b) return true;
+  // A reply does not come back the same length it went out. Measured on
+  // two live echoes: 349 characters sent came back as 356, and 420 as 427
+  // — the scrape picks up a few characters of surrounding bubble chrome
+  // along with the text, and drops the emoji that was in the original. It
+  // can cut the other way too when Instagram splits a long message into
+  // separate bubbles. Either string starting with the other therefore
+  // covers both, and the length floor is what stops a genuinely short
+  // human reply ("ok", "siap") from being swallowed for happening to
+  // begin like something the bot said.
+  const floor = 25;
+  return (b.length >= floor && a.startsWith(b)) || (a.length >= floor && b.startsWith(a));
+}
+
 export async function recordIgBridgeAgentReply(
   ctx: Ctx,
   args: {
@@ -738,24 +760,8 @@ export async function recordIgBridgeAgentReply(
       order by created_at desc limit 20`,
     [ctx.tenantId, conversation.id, new Date(now.getTime() - 15 * 60_000)],
   );
-  const wanted = normaliseForEcho(args.body);
-  const alreadyThere = recent.some((r) => {
-    if (!r.body_enc) return false;
-    const sent = normaliseForEcho(openField(keys, ctx.tenantId, r.body_enc));
-    if (sent === wanted) return true;
-    // A reply does not come back the same length it went out. Measured on
-    // two live echoes: 349 characters sent came back as 356, and 420 as 427
-    // — the scrape picks up a few characters of surrounding bubble chrome
-    // along with the text, and drops the emoji that was in the original. It
-    // can cut the other way too when Instagram splits a long message into
-    // separate bubbles. Either string starting with the other therefore
-    // covers both, and the length floor is what stops a genuinely short
-    // human reply ("ok", "siap") from being swallowed for happening to
-    // begin like something the bot said.
-    const floor = 25;
-    return (wanted.length >= floor && sent.startsWith(wanted))
-      || (sent.length >= floor && wanted.startsWith(sent));
-  });
+  const alreadyThere = recent.some((r) =>
+    Boolean(r.body_enc) && isOwnEcho(openField(keys, ctx.tenantId, r.body_enc!), args.body));
   if (alreadyThere) {
     return {
       messageId: '', conversationId: conversation.id, contactId: contact.id, duplicate: true,
@@ -793,7 +799,7 @@ export async function recordIgBridgeAgentReply(
 export async function queueOutboundMessage(
   ctx: Ctx,
   args: {
-    conversationId: string; body: string; senderType: 'agent' | 'autopilot' | 'system';
+    conversationId: string; body: string; senderType: 'agent' | 'autopilot' | 'system' | 'bot';
     senderId?: string | null; templateName?: string | null; now?: Date;
   },
 ): Promise<{ messageId: string }> {
@@ -910,13 +916,16 @@ export async function listInbox(
     last_message_at: Date | null; last_inbound_at: Date | null; sla_due_at: Date | null;
     display_name: string | null; phone_enc: string | null; channel_kind: string; channel_id: string;
     contact_id: string; created_at: Date; first_response_at: Date | null;
+    handling: Handling; chatbot_owned: boolean;
   }>(
     `select c.id, c.status, c.priority, c.assignee_id, c.last_message_at, c.last_inbound_at,
             c.sla_due_at, ct.display_name, ct.phone_enc, ch.kind as channel_kind, ch.id as channel_id,
-            c.contact_id, c.created_at, c.first_response_at
+            c.contact_id, c.created_at, c.first_response_at, c.handling,
+            (ch.chatbot_enabled and ch.kind = any($6::text[]) and coalesce(cs.enabled, false)) as chatbot_owned
        from conversations c
        join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
        join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
+       left join chatbot_settings cs on cs.tenant_id = c.tenant_id and cs.division_id = c.division_id
       where c.tenant_id = $1
         and ($2::text is null or c.status = $2)
         and ($3::uuid is null or c.assignee_id = $3)
@@ -924,7 +933,7 @@ export async function listInbox(
       order by c.last_message_at desc nulls last
       limit $4`,
     [ctx.tenantId, args.status ?? null, args.assigneeId ?? null, Math.min(args.limit ?? 50, 200),
-     args.channelKind ?? null],
+     args.channelKind ?? null, [...CHATBOT_CHANNEL_KINDS]],
   );
 }
 
@@ -961,7 +970,7 @@ export async function createWaBridgeChannel(
  * picks up a Meeting task; getting a meeting on the books doesn't erase that
  * someone already answered:
  *   Belum / Bot / Balas — mutually exclusive, the chat's own reply state
- *     (awaiting reply / last answered by Autopilot / last answered by a human)
+ *     (awaiting reply / last answered by trained-cb or Autopilot / last answered by a human)
  *   Minat / Tolak       — mutually exclusive with each other (one brand
  *     status), independent of the chat state: the brand this contact
  *     belongs to is marked interested / rejected
@@ -994,7 +1003,7 @@ export async function listWaBridgeChannels(ctx: Ctx) {
          case
            when c.status <> 'resolved' and c.last_inbound_at is not null
                 and c.last_message_at = c.last_inbound_at then 'belum'
-           when lm.sender_type = 'autopilot' then 'bot'
+           when lm.sender_type in ('autopilot', 'bot') then 'bot'
            else 'balas'
          end as chat_state,
          (b.status = 'interested') as is_minat,

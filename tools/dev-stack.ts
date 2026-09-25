@@ -25,7 +25,7 @@ import {
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
   createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
-  ensureConversation,
+  ensureConversation, CHATBOT_LEASE_STALE_MS,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import QRCode from 'qrcode';
@@ -34,6 +34,10 @@ import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
 import { processAutopilotDraft } from '../apps/worker/src/processors/autopilotDraft.ts';
 import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
+import {
+  processChatbotReply, markChatbotExhausted, CHATBOT_REPLY_QUEUE, type ChatbotJob,
+} from '../apps/worker/src/processors/chatbotReply.ts';
+import { bdBrainFromEnv } from '../apps/worker/src/bdBrain.ts';
 import {
   processCommentPublicReply, processCommentDm, processCommentAutopilot, type CommentActionJob,
 } from '../apps/worker/src/processors/facebookComments.ts';
@@ -761,6 +765,38 @@ const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
+// The DM chatbot, same as the worker's: trained-cb when BD_BRAIN_URL is set,
+// otherwise every run is recorded as `brain_not_configured`.
+const bdBrain = bdBrainFromEnv();
+const CHATBOT_BUSY_WAIT_MS = 3_000;
+/** Past this a held lease has been swept (`CHATBOT_LEASE_STALE_MS`) and the next run on the thread has had its turn. */
+const CHATBOT_BUSY_GIVE_UP_MS = 2 * CHATBOT_LEASE_STALE_MS;
+
+/**
+ * Off the webhook's request path, like the real queue: two messages on one
+ * thread then really do overlap, and the later one waits for the lease the
+ * way the worker's delayed retry would. There are no retries here, so a
+ * failure is final and hands the conversation to a person, as the worker's
+ * last attempt does.
+ */
+const runChatbot = (payload: unknown): void => {
+  const job = payload as ChatbotJob;
+  const wait = () => new Promise<void>((resolve) => setTimeout(resolve, CHATBOT_BUSY_WAIT_MS));
+  void (async () => {
+    const giveUpAt = Date.now() + CHATBOT_BUSY_GIVE_UP_MS;
+    while (Date.now() < giveUpAt) {
+      const outcome = await processChatbotReply({ db, kek, brain: bdBrain, dispatch }, job, { onBusy: wait });
+      if (outcome.status !== 'busy') return;
+    }
+    console.error(`[dev-stack] chatbot.reply gave up on message ${job.messageId}: the conversation stayed busy`);
+  })().catch(async (err) => {
+    const message = (err as Error).message;
+    console.error(`[dev-stack] chatbot.reply failed on message ${job.messageId}:`, message);
+    await markChatbotExhausted(db, job, message).catch((e: Error) =>
+      console.error('[dev-stack] could not hand the conversation over:', e.message));
+  });
+};
+
 // Named rather than written inline into `buildApp` so the comment processors
 // can dispatch back into it: a sweep queues reply and DM jobs exactly as the
 // real worker does, and here they run straight away, in order.
@@ -773,12 +809,16 @@ const dispatch: Dispatch = async ({ queue, payload, delayMs }) => {
     await processInboundWebhook(
       {
         db, control: db, kek,
-        dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); },
+        dispatch: async (job) => {
+          if (job.queue === 'autopilot.draft') await runAutopilot(job.payload);
+          if (job.queue === CHATBOT_REPLY_QUEUE) runChatbot(job.payload);
+        },
         publish: (tenantId, event) => realtime.publish(tenantId, event),
       },
       (payload as { webhookEventId: string }).webhookEventId);
   }
   if (queue === 'autopilot.draft') await runAutopilot(payload);
+  if (queue === CHATBOT_REPLY_QUEUE) runChatbot(payload);
   if (queue === 'outbound.send') {
     const job = payload as { tenantId: string; messageId: string };
     // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real

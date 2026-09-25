@@ -41,6 +41,7 @@ import { registerEmailSettingsRoutes } from './routes/emailSettings.ts';
 import { registerInstagramBridgeRoutes } from './routes/instagramBridge.ts';
 import { registerInstagramMetaRoutes } from './routes/instagramMeta.ts';
 import { registerFacebookBridgeRoutes } from './routes/facebookBridge.ts';
+import { registerChatbotRoutes } from './routes/chatbot.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -402,6 +403,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerInstagramBridgeRoutes(app, ctx);
   registerInstagramMetaRoutes(app, ctx);
   registerFacebookBridgeRoutes(app, ctx);
+  registerChatbotRoutes(app, ctx);
 
   return app;
 }

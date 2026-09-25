@@ -83,6 +83,8 @@ export interface FbCommentEvent {
      * nothing to stop it being ingested again on the next reconciliation pass. */
     commentId: string;
     postId: string;
+    /** The comment this one answers when it is a reply; null for a top-level comment. */
+    parentCommentId?: string | null;
     authorId: string | null;
     authorName: string;
     text: string;

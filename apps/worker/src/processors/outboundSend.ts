@@ -36,21 +36,38 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
       division_id: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
       ig_psid_enc: string | null; ig_thread_id_enc: string | null; ig_username_enc: string | null;
-      fb_thread_id_enc: string | null;
+      fb_thread_id_enc: string | null; sender_type: string; handling: string; bot_handed_over: boolean;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
               c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.division_id, ch.quality, ch.external_id,
-              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.ig_username_enc, ct.fb_thread_id_enc
+              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.ig_username_enc, ct.fb_thread_id_enc,
+              m.sender_type, c.handling,
+              exists (
+                select 1 from chatbot_runs r
+                 where r.tenant_id = m.tenant_id and r.conversation_id = m.conversation_id
+                   and r.status = 'handover' and r.finished_at >= m.created_at
+              ) as bot_handed_over
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
          join contacts ct on ct.id = c.contact_id and ct.tenant_id = m.tenant_id
-        where m.tenant_id = $1 and m.id = $2`,
+        where m.tenant_id = $1 and m.id = $2
+        for update of m`,
       [job.tenantId, job.messageId],
     );
+    // Held until this send is recorded: a message handed to this worker twice
+    // (a chatbot job re-hands its unsent replies on redelivery) is sent once.
     const msg = rows[0];
     if (!msg) return { status: 'not_found' };
     if (msg.status !== 'queued') return { status: 'already_sent' };
+
+    // A bot reply still waiting when a person took the conversation must not
+    // follow their first word. The bot's own hand-over — its closing message,
+    // an opt-out acknowledgement, and anything it queued before — still goes.
+    if (msg.sender_type === 'bot' && msg.handling !== 'bot' && !msg.bot_handed_over) {
+      await markFailed(tx, job, 'bot_cancelled_by_takeover');
+      return { status: 'cancelled' };
+    }
 
     const keys = await tenantKeys(tx, deps.kek, job.tenantId);
     const body = msg.body_enc ? openField(keys, job.tenantId, msg.body_enc) : '';

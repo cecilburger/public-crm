@@ -1,6 +1,7 @@
 import type { ConversationSummary, Task, IgComment } from './api';
 import { awaitingReply } from './format';
 import { isTaskOverdue, isTaskDueToday } from './taskHelpers';
+import { chatAttention } from './chatbot';
 import { t } from './copy';
 
 export interface NotificationItem {
@@ -30,13 +31,19 @@ const COMMENT_PREVIEW_LENGTH = 60;
 export function buildNotifications(
   conversations: ConversationSummary[], tasks: Task[], comments: IgComment[] = [],
 ): NotificationItem[] {
-  const chatItems: NotificationItem[] = conversations.filter(awaitingReply).map((c) => {
+  // One item per conversation: a thread the bot handed over is usually also
+  // awaiting a reply, and the hand-over is the more urgent of the two.
+  const chatItems: NotificationItem[] = conversations.flatMap((c) => {
+    const attention = chatAttention(c, awaitingReply(c));
+    if (!attention) return [];
     const name = c.display_name ?? c.phone ?? '?';
-    return {
-      id: `chat-${c.id}`, kind: 'chat', title: name, meta: null, avatarLabel: name,
-      tag: t.notifications.needsReply, tone: 'warn',
+    const botNeedsHelp = attention === 'bot_needs_help';
+    return [{
+      id: `chat-${c.id}`, kind: 'chat' as const, title: name, meta: null, avatarLabel: name,
+      tag: botNeedsHelp ? t.notifications.botNeedsHelp : t.notifications.needsReply,
+      tone: (botNeedsHelp ? 'danger' : 'warn') as 'danger' | 'warn',
       when: c.last_message_at ?? c.created_at, href: `/obrolan/${c.id}`,
-    };
+    }];
   });
 
   const taskItems: NotificationItem[] = tasks
