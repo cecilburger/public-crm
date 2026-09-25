@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { API_URL } from '@/lib/api';
 import { getSession } from '@/lib/session';
-import { withBase } from '@/lib/basePath';
+import { appUrl } from '@/lib/basePath';
 
 /**
  * A thin passthrough to the API's generate route. The download needs to be a
@@ -12,7 +12,7 @@ import { withBase } from '@/lib/basePath';
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { accessToken } = await getSession();
-  if (!accessToken) return NextResponse.redirect(new URL(withBase('/masuk'), req.url));
+  if (!accessToken) return NextResponse.redirect(appUrl(req, '/masuk'));
 
   const res = await fetch(`${API_URL}/v1/documents/${id}/generate`, {
     headers: { authorization: `Bearer ${accessToken}` },

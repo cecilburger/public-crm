@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { api, ApiError } from '@/lib/api';
-import { withBase } from '@/lib/basePath';
+import { appUrl } from '@/lib/basePath';
 
 // Kept in sync with the same constant in `../connect/route.ts` — set there
 // right before handing off to Google, read (and cleared) here once it sends
@@ -12,11 +12,11 @@ const RETURN_COOKIE = 'kirana_gcal_return';
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
   const deniedByUser = req.nextUrl.searchParams.get('error');
-  const redirectUri = `${req.nextUrl.origin}${withBase('/api/google-calendar/callback')}`;
+  const redirectUri = appUrl(req, '/api/google-calendar/callback').toString();
   const returnTo = req.cookies.get(RETURN_COOKIE)?.value || '/tugas';
 
   const redirect = (query: string) => {
-    const res = NextResponse.redirect(new URL(withBase(`${returnTo}${query}`), req.nextUrl.origin));
+    const res = NextResponse.redirect(appUrl(req, `${returnTo}${query}`));
     res.cookies.delete(RETURN_COOKIE);
     return res;
   };

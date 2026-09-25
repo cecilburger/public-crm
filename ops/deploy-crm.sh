@@ -5,7 +5,8 @@
 #   ops/deploy-crm.sh check  root@72.62.244.186      # read-only: what the server has
 #   CRM_PASSWORD='…' ops/deploy-crm.sh deploy root@72.62.244.186
 #
-# Optional: SSH_KEY=~/.ssh/deploy_key to pick the key.
+# Optional: SSH_KEY=~/.ssh/deploy_key to pick the key; SITE_FILE=/etc/nginx/…
+# when the site's server block doesn't name the host (a catch-all `server_name _`).
 #
 # What `deploy` does on the server, as root:
 #   - a system user `mcncrm` owns everything under /opt/mcnasia-crm
@@ -42,8 +43,8 @@ ssh_opts=(-o ConnectTimeout=15)
 [[ -n ${SSH_KEY:-} ]] && ssh_opts+=(-i "$SSH_KEY")
 
 {
-  printf 'MODE=%q SITE_HOST=%q CRM_USERS=%q CRM_LOGIN_DOMAIN=%q CRM_WORKSPACE=%q CRM_PASSWORD=%q\n' \
-    "$MODE" "$SITE_HOST" "$CRM_USERS" "$CRM_LOGIN_DOMAIN" "$CRM_WORKSPACE" "${CRM_PASSWORD:-}"
+  printf 'MODE=%q SITE_HOST=%q SITE_FILE=%q CRM_USERS=%q CRM_LOGIN_DOMAIN=%q CRM_WORKSPACE=%q CRM_PASSWORD=%q\n' \
+    "$MODE" "$SITE_HOST" "${SITE_FILE:-}" "$CRM_USERS" "$CRM_LOGIN_DOMAIN" "$CRM_WORKSPACE" "$CRM_PASSWORD"
   cat <<'REMOTE'
 set -euo pipefail
 ROOT=/opt/mcnasia-crm; APP=$ROOT/app; NODE_DIR=$ROOT/node; APP_USER=mcncrm
@@ -52,9 +53,16 @@ REPO=https://github.com/cecilburger/public-crm.git; BRANCH=development
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# The site's server block: named by SITE_FILE, or found by its server_name.
 site_files() {
-  grep -lsE "server_name[^;]*\b${SITE_HOST//./\\.}\b" /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf 2>/dev/null \
+  if [[ -n $SITE_FILE ]]; then readlink -f "$SITE_FILE"; return; fi
+  { grep -lsE "server_name[^;]*\b${SITE_HOST//./\\.}\b" /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf 2>/dev/null || true; } \
     | xargs -r -n1 readlink -f | sort -u
+}
+# Where the include goes inside that file: after the server_name line for the
+# site, or — for a catch-all block that never names it — after `server_name _;`.
+anchor_re() {
+  if [[ -n $SITE_FILE ]]; then echo "server_name[^;]*;"; else echo "server_name[^;]*\b${SITE_HOST//./\\.}\b[^;]*;"; fi
 }
 
 if [[ $MODE == check ]]; then
@@ -66,10 +74,14 @@ if [[ $MODE == check ]]; then
     if ss -ltnH "sport = :$p" | grep -q .; then echo "$p IN USE: $(ss -ltnpH "sport = :$p" | awk '{print $NF}')"; else echo "$p free"; fi
   done
   say "nginx site files for $SITE_HOST"
-  files=$(site_files); [[ -n $files ]] || echo "none found"
+  files=$(site_files); [[ -n $files ]] || echo "none found by server_name"
   for f in $files; do
     echo "--- $f"; grep -nE '^\s*(listen|server_name|location|include|return|root|proxy_pass)\b' "$f" | sed 's/^/  /'
   done
+  say "every server block nginx loads (nginx -T)"
+  nginx -T 2>/dev/null | grep -E '^# configuration file|^\s*(listen|server_name|location|return|proxy_pass)\b' \
+    | grep -v '^# configuration file /etc/nginx/\(mime.types\|fastcgi\|snippets/fastcgi\|koi\|win\|scgi\|uwsgi\|proxy_params\)' \
+    | sed 's/^\s*/  /' | head -150
   say "existing install"; ls -la $ROOT 2>/dev/null || echo "none"
   systemctl is-active mcnasia-crm-api mcnasia-crm-web 2>/dev/null || true
   exit 0
@@ -193,7 +205,7 @@ for f in $files; do
   if grep -q 'snippets/mcnasia-crm.conf' "$f"; then echo "$f already includes the snippet"; continue; fi
   cp -p "$f" "/root/nginx-backups/$(basename "$f").$stamp"
   echo "backup: /root/nginx-backups/$(basename "$f").$stamp"
-  sed -i -E "/server_name[^;]*\b${SITE_HOST//./\\.}\b[^;]*;/a\\    include snippets/mcnasia-crm.conf; # mcnasia-crm" "$f"
+  sed -i -E "/$(anchor_re)/a\\    include snippets/mcnasia-crm.conf; # mcnasia-crm" "$f"
 done
 if ! nginx -t 2>&1; then
   for f in $files; do
