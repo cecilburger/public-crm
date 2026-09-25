@@ -1,0 +1,25 @@
+# The bot's own settings for this copy (Google OAuth paths, MEETING_* hours).
+# BD_BRAIN_SECRET and BD_WHATSAPP_NUMBER live in the repo root .env.
+.env
+# OAuth client + token for Google Calendar. Anyone holding the token can
+# write to the BD calendar.
+secrets/
+client_secret_*.json
+# The bot's SQLite (only `simulate` writes one here; brain-serve keeps nothing).
+data/
+
+# Real customer conversations and client material. None of it belongs in a
+# repository with a remote — the same list whatsapp-bot-bd keeps out of git,
+# and what tests/ skips cleanly without. See README.md, "what is not here".
+chat-example/
+inbound/
+assets/
+opening/
+tests/data/gold_intents.csv
+*.pdf
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

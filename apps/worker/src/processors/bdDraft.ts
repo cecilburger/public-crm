@@ -2,7 +2,7 @@ import {
   withTenant, tenantKeys, openField, sealField, queueOutboundMessage, createTask, setTaskCalendarEvent,
   recordBrandFromChat, fillContactStoreFromChat, audit, type Database, type Sql,
 } from '@kirana/db';
-import type { BdAction, BdBooking, BdBrainClient, BdConversation } from '../bdBrain.ts';
+import type { BdAction, BdBooking, BdBrainClient, BdConversation, BdTurn } from '../bdBrain.ts';
 
 /**
  * Reply to one inbound message on a BD conversation, using the `trained-cb`
@@ -58,8 +58,32 @@ export async function isBdConversation(
   return true;
 }
 
+/**
+ * What the flow calls the channel a conversation is on.
+ *
+ * `bd_bot.flow.dm_channel` reads `Conversation.source` ('' / 'instagram' /
+ * 'facebook') to choose the DM opener over the WhatsApp form and to switch
+ * on the DM → WhatsApp hand-off. In the bot the Meta transport records it;
+ * here the channel row already knows, and the flow cannot infer it from a
+ * UUID jid. Before this existed (24 Sep 2026) an Instagram DM was answered
+ * with the WhatsApp qualification form and could never be moved to WhatsApp.
+ */
+export function bdSourceOf(channelKind: string | null | undefined): '' | 'instagram' | 'facebook' {
+  switch (channelKind) {
+    case 'instagram':
+    case 'instagram_bridge':
+      return 'instagram';
+    case 'messenger':
+    case 'messenger_bridge':
+      return 'facebook';
+    default:
+      return '';
+  }
+}
+
 interface Row {
   contact_id: string; status: string; assignee_id: string | null;
+  channel_kind: string;
   contact_name: string | null;
   brand_name: string | null; brand_category: string | null;
   node: string | null; outcome: string | null;
@@ -80,12 +104,14 @@ export async function processBdDraft(
   const state = await withTenant(deps.db, job.tenantId, async (tx) => {
     const rows = await tx.query<Row>(
       `select c.contact_id, c.status, c.assignee_id,
+              ch.kind as channel_kind,
               ct.display_name as contact_name,
               b.name as brand_name, b.category as brand_category,
               s.node, s.outcome, s.gadget_loops, s.unknown_streak, s.price_stage,
               s.email_enc, s.meet_link, s.stopped_reason,
               s.last_inbound_at, s.last_outbound_at, s.meeting_at
          from conversations c
+         join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
          join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
          left join brands b on b.contact_id = c.contact_id and b.tenant_id = c.tenant_id
          left join bd_conversation_state s
@@ -126,9 +152,18 @@ export async function processBdDraft(
     last_inbound_at: iso(row.last_inbound_at),
     last_outbound_at: iso(row.last_outbound_at),
     meeting_at: iso(row.meeting_at),
+    source: bdSourceOf(row.channel_kind),
   };
 
-  const step = await deps.brain.step({ conversation, text: job.text, now });
+  // The recent turns go with every call, not just the booking ones: the
+  // brain's engine needs them to know whether OUR last message asked the
+  // focus question (so "lebih ke sales" is read as the answer and not as an
+  // unclassifiable turn), whether the contact is repeating themselves, and
+  // whether the text is our own message forwarded back. Read once, reused.
+  const history = await withTenant(deps.db, job.tenantId, (tx) =>
+    recentTurns({ tx, tenantId: job.tenantId, kek: deps.kek }, job.conversationId));
+
+  const step = await deps.brain.step({ conversation, text: job.text, now, history });
 
   /* 2b — a decision to book is not a booking */
   //
@@ -143,8 +178,6 @@ export async function processBdDraft(
   const wantsBooking = step.actions.some((a) => a.type === 'book_meeting');
 
   if (wantsBooking || propose) {
-    const history = await withTenant(deps.db, job.tenantId, (tx) =>
-      recentTurns({ tx, tenantId: job.tenantId, kek: deps.kek }, job.conversationId));
     try {
       if (wantsBooking) {
         booking = await deps.brain.book({ conversation: step.conversation, history, now });
@@ -209,12 +242,13 @@ function cleanBrandName(raw: string | undefined): string {
 }
 
 /** The last few turns, oldest first — what the brain reads to find a day and
- * hour the contact named a message or two ago. */
+ * hour the contact named a message or two ago, and to see its own last
+ * message. `at` is real so the brain's loop breaker counts real minutes. */
 async function recentTurns(
   ctx: { tx: Sql; tenantId: string; kek: Buffer }, conversationId: string,
-): Promise<{ direction: 'in' | 'out'; body: string }[]> {
-  const rows = await ctx.tx.query<{ direction: string; body_enc: string | null }>(
-    `select direction, body_enc from messages
+): Promise<BdTurn[]> {
+  const rows = await ctx.tx.query<{ direction: string; body_enc: string | null; created_at: Date }>(
+    `select direction, body_enc, created_at from messages
       where tenant_id = $1 and conversation_id = $2
       order by created_at desc limit 8`,
     [ctx.tenantId, conversationId],
@@ -225,6 +259,7 @@ async function recentTurns(
     .map((r) => ({
       direction: (r.direction === 'inbound' ? 'in' : 'out') as 'in' | 'out',
       body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
+      at: new Date(r.created_at).toISOString(),
     }))
     .filter((t) => t.body);
 }
@@ -251,8 +286,18 @@ async function applyActions(
     node: setNode?.type === 'set_node' ? setNode.node : step.conversation.node,
     outcome: setNode?.type === 'set_node' ? setNode.outcome : step.conversation.outcome,
     // The booking call advanced the conversation further than `step` did —
-    // it is the one that knows the meeting time and the Meet link.
-    ...(booking ? { meeting_at: booking.meeting_at, meet_link: booking.meet_link } : {}),
+    // it is the one that knows the meeting time and the Meet link, and it
+    // is the one that moved the node: the flow's `on_meeting_booked` sets
+    // SCHEDULED inside `/v1/book`, not inside `/v1/step`. Taking only the
+    // meeting fields left the row at `scheduling` after a successful
+    // booking (found by the end-to-end smoke, 25 Sep 2026), so the brand's
+    // next "ok, terima kasih" re-entered the booking branch instead of the
+    // meeting-day handling — and the reminder/no-show ladder never armed.
+    ...(booking ? {
+      meeting_at: booking.meeting_at, meet_link: booking.meet_link,
+      ...(booking.conversation.node ? { node: booking.conversation.node } : {}),
+      ...(booking.conversation.outcome ? { outcome: booking.conversation.outcome } : {}),
+    } : {}),
   };
 
   // A booking that ran is no longer deferred work — it happened, and its own
@@ -439,8 +484,13 @@ async function applyActions(
     );
   }
 
+  // A booking confirmation or a slot list is a reply too: the turn that
+  // books the meeting has no `send` action of its own (its messages come
+  // back from `/v1/book`), and reporting it as 'skipped' read as the bot
+  // having said nothing on the one turn that mattered most (25 Sep 2026).
+  const said = sends.length + (booking?.messages.length ?? 0) + offered.length;
   return {
-    status: escalation ? 'handover' : sends.length ? 'replied' : 'skipped',
+    status: escalation ? 'handover' : said ? 'replied' : 'skipped',
     intent: step.intent,
     deferred,
   };

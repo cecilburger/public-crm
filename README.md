@@ -19,6 +19,7 @@ npm run dev:stack     # API + seeded workspace on an in-memory Postgres
 npm run dev:console   # console → http://localhost:3000
 npm run dev:ig-bridge
 npm run dev -w @kirana/wa-bridge
+npm run dev:bd-brain  # the BD chatbot (apps/bd-brain, Python) → :4321; see apps/bd-brain/README.md
 
 # the real stack
 cp .env.example .env
@@ -132,6 +133,18 @@ workspace-level `auto` unreachable. All fixed and covered.
 - [Operations](docs/OPERATIONS.md) — SLOs, runbooks, capacity, cost model
 - [UU PDP compliance](docs/COMPLIANCE-UU-PDP.md) — obligations mapped to code
 - [Decisions](docs/adr/) — five ADRs
+
+## BD brain — the chatbot that qualifies a brand and books the meeting
+
+A brand writing in on WhatsApp Web or Instagram DM is not a shopper, so it is
+not answered by Autopilot. The worker routes it to `bd.draft`, which asks the
+BD brain — `apps/bd-brain`, the Python bot pulled in from `whatsapp-bot-bd`
+— what to say next, over HTTP, one conversation state per call. The brain
+runs the inbound funnel comment → DM → WhatsApp → Google Meet, and books the
+meeting in Google Calendar; the CRM queues the replies through its bridges,
+keeps the state in `bd_conversation_state`, and creates the meeting task.
+Start it with `npm run dev:bd-brain`; the contract, the settings and how to
+sync a new training round are in [apps/bd-brain/README.md](apps/bd-brain/README.md).
 
 ## Autopilot — the chatbot that finishes the sale
 

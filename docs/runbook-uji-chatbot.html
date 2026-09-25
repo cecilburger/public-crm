@@ -389,7 +389,7 @@
     benar-benar terbentuk di Google Calendar serta CRM. Jalankan berurutan — tiap skenario
     memakai kondisi yang ditinggalkan sebelumnya.
   </p>
-  <p class="meta">Diperbarui 22 September 2026 · centang tersimpan di browser ini saja</p>
+  <p class="meta">Diperbarui 25 September 2026 · centang tersimpan di browser ini saja</p>
 
   <hr class="rule">
 
@@ -401,9 +401,9 @@ npm run dev:worker
 npm run dev:console
 npm run dev:ig-bridge
 npm run dev:wa-bridge
+npm run dev:bd-brain</code></pre>
 
-cd "D:\project\PT Miss Spicy Internatonal\trained-cb"
-python -m bd_bot brain-serve</code></pre>
+  <p class="section-note">Chatbot-nya sekarang ada di repo ini sendiri (<code>apps/bd-brain</code>) — tidak perlu lagi checkout <code>trained-cb</code> terpisah. <code>npm run dev:bd-brain</code> menjalankan <code>python -m bd_bot brain-serve</code> di port 4321 memakai <code>.env</code> yang sama dengan worker, jadi <code>BD_BRAIN_URL</code> dan <code>BD_BRAIN_SECRET</code> otomatis cocok. Sekali saja di awal: <code>cd apps/bd-brain &amp;&amp; python3 -m venv .venv &amp;&amp; pip install -r requirements.txt</code>, lalu aktifkan venv itu (atau set <code>BD_BRAIN_PYTHON</code>) sebelum <code>npm run dev:bd-brain</code>. Tanpa token Google Calendar di <code>apps/bd-brain/secrets/</code>, set <code>BD_BRAIN_SIMULATE_CALENDAR=true</code> di <code>.env</code> — skenario 03 tetap bisa dijalankan, tapi event-nya tidak masuk kalender sungguhan.</p>
 
   <h3 class="sub">Apa tugas masing-masing</h3>
 
@@ -439,8 +439,8 @@ python -m bd_bot brain-serve</code></pre>
           <td>Instagram berhenti total. WhatsApp tidak terpengaruh</td>
         </tr>
         <tr>
-          <td><code>brain-serve</code><br><span class="port">:4321</span></td>
-          <td>Chatbot-nya sendiri — yang memutuskan apa yang dikatakan, memilih slot meeting, dan memesan ke Google Calendar.</td>
+          <td><code>dev:bd-brain</code><br><span class="port">:4321</span></td>
+          <td>Chatbot-nya sendiri (<code>apps/bd-brain</code>, Python) — yang memutuskan apa yang dikatakan, memilih slot meeting, dan memesan ke Google Calendar. Tidak menyimpan apa pun: setiap pesan dikirim bersama kondisi percakapannya dari Postgres.</td>
           <td>Pesan masuk tercatat, tapi tidak ada yang menyusun balasannya</td>
         </tr>
         <tr>
@@ -453,7 +453,7 @@ python -m bd_bot brain-serve</code></pre>
   </div>
 
   <div class="callout">
-    <p><strong>Gejala yang paling sering menipu:</strong> pesan masuk terlihat di halaman Chat, tapi bot tidak membalas. Yang mati biasanya <code>worker</code> atau <code>brain-serve</code> — bukan bridge-nya, karena pesannya jelas berhasil sampai.</p>
+    <p><strong>Gejala yang paling sering menipu:</strong> pesan masuk terlihat di halaman Chat, tapi bot tidak membalas. Yang mati biasanya <code>worker</code> atau <code>dev:bd-brain</code> — bukan bridge-nya, karena pesannya jelas berhasil sampai.</p>
     <p><strong>Cek cepat:</strong> halaman Channel WhatsApp harus berstatus tersambung, bukan <code>MEMULAI…</code>. Status yang menggantung di <code>MEMULAI…</code> berarti sesi tidak pernah naik — restart wa-bridge.</p>
     <p><strong>Dua proses per servis itu normal.</strong> Tiap <code>npm run dev:*</code> memunculkan dua proses node: satu pengawas perubahan file, satu aplikasinya. Satu servis, dua proses.</p>
   </div>
@@ -568,7 +568,7 @@ python -m bd_bot brain-serve</code></pre>
       <p class="verify-label">Kalau gagal</p>
       <ul>
         <li>Bot menawarkan slot lagi, bukan memesan → jam yang Anda sebut tidak terbaca. Ulangi dengan format sederhana: <code>jumat jam 10</code>.</li>
-        <li>Bot menjawab “jadwalnya sedang saya siapkan” → kalender tidak terjangkau. Cek <code>python -m bd_bot gcal-check</code>.</li>
+        <li>Bot menjawab “jadwalnya sedang saya siapkan” → kalender tidak terjangkau. Cek dari <code>apps/bd-brain</code>: <code>PYTHONPATH=src python -m bd_bot gcal-check</code> (token dibuat sekali dengan <code>gcal-auth</code> di mesin yang punya browser).</li>
         <li>Slot yang Anda minta sudah terisi → bot menawarkan jam terdekat. Itu perilaku benar, bukan kegagalan.</li>
       </ul>
     </div>
