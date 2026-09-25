@@ -1,6 +1,6 @@
 import {
   withTenant, eachTenant, getFacebookComment, listPendingComments, findMessengerBridgeChannel,
-  recordMessengerAgentReply,
+  recordMessengerAgentReply, divisionSessionKey,
   claimCommentForPublicReply, markCommentPublicReplied, markCommentPublicReplyFailed,
   claimCommentForDm, markCommentDmSent, markCommentDmFailed,
   type Ctx, type Database, type FacebookCommentRow, type PendingComment, type CommentStatus,
@@ -177,20 +177,24 @@ export async function processCommentPublicReply(
   const text = textOf(job);
   if (!text) return skipped(job, 'public reply', 'empty text');
 
-  const claim = await withTenant(deps.db, job.tenantId, async (tx): Promise<Claim<{ comment: FacebookCommentRow }>> => {
+  type ReplyClaim = Claim<{ comment: FacebookCommentRow; sessionKey: string }>;
+  const claim = await withTenant(deps.db, job.tenantId, async (tx): Promise<ReplyClaim> => {
     const ctx = { tx, tenantId: job.tenantId, kek: deps.kek };
     const comment = await getFacebookComment(ctx, { id: job.commentId });
     if (!comment) return { kind: 'missing' };
     if (isPagesOwnComment(comment)) return { kind: 'own' };
     const claimed = await claimCommentForPublicReply(ctx, { id: comment.id });
-    return claimed ? { kind: 'claimed', comment } : { kind: 'refused', status: comment.status };
+    if (!claimed) return { kind: 'refused', status: comment.status };
+    // The comment was left on one division's Page, and only that division's
+    // browser session can answer under it.
+    return { kind: 'claimed', comment, sessionKey: await divisionSessionKey(tx, comment.divisionId) };
   });
   if (claim.kind !== 'claimed') return skipped(job, 'public reply', describe(claim));
-  const { comment } = claim;
+  const { comment, sessionKey } = claim;
 
   try {
     await deps.fbBridge.replyToComment({
-      tenantId: job.tenantId, postId: comment.postId, commentId: comment.commentId, text,
+      sessionKey, postId: comment.postId, commentId: comment.commentId, text,
     });
   } catch (err) {
     return await failPublicReply(deps, job, err);
@@ -246,15 +250,17 @@ async function failPublicReply(deps: CommentDeps, job: CommentActionJob, err: un
  * The provider id the delivered DM is stored under. One per comment, so a job
  * that somehow records twice inserts once — and distinct from the `fb_dm:`
  * keys the watcher uses, so it is obvious in the data where the row came from.
+ * Keyed on the division's bridge session (Marketing's is the bare tenant id,
+ * so nothing recorded before divisions changes key).
  */
-export const commentDmMessageKey = (tenantId: string, commentId: string): string =>
-  `fb_comment_dm:${tenantId}:${commentId}`;
+export const commentDmMessageKey = (sessionKey: string, commentId: string): string =>
+  `fb_comment_dm:${sessionKey}:${commentId}`;
 
 export async function processCommentDm(deps: CommentDeps, job: CommentActionJob): Promise<CommentActionOutcome> {
   const text = textOf(job);
   if (!text) return skipped(job, 'private message', 'empty text');
 
-  type DmClaim = Claim<{ comment: FacebookCommentRow; channelId: string }>;
+  type DmClaim = Claim<{ comment: FacebookCommentRow; channelId: string; sessionKey: string }>;
   const claim = await withTenant(deps.db, job.tenantId, async (tx): Promise<DmClaim> => {
     const ctx = { tx, tenantId: job.tenantId, kek: deps.kek };
     const comment = await getFacebookComment(ctx, { id: job.commentId });
@@ -264,24 +270,25 @@ export async function processCommentDm(deps: CommentDeps, job: CommentActionJob)
     // delivered with nowhere to record it would leave the row at 'dm_pending'
     // with no error, and there is no transition back from there. The channel
     // is created when the Page is connected, so this only fails on a broken
-    // setup — and then nothing is claimed and nothing is sent.
-    const channel = await findMessengerBridgeChannel(ctx);
+    // setup — and then nothing is claimed and nothing is sent. It is the
+    // channel of the division whose Page the comment sits on.
+    const channel = await findMessengerBridgeChannel({ ...ctx, divisionId: comment.divisionId });
     if (!channel) return { kind: 'no_channel' };
     const claimed = await claimCommentForDm(ctx, { id: comment.id });
     return claimed
-      ? { kind: 'claimed', comment, channelId: channel.channelId }
+      ? { kind: 'claimed', comment, channelId: channel.channelId, sessionKey: await divisionSessionKey(tx, comment.divisionId) }
       : { kind: 'refused', status: comment.status, dmError: comment.dmError };
   });
   if (claim.kind !== 'claimed') {
     if (claim.kind === 'no_channel') console.error(`[fb-comments] tenant ${job.tenantId}: ${describe(claim)}`);
     return skipped(job, 'private message', describe(claim));
   }
-  const { comment, channelId } = claim;
+  const { comment, channelId, sessionKey } = claim;
 
   let threadId: string;
   try {
     ({ threadId } = await deps.fbBridge.privateReplyToComment({
-      tenantId: job.tenantId, postId: comment.postId, commentId: comment.commentId, text,
+      sessionKey, postId: comment.postId, commentId: comment.commentId, text,
     }));
   } catch (err) {
     return await failDm(deps, job, err);
@@ -300,14 +307,14 @@ export async function processCommentDm(deps: CommentDeps, job: CommentActionJob)
   // `recordMessengerAgentReply`, never `queueOutboundMessage`: the message is
   // already in the customer's inbox, and an outbox row would send it again.
   await withTenant(deps.db, job.tenantId, async (tx) => {
-    const ctx = { tx, tenantId: job.tenantId, kek: deps.kek };
+    const ctx = { tx, tenantId: job.tenantId, kek: deps.kek, divisionId: comment.divisionId };
     await recordMessengerAgentReply(ctx, {
       channelId, fbUserId: threadId, threadId, body: text,
-      providerMessageId: commentDmMessageKey(job.tenantId, comment.commentId),
+      providerMessageId: commentDmMessageKey(sessionKey, comment.commentId),
       displayName: comment.authorName,
     });
     await markCommentDmSent(ctx, { id: comment.id });
-  });
+  }, { divisionId: comment.divisionId });
   console.log(`[fb-comments] private message sent for comment ${comment.commentId}: thread ${threadId}`);
   return { status: 'sent' };
 }

@@ -1,4 +1,4 @@
-import { withTenant, getIgComment, setIgCommentOutcome, type Database } from '@kirana/db';
+import { withTenant, getIgComment, setIgCommentOutcome, divisionSessionKey, type Database } from '@kirana/db';
 import type { IgBridgeClient } from '../igBridgeClient.ts';
 
 export interface IgCommentReplyDeps {
@@ -34,10 +34,16 @@ export interface IgCommentReplyJob {
 export async function processIgCommentReply(
   deps: IgCommentReplyDeps, job: IgCommentReplyJob,
 ): Promise<{ status: string }> {
-  const comment = await withTenant(deps.db, job.tenantId, (tx) =>
-    getIgComment({ tx, tenantId: job.tenantId, kek: deps.kek }, job.commentId));
+  // The comment names the division whose account it was left on, and that
+  // division's browser session is the one that answers it.
+  const loaded = await withTenant(deps.db, job.tenantId, async (tx) => {
+    const row = await getIgComment({ tx, tenantId: job.tenantId, kek: deps.kek }, job.commentId);
+    if (!row) return null;
+    return { comment: row, sessionKey: await divisionSessionKey(tx, row.divisionId) };
+  });
 
-  if (!comment) return { status: 'gone' };
+  if (!loaded) return { status: 'gone' };
+  const { comment, sessionKey } = loaded;
   // Someone already dealt with it by hand, or a previous run did. Re-posting
   // under a public post is the one mistake worth being paranoid about.
   if (comment.publicStatus !== 'pending' || comment.dmStatus !== 'pending') {
@@ -57,7 +63,7 @@ export async function processIgCommentReply(
   const isReply = comment.parentRef !== null;
 
   const result = await deps.igBridge.replyToComment({
-    tenantId: job.tenantId,
+    sessionKey,
     postRef: comment.postRef,
     commentRef: comment.commentRef,
     commenter: comment.commenter,

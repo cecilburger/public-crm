@@ -9,14 +9,15 @@ export const dynamic = 'force-dynamic';
  * The browser never holds the access token — same reasoning as every other
  * page here — so it cannot open that connection itself. This route reads the
  * httpOnly cookie server-side, the same way every other call in `lib/api.ts`
- * does, and pipes the bytes straight through.
+ * does, and pipes the bytes straight through. The division travels with it,
+ * so the API only rings for conversations in the division being shown.
  */
 export async function GET(req: Request) {
-  const { accessToken } = await getSession();
+  const { accessToken, division } = await getSession();
   if (!accessToken) return new Response('unauthorized', { status: 401 });
 
   const upstream = await fetch(`${API_URL}/v1/realtime`, {
-    headers: { authorization: `Bearer ${accessToken}` },
+    headers: { authorization: `Bearer ${accessToken}`, 'x-division': division },
     signal: req.signal,
     cache: 'no-store',
   }).catch(() => null);

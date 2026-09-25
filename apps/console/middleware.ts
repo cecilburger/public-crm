@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 const AT = 'kirana_at';
 const RT = 'kirana_rt';
 const WS = 'kirana_ws';
+const DIV = 'kirana_div';
 const CSRF = 'kirana_csrf';
 const API_URL = process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080';
 
@@ -59,7 +60,7 @@ export async function middleware(req: NextRequest) {
     const url = new URL('/masuk', req.url);
     if (pathname !== '/') url.searchParams.set('next', pathname + search);
     const res = NextResponse.redirect(url);
-    for (const c of [AT, RT, WS]) res.cookies.delete(c);
+    for (const c of [AT, RT, WS, DIV]) res.cookies.delete(c);
     return res;
   };
 

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AppError, unauthenticated, invalid, verifyPassword, hashPassword, checkLimit, loginKey, type Role,
 } from '@kirana/core';
-import { withTenant, resolveWorkspace, audit } from '@kirana/db';
+import { withTenant, resolveWorkspace, audit, listDivisions } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { issueAccessToken, issueRefreshToken, rotateRefreshToken, revokeFamily, issueMfaToken } from '../tokens.ts';
 
@@ -179,7 +179,11 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppCtx): void {
       // removed member, or a dev database reseeded under a live session) —
       // treat that as "no longer signed in", not as a page to render broken.
       if (!rows[0] || !tenant[0]) throw unauthenticated('Session no longer valid');
-      return { user: rows[0], workspace: tenant[0] };
+      // Both divisions, and which one this request is acting in — the
+      // console's switcher renders from exactly this.
+      const divisions = await listDivisions(tx, actor.tenantId);
+      const division = divisions.find((d) => d.id === actor.divisionId) ?? divisions[0]!;
+      return { user: rows[0], workspace: tenant[0], division, divisions };
     });
   });
 

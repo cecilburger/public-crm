@@ -560,8 +560,10 @@ describe('the idempotency key', () => {
   it('is built from the shape the bridge itself declares', () => {
     // The bridge has its own copy of this string, because the two services
     // deploy separately. This is what keeps the copies honest.
+    // The bridge keys on its session, which for Marketing is the tenant id —
+    // so the string is unchanged from before divisions existed.
     expect(compositeMessageKey({
-      tenantId: 'tenant-1', threadId: message.threadId, senderId: message.senderId,
+      sessionKey: 'tenant-1', threadId: message.threadId, senderId: message.senderId,
       seq: message.seq, text: message.text,
     })).toBe('fb_dm:tenant-1:100000000000001:100000000000001:0:halo');
   });

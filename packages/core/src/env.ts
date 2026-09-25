@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+/** Named so the production weak-default check below can recognise it without
+ * repeating the literal Buffer.alloc call. */
+const DEV_KIRANA_KEK = Buffer.alloc(32, 7).toString('base64');
+
 /**
  * Fail at boot, not at 2am. Every secret is required in production; development
  * gets defaults that are obviously not secrets.
@@ -47,7 +51,7 @@ const schema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   /** 32 bytes, base64. Rotate by re-wrapping tenant DEKs — see docs/SECURITY.md. */
-  KIRANA_KEK: z.string().default(Buffer.alloc(32, 7).toString('base64')),
+  KIRANA_KEK: z.string().default(DEV_KIRANA_KEK),
   JWT_SECRET: z.string().min(32).default('dev-only-jwt-secret-change-me-000000'),
   ACCESS_TOKEN_TTL_S: z.coerce.number().int().default(900),
   REFRESH_TOKEN_TTL_S: z.coerce.number().int().default(60 * 60 * 24 * 30),
@@ -200,7 +204,8 @@ export function env(): Env {
   }
   if (parsed.data.NODE_ENV === 'production') {
     const weak = ['dev-only-jwt-secret-change-me-000000', 'dev-meta-app-secret', 'dev-verify-token',
-                  'dev-wa-bridge-secret-change-me', 'dev-fb-bridge-secret-change-me'];
+                  'dev-wa-bridge-secret-change-me', 'dev-fb-bridge-secret-change-me',
+                  'dev-ig-bridge-secret-change-me', DEV_KIRANA_KEK];
     for (const [k, v] of Object.entries(parsed.data)) {
       if (typeof v === 'string' && weak.includes(v)) throw new Error(`${k} still holds its development default`);
     }

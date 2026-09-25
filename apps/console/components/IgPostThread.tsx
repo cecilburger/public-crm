@@ -15,7 +15,7 @@ function statusLabel(c: IgComment): string {
 /**
  * Every comment on one postingan, opened from the grouped `/komentar-ig`
  * list — the Instagram counterpart to opening a Facebook post's comment
- * thread in Obrolan (`CommentThread`), styled the same way: a flat list of
+ * thread in Obrolan (`CommentPostThread`), styled the same way: a flat list of
  * rows divided by a thin line, not a card per comment, because that is how
  * a person actually reads a post's comments — together, not one at a time
  * behind six separate boxes.

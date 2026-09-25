@@ -48,6 +48,13 @@ export interface Actor {
   role: Role;
   /** API keys carry an explicit scope list that intersects with the role. */
   scopes?: readonly Permission[];
+  /**
+   * The Marketing/AI division this request acts in — resolved by the API from
+   * the request header under the actor's own tenant, never taken as an id
+   * from the client. Unset only before a request is fully authenticated.
+   */
+  divisionId?: string;
+  divisionKey?: import('./divisions.ts').DivisionKey;
 }
 
 export function actorCan(actor: Actor, permission: Permission): boolean {

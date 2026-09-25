@@ -1,6 +1,7 @@
 export * from './sql.ts';
 export * from './migrate.ts';
 export * from './tenant.ts';
+export * from './divisions.ts';
 export * from './platform.ts';
 export * from './metering.ts';
 export * from './audit.ts';

@@ -104,12 +104,12 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}
 
-        {/* Facebook is inbound only for now, so the reply box is replaced by a
-            sentence saying so. Every other channel passes nothing here and
-            keeps the composer it has always had. */}
-        <Composer conversationId={conversation.id} windowOpen={conversation.serviceWindowOpen}
-                  disabledReason={conversation.channel_kind === 'messenger_bridge'
-                    ? t.facebookBridge.replyUnavailable : undefined}
+        {/* Messenger has no 24-hour standard-messaging window enforced here —
+            same as Chat FB/Chat IG's composer: nothing server-side to apply
+            it against yet, so it stays open rather than showing a
+            restriction that isn't real. */}
+        <Composer conversationId={conversation.id}
+                  windowOpen={conversation.channel_kind === 'messenger_bridge' ? true : conversation.serviceWindowOpen}
                   customerName={contact.displayName ?? contact.phone ?? '—'} quickReplies={quickReplies} />
       </div>
 

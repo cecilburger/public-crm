@@ -14,6 +14,15 @@ export const RT = 'kirana_rt';
 export const WS = 'kirana_ws';
 /** The receipt held between password and second factor. Short-lived. */
 export const MFA = 'kirana_mfa';
+/**
+ * Which Marketing/AI division the console is showing. Only ever written by
+ * `/api/division` (a CSRF-checked form post), and only ever a hint: the API
+ * re-resolves the key under the signed-in tenant on every request, so a
+ * tampered cookie can at worst name the other division of one's own tenant.
+ */
+export const DIV = 'kirana_div';
+
+export type DivisionKey = 'marketing' | 'ai';
 
 export const cookieOptions = {
   httpOnly: true,
@@ -22,12 +31,17 @@ export const cookieOptions = {
   path: '/',
 };
 
+export function divisionFromCookie(value: string | undefined): DivisionKey {
+  return value === 'ai' ? 'ai' : 'marketing';
+}
+
 export async function getSession() {
   const jar = await cookies();
   return {
     accessToken: jar.get(AT)?.value ?? null,
     refreshToken: jar.get(RT)?.value ?? null,
     workspace: jar.get(WS)?.value ?? null,
+    division: divisionFromCookie(jar.get(DIV)?.value),
   };
 }
 

@@ -1,0 +1,60 @@
+# Separate from ops/Dockerfile (api/worker) on purpose: those run their
+# TypeScript source directly via `node --experimental-strip-types`, no build
+# step at all, so one shared Dockerfile made sense for them. The console is a
+# Next.js app — it needs `next build` first, which needs the workspace's
+# devDependencies (typescript, @types/*, all hoisted to the repo root, not
+# console's own package.json) that a `--omit=dev` install would never fetch.
+# Reusing ops/Dockerfile for this service silently produced a container with
+# no `next` in node_modules at all — confirmed live before this file existed.
+FROM node:24-alpine AS base
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Production-only deps, for the runtime stage — same shape as ops/Dockerfile's
+# own `deps` stage, just with apps/console's manifest added to the copy list.
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY packages/core/package.json packages/core/
+COPY packages/db/package.json packages/db/
+COPY apps/console/package.json apps/console/
+RUN npm ci --omit=dev --ignore-scripts
+
+# A second, separate install — WITH devDependencies — only for `next build`.
+# Never copied into the runtime stage, so the image that actually ships never
+# carries a compiler it will never run again.
+FROM base AS build
+COPY package.json package-lock.json* ./
+COPY packages/core/package.json packages/core/
+COPY packages/db/package.json packages/db/
+COPY apps/console/package.json apps/console/
+RUN npm ci --ignore-scripts
+COPY . .
+# `next.config.mjs` puts KIRANA_API_URL in Next's `env` block, which webpack
+# inlines at build time — every `process.env.KIRANA_API_URL` reference in the
+# app becomes this literal value, permanently, the moment `next build` runs.
+# Setting it only as a container *runtime* env var (the compose `environment:`
+# block) does nothing: the build already happened, against whatever this ARG
+# was — or its fallback, which is wrong for a container network. Confirmed
+# live: without this, the built console keeps calling http://127.0.0.1:8080
+# from inside its own container instead of the `api` service.
+ARG KIRANA_API_URL=http://127.0.0.1:8080
+ENV KIRANA_API_URL=${KIRANA_API_URL}
+RUN npm run build -w @kirana/console
+
+FROM base AS runtime
+RUN addgroup -g 10001 kirana && adduser -D -u 10001 -G kirana kirana
+COPY --from=deps --chown=kirana:kirana /app/node_modules ./node_modules
+COPY --from=build --chown=kirana:kirana /app/apps/console/.next ./apps/console/.next
+COPY --from=build --chown=kirana:kirana /app/apps/console/public ./apps/console/public
+COPY --chown=kirana:kirana apps/console/package.json apps/console/next.config.mjs ./apps/console/
+COPY --chown=kirana:kirana package.json ./
+USER kirana
+EXPOSE 3000
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
+  CMD node -e "fetch('http://127.0.0.1:3000/').then(()=>process.exit(0)).catch(()=>process.exit(1))"
+# Invoked as a plain script, not `npm run start -w` — this image never has
+# every workspace's package.json (only console's own, above), and letting npm
+# resolve a workspace command against a partial workspace list is an
+# unnecessary way for this to break. `next start` takes the project directory
+# as a positional argument, so the same entry point works regardless of cwd.
+CMD ["node", "node_modules/next/dist/bin/next", "start", "apps/console", "-p", "3000"]

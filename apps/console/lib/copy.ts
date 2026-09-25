@@ -18,6 +18,21 @@ export const t = {
     tagline: 'Semua chat client di satu tempat',
   },
 
+  /**
+   * Marketing and AI are two divisions of one workspace: same menu, same
+   * pages, different data — and different WhatsApp, Instagram, Facebook and
+   * Calendar accounts. The switcher in the sidebar picks which one every page
+   * shows; the badge on a settings page says whose account is on screen.
+   */
+  division: {
+    label: 'Divisi',
+    marketing: 'Marketing',
+    ai: 'AI',
+    switch: 'Ganti divisi',
+    badge: (name: string) => `Divisi: ${name}`,
+    hint: 'Data, akun, dan kalender tiap divisi terpisah.',
+  },
+
   search: {
     trigger: 'Cari…',
     shortcut: 'Ctrl+K',
@@ -47,6 +62,8 @@ export const t = {
     chatWa: 'Chat WA',
     chatIg: 'Chat IG',
     igComments: 'Komentar IG',
+    chatFb: 'Chat Facebook',
+    fbComments: 'Komentar Facebook',
     client: 'Client',
     clientDeal: 'Client Deal',
     clientProses: 'Client On Proses',
@@ -565,9 +582,8 @@ export const t = {
   facebookBridge: {
     title: 'Facebook',
     sectionTitle: 'Facebook Messenger & Komentar (Tidak Resmi)',
-    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint. Hanya menerima pesan masuk — tidak bisa membalas dari sini.',
+    subtitle: 'Facebook dibaca lewat browser otomatis yang login sebagai akun operator, bukan lewat API resmi Meta. Cara ini melanggar Ketentuan Layanan Facebook dan berisiko akun kena checkpoint.',
     inboundOnly: 'Pesan masuk dan balasan sudah jalan, termasuk balasan publik ke komentar. Pemindahan ke WhatsApp dan chatbot belum tersedia untuk Facebook.',
-    replyUnavailable: 'Balasan Facebook belum tersedia. Pesan masuk tetap tercatat di sini, tapi jawabannya harus dikirim lewat Facebook langsung untuk sekarang.',
     pageId: 'ID Halaman',
     pageIdPlaceholder: 'mis. 61594393176093',
     pageIdHint: 'Angka di URL Halaman Anda. Buka Halaman di Facebook, lihat bagian profile.php?id=… atau Pengaturan Halaman.',
@@ -841,6 +857,14 @@ export const t = {
     publicReplyError: 'Balasan publik gagal',
     dmError: 'DM gagal',
     notFound: 'Komentar ini tidak ditemukan.',
+    /** The left-list row for a post, grouped the way Meta Business Suite's own
+     * "Facebook comments" tab does it: the post is the row, not whoever
+     * commented on it. Facebook's own post id is the only name available
+     * without scraping the post's own text or image, which this build does
+     * not do — so it is shown plainly rather than invented a nicer one. */
+    postLabel: (postId: string) => `Postingan ${postId}`,
+    commentCount: (n: number) => `${n} komentar`,
+    postThread: 'Semua komentar di postingan ini',
   },
 
   chatIg: {
@@ -848,6 +872,20 @@ export const t = {
     subtitle: 'Chat langsung dari akun Instagram yang terhubung — lewat API resmi Meta atau lewat login browser di server.',
     notConnected: 'Instagram belum terhubung.',
     goToSettings: 'Hubungkan di Pengaturan → Instagram',
+  },
+
+  chatFb: {
+    title: 'Chat Facebook',
+    subtitle: 'Chat langsung dari Messenger Halaman Facebook yang terhubung, lewat login browser di server.',
+    notConnected: 'Facebook belum terhubung.',
+    goToSettings: 'Hubungkan di Pengaturan → Facebook',
+  },
+
+  fbComments: {
+    title: 'Komentar Facebook',
+    subtitle: 'Komentar di postingan Facebook Anda. Balasan publik dibuat singkat — penjelasan lengkapnya lewat DM.',
+    tabPending: 'Perlu dibalas',
+    empty: 'Belum ada komentar masuk.',
   },
 
   waBridge: {

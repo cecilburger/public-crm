@@ -4,6 +4,7 @@ import { isPairing } from '@/lib/format';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { WaBridgeConnectButton } from '@/components/WaBridgeConnectButton';
 import { WaChannelTable } from '@/components/WaChannelTable';
+import { DivisionBadge } from '@/components/DivisionBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ export default async function ChannelWaPage() {
           <p className="subtitle">{t.waChannel.subtitle}</p>
         </div>
         <span className="spacer" />
+        <DivisionBadge />
         <AutoRefresh seconds={pairing ? 3 : 10} renderedAt={Date.now()} />
         <WaBridgeConnectButton />
       </div>

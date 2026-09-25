@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { call, ApiError } from '@/lib/api';
 import { t } from '@/lib/copy';
-import { AT, RT, WS, MFA, cookieOptions } from '@/lib/session';
+import { AT, RT, WS, MFA, DIV, cookieOptions } from '@/lib/session';
 import { CSRF } from '@/lib/csrf';
 
 interface LoginResponse {
@@ -78,6 +78,6 @@ export async function DELETE(req: NextRequest) {
     await call('/v1/auth/logout', { method: 'POST', token }).catch(() => undefined);
   }
   const res = NextResponse.json({ ok: true });
-  for (const c of [AT, RT, WS]) res.cookies.delete(c);
+  for (const c of [AT, RT, WS, DIV]) res.cookies.delete(c);
   return res;
 }

@@ -9,7 +9,7 @@ import {
 
 export type DmWatcherEvent =
   | {
-      event: 'message'; tenantId: string;
+      event: 'message'; sessionKey: string;
       message: {
         threadId: string; participantUsername: string; senderUsername: string; text: string;
         direction: 'inbound' | 'outbound';
@@ -28,7 +28,7 @@ export type DmWatcherEvent =
         index: number;
       };
     }
-  | { event: 'session_error'; tenantId: string; error: string };
+  | { event: 'session_error'; sessionKey: string; error: string };
 
 interface Logger {
   info: (obj: unknown, msg?: string) => void;
@@ -86,7 +86,7 @@ export class DmWatcher {
   // eligible once to be matched against a later scrape and absorbed rather
   // than re-reported — see `markSentByUs`.
   private recentlySentByUs = new Map<string, Map<string, { text: string; at: number }[]>>();
-  // tenantId -> the tail of this tenant's own processing queue. The
+  // sessionKey -> the tail of this tenant's own processing queue. The
   // client-side observer debounces to one `scan()` per 1.5s of quiet, but
   // says nothing about how long *our* side takes to act on it — a scan
   // whose `handleInboxChange` is still mid-`readChangedThread` (a page
@@ -100,7 +100,7 @@ export class DmWatcher {
   // Chaining every call for a tenant onto this promise makes them run one
   // at a time, same tenant, no exceptions.
   private processingChain = new Map<string, Promise<void>>();
-  // tenantId -> the long-lived page the inbox observer is installed on.
+  // sessionKey -> the long-lived page the inbox observer is installed on.
   // Kept so housekeeping can ping it directly — the whole-browser
   // `isConnected()` check doesn't catch this one dying on its own (its
   // renderer crashing or getting reclaimed under memory pressure while the
@@ -127,8 +127,8 @@ export class DmWatcher {
   }
 
   private async housekeeping(): Promise<void> {
-    const tenantIds = await this.sessions.knownTenantIds();
-    for (const tenantId of tenantIds) {
+    const sessionKeys = await this.sessions.knownSessionKeys();
+    for (const sessionKey of sessionKeys) {
       // A tenant marked "observed" sat on a browser whose CDP connection has
       // since died (crash, or the connection just dropped) — its inbox
       // `MutationObserver` died with that browser. `ensureBrowser` on the
@@ -137,10 +137,10 @@ export class DmWatcher {
       // *new* browser's page without this: `observedTenants` would keep
       // this tenant marked attached forever, so `attachTenant` below would
       // never run again and inbound messages would stay silently stuck.
-      if (this.observedTenants.has(tenantId) && !this.sessions.isConnected(tenantId)) {
-        this.log.warn({ tenantId }, 'ig-bridge: observed tenant\'s browser connection died — re-attaching');
-        this.observedTenants.delete(tenantId);
-        this.observerPages.delete(tenantId);
+      if (this.observedTenants.has(sessionKey) && !this.sessions.isConnected(sessionKey)) {
+        this.log.warn({ sessionKey }, 'ig-bridge: observed tenant\'s browser connection died — re-attaching');
+        this.observedTenants.delete(sessionKey);
+        this.observerPages.delete(sessionKey);
       }
       // The browser-level check above only catches the *whole* browser
       // dying. The observer's own tab can go quiet on its own — its
@@ -152,16 +152,16 @@ export class DmWatcher {
       // hung or crashed page either rejects or never resolves, so it's
       // raced against a short timeout rather than trusted to reject on
       // its own.
-      if (this.observedTenants.has(tenantId)) {
-        const page = this.observerPages.get(tenantId);
+      if (this.observedTenants.has(sessionKey)) {
+        const page = this.observerPages.get(sessionKey);
         const alive = page && !page.isClosed() && await Promise.race([
           page.evaluate('1').then(() => true),
           new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
         ]).catch(() => false);
         if (!alive) {
-          this.log.warn({ tenantId }, 'ig-bridge: observed tenant\'s inbox tab went unresponsive — re-attaching');
-          this.observedTenants.delete(tenantId);
-          this.observerPages.delete(tenantId);
+          this.log.warn({ sessionKey }, 'ig-bridge: observed tenant\'s inbox tab went unresponsive — re-attaching');
+          this.observedTenants.delete(sessionKey);
+          this.observerPages.delete(sessionKey);
         } else if (page) {
           // The liveness ping above only proves the page can still run
           // arbitrary JS — it says nothing about whether the `MutationObserver`
@@ -173,27 +173,27 @@ export class DmWatcher {
           // `handleInboxChange` already dedupes against `lastSignatures` — so
           // this is a no-op on every cycle the observer *did* keep up, and
           // the one catch that matters on a cycle it silently didn't.
-          await this.readInboxThreadsAndReconcile(tenantId, page).catch((err) =>
-            this.log.warn({ err, tenantId }, 'ig-bridge: fallback inbox poll failed'));
+          await this.readInboxThreadsAndReconcile(sessionKey, page).catch((err) =>
+            this.log.warn({ err, sessionKey }, 'ig-bridge: fallback inbox poll failed'));
         }
       }
-      if (!this.observedTenants.has(tenantId)) {
-        await this.attachTenant(tenantId).catch((err) =>
-          this.log.warn({ err, tenantId }, 'ig-bridge: failed to attach tenant to dm watcher'));
+      if (!this.observedTenants.has(sessionKey)) {
+        await this.attachTenant(sessionKey).catch((err) =>
+          this.log.warn({ err, sessionKey }, 'ig-bridge: failed to attach tenant to dm watcher'));
       }
       // Requests never surface through the inbox observer (a separate tab
       // entirely) — checked once per housekeeping pass rather than its own
       // interval, since this cadence is already the "how often do we go
       // looking for things the observer can't see" knob.
-      await this.checkRequests(tenantId).catch((err) =>
-        this.log.warn({ err, tenantId }, 'ig-bridge: failed to check pending message requests'));
+      await this.checkRequests(sessionKey).catch((err) =>
+        this.log.warn({ err, sessionKey }, 'ig-bridge: failed to check pending message requests'));
     }
   }
 
   /** Public so `main.ts` can attach a tenant immediately after a successful
    * login/challenge instead of waiting for the next housekeeping tick. */
-  async attachTenant(tenantId: string): Promise<void> {
-    if (this.observedTenants.has(tenantId)) return;
+  async attachTenant(sessionKey: string): Promise<void> {
+    if (this.observedTenants.has(sessionKey)) return;
     // Reserved *before* the first await, not after — `getActivePage` below
     // can take a while (launching a browser), and a second caller for the
     // same tenant (the startup housekeeping pass racing a fresh `/login`
@@ -202,17 +202,17 @@ export class DmWatcher {
     // install an observer on the same page: two `MutationObserver`s firing
     // on every mutation, reporting every change twice over. Confirmed live
     // by a flood of paired-duplicate webhook events.
-    this.observedTenants.add(tenantId);
+    this.observedTenants.add(sessionKey);
 
-    const page = await this.sessions.getActivePage(tenantId);
+    const page = await this.sessions.getActivePage(sessionKey);
     if (!page) {
-      this.observedTenants.delete(tenantId); // nothing attached — a later real attempt should still be allowed to try
+      this.observedTenants.delete(sessionKey); // nothing attached — a later real attempt should still be allowed to try
       return;
     }
 
-    if (!this.knownThreadIds.has(tenantId)) this.knownThreadIds.set(tenantId, new Map());
-    if (!this.lastSignatures.has(tenantId)) this.lastSignatures.set(tenantId, new Map());
-    if (!this.lastMessageList.has(tenantId)) await this.loadAnchors(tenantId);
+    if (!this.knownThreadIds.has(sessionKey)) this.knownThreadIds.set(sessionKey, new Map());
+    if (!this.lastSignatures.has(sessionKey)) this.lastSignatures.set(sessionKey, new Map());
+    if (!this.lastMessageList.has(sessionKey)) await this.loadAnchors(sessionKey);
 
     // `gotoInbox` throws `SessionExpiredError` when the session it just
     // resumed turns out to be dead — confirmed live, left uncaught here
@@ -224,20 +224,20 @@ export class DmWatcher {
     try {
       await gotoInbox(page);
       await installInboxObserver(page, (threads) => {
-        const prior = this.processingChain.get(tenantId) ?? Promise.resolve();
+        const prior = this.processingChain.get(sessionKey) ?? Promise.resolve();
         const next = prior
-          .then(() => this.handleInboxChange(tenantId, threads))
-          .catch((err) => this.log.warn({ err, tenantId }, 'ig-bridge: failed handling an inbox change'));
-        this.processingChain.set(tenantId, next);
+          .then(() => this.handleInboxChange(sessionKey, threads))
+          .catch((err) => this.log.warn({ err, sessionKey }, 'ig-bridge: failed handling an inbox change'));
+        this.processingChain.set(sessionKey, next);
       });
-      this.observerPages.set(tenantId, page);
-      this.log.info({ tenantId }, 'ig-bridge: inbox observer attached');
+      this.observerPages.set(sessionKey, page);
+      this.log.info({ sessionKey }, 'ig-bridge: inbox observer attached');
     } catch (err) {
-      this.observedTenants.delete(tenantId);
-      this.observerPages.delete(tenantId);
+      this.observedTenants.delete(sessionKey);
+      this.observerPages.delete(sessionKey);
       if (isSessionExpiredError(err)) {
-        this.sessions.forgetSession(tenantId);
-        this.onEvent({ event: 'session_error', tenantId, error: (err as Error).message });
+        this.sessions.forgetSession(sessionKey);
+        this.onEvent({ event: 'session_error', sessionKey, error: (err as Error).message });
       }
       throw err;
     }
@@ -248,33 +248,33 @@ export class DmWatcher {
    * the observer's callback. Chained onto `processingChain` too, so a poll
    * landing mid-observer-callback (or the reverse) reads and writes
    * `lastSignatures` one at a time rather than racing it. */
-  private async readInboxThreadsAndReconcile(tenantId: string, page: Page): Promise<void> {
+  private async readInboxThreadsAndReconcile(sessionKey: string, page: Page): Promise<void> {
     const threads = await readInboxThreads(page);
-    const prior = this.processingChain.get(tenantId) ?? Promise.resolve();
-    const next = prior.then(() => this.handleInboxChange(tenantId, threads));
-    this.processingChain.set(tenantId, next);
+    const prior = this.processingChain.get(sessionKey) ?? Promise.resolve();
+    const next = prior.then(() => this.handleInboxChange(sessionKey, threads));
+    this.processingChain.set(sessionKey, next);
     await next;
   }
 
-  private async handleInboxChange(tenantId: string, threads: InboxThread[]): Promise<void> {
-    const signatures = this.lastSignatures.get(tenantId) ?? new Map<string, string>();
-    this.lastSignatures.set(tenantId, signatures);
+  private async handleInboxChange(sessionKey: string, threads: InboxThread[]): Promise<void> {
+    const signatures = this.lastSignatures.get(sessionKey) ?? new Map<string, string>();
+    this.lastSignatures.set(sessionKey, signatures);
 
     for (const thread of threads) {
       if (signatures.get(thread.key) === thread.signature) continue;
       signatures.set(thread.key, thread.signature);
-      await this.readChangedThread(tenantId, thread.key).catch((err) =>
-        this.log.warn({ err, tenantId, key: thread.key }, 'ig-bridge: failed to read a changed thread'));
+      await this.readChangedThread(sessionKey, thread.key).catch((err) =>
+        this.log.warn({ err, sessionKey, key: thread.key }, 'ig-bridge: failed to read a changed thread'));
     }
   }
 
-  private async resolveThreadId(tenantId: string, key: string): Promise<string | null> {
-    const cache = this.knownThreadIds.get(tenantId) ?? new Map<string, string>();
-    this.knownThreadIds.set(tenantId, cache);
+  private async resolveThreadId(sessionKey: string, key: string): Promise<string | null> {
+    const cache = this.knownThreadIds.get(sessionKey) ?? new Map<string, string>();
+    this.knownThreadIds.set(sessionKey, cache);
     const cached = cache.get(key);
     if (cached) return cached;
 
-    const page = await this.sessions.newPage(tenantId);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return null;
     try {
       const id = await discoverThreadId(page, key);
@@ -291,19 +291,19 @@ export class DmWatcher {
    * one it already knows about (see `consumeIfRecentlySentByUs`) instead of
    * reporting it a second time as though it had just arrived from the phone.
    */
-  markSentByUs(tenantId: string, threadId: string, text: string): void {
-    const byThread = this.recentlySentByUs.get(tenantId) ?? new Map<string, { text: string; at: number }[]>();
-    this.recentlySentByUs.set(tenantId, byThread);
+  markSentByUs(sessionKey: string, threadId: string, text: string): void {
+    const byThread = this.recentlySentByUs.get(sessionKey) ?? new Map<string, { text: string; at: number }[]>();
+    this.recentlySentByUs.set(sessionKey, byThread);
     const list = byThread.get(threadId) ?? [];
     list.push({ text, at: Date.now() });
     byThread.set(threadId, list);
-    this.persistRecentlySentByUs(tenantId);
+    this.persistRecentlySentByUs(sessionKey);
   }
 
   /** Consumes (at most once) a matching recent `markSentByUs` entry, so the
    * same console send can't absorb two separate phone-sent echoes later. */
-  private consumeIfRecentlySentByUs(tenantId: string, threadId: string, text: string): boolean {
-    const byThread = this.recentlySentByUs.get(tenantId);
+  private consumeIfRecentlySentByUs(sessionKey: string, threadId: string, text: string): boolean {
+    const byThread = this.recentlySentByUs.get(sessionKey);
     const list = byThread?.get(threadId);
     if (!list || list.length === 0) return false;
 
@@ -312,20 +312,20 @@ export class DmWatcher {
     const fresh = list.filter((entry) => entry.at >= cutoff);
     if (idx === -1) {
       byThread!.set(threadId, fresh);
-      this.persistRecentlySentByUs(tenantId);
+      this.persistRecentlySentByUs(sessionKey);
       return false;
     }
     byThread!.set(threadId, fresh.filter((entry) => !(entry.text === text && entry.at === list[idx]!.at)));
-    this.persistRecentlySentByUs(tenantId);
+    this.persistRecentlySentByUs(sessionKey);
     return true;
   }
 
-  private anchorsFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.thread-anchors.json');
+  private anchorsFile(sessionKey: string): string {
+    return path.join(this.sessions.getProfileDir(sessionKey), '.thread-anchors.json');
   }
 
-  private recentlySentFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.recently-sent-by-us.json');
+  private recentlySentFile(sessionKey: string): string {
+    return path.join(this.sessions.getProfileDir(sessionKey), '.recently-sent-by-us.json');
   }
 
   /**
@@ -338,24 +338,24 @@ export class DmWatcher {
    * restart during this session, as a duplicate "Anda / Tim" bubble sitting
    * next to the real "Dijawab Otomatis" one for the exact same reply.
    */
-  private async loadRecentlySentByUs(tenantId: string): Promise<void> {
+  private async loadRecentlySentByUs(sessionKey: string): Promise<void> {
     try {
-      const raw = await fs.readFile(this.recentlySentFile(tenantId), 'utf8');
+      const raw = await fs.readFile(this.recentlySentFile(sessionKey), 'utf8');
       const parsed = JSON.parse(raw) as Record<string, { text: string; at: number }[]>;
       const cutoff = Date.now() - RECENTLY_SENT_WINDOW_MS;
       const fresh = new Map(
         Object.entries(parsed).map(([threadId, list]) => [threadId, list.filter((e) => e.at >= cutoff)]),
       );
-      this.recentlySentByUs.set(tenantId, fresh);
+      this.recentlySentByUs.set(sessionKey, fresh);
     } catch {
       // No persisted entries yet.
     }
   }
 
-  private persistRecentlySentByUs(tenantId: string): void {
-    const byThread = this.recentlySentByUs.get(tenantId);
+  private persistRecentlySentByUs(sessionKey: string): void {
+    const byThread = this.recentlySentByUs.get(sessionKey);
     if (!byThread) return;
-    void fs.writeFile(this.recentlySentFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8')
+    void fs.writeFile(this.recentlySentFile(sessionKey), JSON.stringify(Object.fromEntries(byThread)), 'utf8')
       .catch(() => {});
   }
 
@@ -366,20 +366,20 @@ export class DmWatcher {
    * re-ingesting it. Best-effort: a missing or unreadable file just means
    * the very first scan after this attach reports everything once, same
    * as a thread this tenant has genuinely never had attached before. */
-  private async loadAnchors(tenantId: string): Promise<void> {
+  private async loadAnchors(sessionKey: string): Promise<void> {
     try {
-      const raw = await fs.readFile(this.anchorsFile(tenantId), 'utf8');
+      const raw = await fs.readFile(this.anchorsFile(sessionKey), 'utf8');
       const parsed = JSON.parse(raw) as Record<string, { senderUsername: string; text: string }[]>;
-      this.lastMessageList.set(tenantId, new Map(Object.entries(parsed)));
+      this.lastMessageList.set(sessionKey, new Map(Object.entries(parsed)));
     } catch {
       // No persisted anchors yet.
     }
-    await this.loadSequences(tenantId);
-    await this.loadRecentlySentByUs(tenantId);
+    await this.loadSequences(sessionKey);
+    await this.loadRecentlySentByUs(sessionKey);
   }
 
-  private sequencesFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.thread-sequences.json');
+  private sequencesFile(sessionKey: string): string {
+    return path.join(this.sessions.getProfileDir(sessionKey), '.thread-sequences.json');
   }
 
   /**
@@ -394,24 +394,24 @@ export class DmWatcher {
    * three messages in a row vanished this way, each one posted by the bridge
    * and silently discarded by the API, with nothing anywhere saying so.
    */
-  private async loadSequences(tenantId: string): Promise<void> {
+  private async loadSequences(sessionKey: string): Promise<void> {
     try {
-      const raw = await fs.readFile(this.sequencesFile(tenantId), 'utf8');
+      const raw = await fs.readFile(this.sequencesFile(sessionKey), 'utf8');
       const parsed = JSON.parse(raw) as Record<string, number>;
-      this.nextSeq.set(tenantId, new Map(Object.entries(parsed)));
+      this.nextSeq.set(sessionKey, new Map(Object.entries(parsed)));
     } catch {
       // No persisted sequences yet.
     }
   }
 
-  private persistAnchors(tenantId: string): void {
-    const byThread = this.lastMessageList.get(tenantId);
+  private persistAnchors(sessionKey: string): void {
+    const byThread = this.lastMessageList.get(sessionKey);
     if (!byThread) return;
-    void fs.writeFile(this.anchorsFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8').catch(() => {});
+    void fs.writeFile(this.anchorsFile(sessionKey), JSON.stringify(Object.fromEntries(byThread)), 'utf8').catch(() => {});
 
-    const seqs = this.nextSeq.get(tenantId);
+    const seqs = this.nextSeq.get(sessionKey);
     if (seqs) {
-      void fs.writeFile(this.sequencesFile(tenantId), JSON.stringify(Object.fromEntries(seqs)), 'utf8').catch(() => {});
+      void fs.writeFile(this.sequencesFile(sessionKey), JSON.stringify(Object.fromEntries(seqs)), 'utf8').catch(() => {});
     }
   }
 
@@ -428,10 +428,10 @@ export class DmWatcher {
    * visible history again.
    */
   private diffNewMessages(
-    tenantId: string, threadId: string, current: { senderUsername: string; text: string }[],
+    sessionKey: string, threadId: string, current: { senderUsername: string; text: string }[],
   ): { senderUsername: string; text: string }[] {
-    const byThread = this.lastMessageList.get(tenantId) ?? new Map<string, { senderUsername: string; text: string }[]>();
-    this.lastMessageList.set(tenantId, byThread);
+    const byThread = this.lastMessageList.get(sessionKey) ?? new Map<string, { senderUsername: string; text: string }[]>();
+    this.lastMessageList.set(sessionKey, byThread);
     const prev = byThread.get(threadId);
 
     // Confirmed live: `readThreadMessages` occasionally comes back empty on
@@ -451,7 +451,7 @@ export class DmWatcher {
     }
 
     byThread.set(threadId, current);
-    this.persistAnchors(tenantId);
+    this.persistAnchors(sessionKey);
 
     // No prior anchor at all — genuinely the first time this thread has
     // ever been read (or `loadAnchors` found nothing persisted for it
@@ -500,25 +500,25 @@ export class DmWatcher {
     return current.length > 0 ? [current[current.length - 1]!] : [];
   }
 
-  private nextSequenceFor(tenantId: string, threadId: string): number {
-    const byThread = this.nextSeq.get(tenantId) ?? new Map<string, number>();
-    this.nextSeq.set(tenantId, byThread);
+  private nextSequenceFor(sessionKey: string, threadId: string): number {
+    const byThread = this.nextSeq.get(sessionKey) ?? new Map<string, number>();
+    this.nextSeq.set(sessionKey, byThread);
     const seq = byThread.get(threadId) ?? 0;
     byThread.set(threadId, seq + 1);
     return seq;
   }
 
-  private async readChangedThread(tenantId: string, key: string): Promise<void> {
-    const threadId = await this.resolveThreadId(tenantId, key);
+  private async readChangedThread(sessionKey: string, key: string): Promise<void> {
+    const threadId = await this.resolveThreadId(sessionKey, key);
     if (!threadId) return;
 
-    const ownUsername = await this.sessions.getOwnUsername(tenantId);
-    const page = await this.sessions.newPage(tenantId);
+    const ownUsername = await this.sessions.getOwnUsername(sessionKey);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return;
     try {
       const messages = await readThreadMessages(page, threadId);
-      const contactMap = this.contactByThread.get(tenantId) ?? new Map<string, string>();
-      this.contactByThread.set(tenantId, contactMap);
+      const contactMap = this.contactByThread.get(sessionKey) ?? new Map<string, string>();
+      this.contactByThread.set(sessionKey, contactMap);
 
       // Learn (or refresh) this thread's contact identity from every
       // currently-visible inbound message, not just the new ones — keeps
@@ -528,15 +528,15 @@ export class DmWatcher {
         if (!isOwn) contactMap.set(threadId, message.senderUsername);
       }
 
-      const freshMessages = this.diffNewMessages(tenantId, threadId, messages);
+      const freshMessages = this.diffNewMessages(sessionKey, threadId, messages);
       for (const message of freshMessages) {
         const isOwn = ownUsername && message.senderUsername.toLowerCase() === ownUsername.toLowerCase();
         if (!isOwn) {
           this.onEvent({
-            event: 'message', tenantId,
+            event: 'message', sessionKey,
             message: {
               threadId, participantUsername: message.senderUsername, senderUsername: message.senderUsername,
-              text: message.text, direction: 'inbound', index: this.nextSequenceFor(tenantId, threadId),
+              text: message.text, direction: 'inbound', index: this.nextSequenceFor(sessionKey, threadId),
             },
           });
           continue;
@@ -544,23 +544,23 @@ export class DmWatcher {
 
         // A console-driven send shows up here too on the next scrape —
         // recognised and absorbed rather than reported a second time.
-        if (this.consumeIfRecentlySentByUs(tenantId, threadId, message.text)) continue;
+        if (this.consumeIfRecentlySentByUs(sessionKey, threadId, message.text)) continue;
 
         const participantUsername = contactMap.get(threadId);
         if (!participantUsername) continue; // never seen an inbound message on this thread — can't attribute it yet
         this.onEvent({
-          event: 'message', tenantId,
+          event: 'message', sessionKey,
           message: {
             threadId, participantUsername, senderUsername: message.senderUsername,
-            text: message.text, direction: 'outbound', index: this.nextSequenceFor(tenantId, threadId),
+            text: message.text, direction: 'outbound', index: this.nextSequenceFor(sessionKey, threadId),
           },
         });
       }
     } catch (err) {
       if (isSessionExpiredError(err)) {
-        this.sessions.forgetSession(tenantId);
-        this.observedTenants.delete(tenantId);
-        this.onEvent({ event: 'session_error', tenantId, error: (err as Error).message });
+        this.sessions.forgetSession(sessionKey);
+        this.observedTenants.delete(sessionKey);
+        this.onEvent({ event: 'session_error', sessionKey, error: (err as Error).message });
       }
       throw err;
     } finally {
@@ -568,19 +568,19 @@ export class DmWatcher {
     }
   }
 
-  private async checkRequests(tenantId: string): Promise<void> {
-    const page = await this.sessions.newPage(tenantId);
+  private async checkRequests(sessionKey: string): Promise<void> {
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return;
     try {
       const acceptedKeys = await acceptPendingRequests(page);
       if (acceptedKeys.length) {
-        this.log.info({ tenantId, count: acceptedKeys.length }, 'ig-bridge: accepted pending message requests');
+        this.log.info({ sessionKey, count: acceptedKeys.length }, 'ig-bridge: accepted pending message requests');
       }
     } catch (err) {
       if (isSessionExpiredError(err)) {
-        this.sessions.forgetSession(tenantId);
-        this.observedTenants.delete(tenantId);
-        this.onEvent({ event: 'session_error', tenantId, error: (err as Error).message });
+        this.sessions.forgetSession(sessionKey);
+        this.observedTenants.delete(sessionKey);
+        this.onEvent({ event: 'session_error', sessionKey, error: (err as Error).message });
       }
       throw err;
     } finally {

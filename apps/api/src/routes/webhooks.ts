@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { verifyWebhookSignature, ipAllowed, parseAllowList } from '@kirana/core';
-import { withoutTenant, withTenant, findMessengerBridgeChannel, knownMessengerMessageIds } from '@kirana/db';
+import {
+  withoutTenant, withTenant, findMessengerBridgeChannel, knownMessengerMessageIds, bridgeSessionHome,
+} from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { webhookEvents } from '../metrics.ts';
 
@@ -191,13 +193,24 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     }
 
     const body = req.body as {
-      tenantId?: string; event?: string; error?: string;
+      tenantId?: string; sessionKey?: string; event?: string; error?: string;
       message?: {
         threadId?: string; participantUsername?: string; senderUsername?: string; text?: string;
         direction?: 'inbound' | 'outbound'; index?: number;
       };
     };
     if (!body.tenantId || !body.event) {
+      webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // The session key names which division's browser profile this came off.
+    // A bridge that predates divisions sends none, and its events are
+    // Marketing's — whose key is the bare tenant id, so the dedupe strings
+    // below stay byte-identical to the ones already spooled.
+    const sessionKey = body.sessionKey ?? body.tenantId;
+    const home = await bridgeSessionHome(ctx.control, sessionKey);
+    if (!home || home.tenantId !== body.tenantId) {
       webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: 'invalid_payload' });
       return reply.status(400).send();
     }
@@ -216,9 +229,9 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     // dropped as a false duplicate on every repeat after the first.
     const externalId = m
       ? crypto.createHash('sha256')
-          .update(`ig_dm:${body.tenantId}:${m.threadId}:${m.senderUsername}:${m.index}:${m.text}`)
+          .update(`ig_dm:${sessionKey}:${m.threadId}:${m.senderUsername}:${m.index}:${m.text}`)
           .digest('hex')
-      : `${body.tenantId}:${body.event}:${Date.now()}`;
+      : `${sessionKey}:${body.event}:${Date.now()}`;
 
     const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
       tx.query<{ id: string }>(
@@ -226,7 +239,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
          values ('ig_bridge_dm', $1, true, $2)
          on conflict (provider, external_id) do nothing
          returning id`,
-        [externalId, JSON.stringify(body)],
+        [externalId, JSON.stringify({ ...body, sessionKey })],
       ));
 
     webhookEvents.inc({ provider: 'ig_bridge_dm', outcome: inserted[0] ? 'accepted' : 'duplicate' });
@@ -263,7 +276,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     }
 
     const body = req.body as {
-      tenantId?: string;
+      tenantId?: string; sessionKey?: string;
       comment?: {
         postRef?: string; commentRef?: string; commenter?: string; text?: string; at?: string;
         parentRef?: string | null;
@@ -275,13 +288,22 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       return reply.status(400).send();
     }
 
+    // Same rule as `/v1/webhooks/ig-bridge`: the session key is the division,
+    // and a bridge that sends none is reporting for Marketing.
+    const sessionKey = body.sessionKey ?? body.tenantId;
+    const home = await bridgeSessionHome(ctx.control, sessionKey);
+    if (!home || home.tenantId !== body.tenantId) {
+      webhookEvents.inc({ provider: 'ig_comment', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
     const inserted = await withoutTenant(ctx.control, 'spooling a verified provider webhook', (tx) =>
       tx.query<{ id: string }>(
         `insert into webhook_events (provider, external_id, signature_ok, payload)
          values ('ig_comment', $1, true, $2)
          on conflict (provider, external_id) do nothing
          returning id`,
-        [`${body.tenantId}:${c.commentRef}`, JSON.stringify(body)],
+        [`${sessionKey}:${c.commentRef}`, JSON.stringify({ ...body, sessionKey })],
       ));
 
     webhookEvents.inc({ provider: 'ig_comment', outcome: inserted[0] ? 'accepted' : 'duplicate' });
@@ -333,19 +355,24 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       req.log.warn({ ip: req.ip }, 'fb-bridge known-ids rejected: bad secret');
       return reply.status(401).send();
     }
-    const body = req.body as { tenantId?: string; externalIds?: string[] };
+    const body = req.body as { tenantId?: string; sessionKey?: string; externalIds?: string[] };
     if (!body.tenantId || !Array.isArray(body.externalIds)) return reply.status(400).send();
     // Bounded: a backfill asks about one window of one thread, never a history.
     const externalIds = body.externalIds.filter((id) => typeof id === 'string').slice(0, 500);
 
-    const known = await withTenant(ctx.db, body.tenantId, async (tx) => {
-      const channel = await findMessengerBridgeChannel({ tx, tenantId: body.tenantId!, kek: ctx.kek });
+    // The session names the division, and so the Page whose channel is asked.
+    const home = await bridgeSessionHome(ctx.control, body.sessionKey ?? body.tenantId);
+    if (!home || home.tenantId !== body.tenantId) return reply.status(400).send();
+
+    const known = await withTenant(ctx.db, home.tenantId, async (tx) => {
+      const scope = { tx, tenantId: home.tenantId, kek: ctx.kek, divisionId: home.divisionId };
+      const channel = await findMessengerBridgeChannel(scope);
       if (!channel) return [] as string[];
-      const found = await knownMessengerMessageIds({ tx, tenantId: body.tenantId!, kek: ctx.kek }, {
+      const found = await knownMessengerMessageIds(scope, {
         channelId: channel.channelId, providerMessageIds: externalIds,
       });
       return [...found];
-    });
+    }, { divisionId: home.divisionId });
 
     return reply.send({ known });
   });
@@ -359,7 +386,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     }
 
     const body = req.body as {
-      tenantId?: string; event?: string; at?: string; error?: string;
+      tenantId?: string; sessionKey?: string; event?: string; at?: string; error?: string;
       message?: {
         threadId?: string; externalMessageId?: string | null; senderId?: string; senderName?: string;
         text?: string; sentAt?: string | null; direction?: string; seq?: number;
@@ -370,6 +397,17 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       };
     };
     if (!body.tenantId || !body.event) {
+      webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
+      return reply.status(400).send();
+    }
+
+    // The session key names which division's Page this came off; a bridge
+    // that predates divisions sends none and is reporting for Marketing —
+    // whose key is the bare tenant id, so every dedupe string below is
+    // byte-identical to what is already spooled.
+    const sessionKey = body.sessionKey ?? body.tenantId;
+    const home = await bridgeSessionHome(ctx.control, sessionKey);
+    if (!home || home.tenantId !== body.tenantId) {
       webhookEvents.inc({ provider: 'fb_bridge', outcome: 'invalid_payload' });
       return reply.status(400).send();
     }
@@ -394,7 +432,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
       return reply.status(400).send();
     }
 
-    const externalId = facebookExternalId(body.tenantId, body.event, m, c);
+    const externalId = facebookExternalId(sessionKey, body.event, m, c);
 
     // A row that FAILED is re-spooled, not treated as a duplicate. The bridge
     // re-emits a message on every reconciliation until the CRM says it holds
@@ -411,7 +449,7 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
            set status = 'received', payload = excluded.payload, error = null, processed_at = null
            where webhook_events.status = 'failed'
          returning id`,
-        [externalId, JSON.stringify(body)],
+        [externalId, JSON.stringify({ ...body, sessionKey })],
       ));
 
     webhookEvents.inc({ provider: 'fb_bridge', outcome: inserted[0] ? 'accepted' : 'duplicate' });
@@ -433,9 +471,13 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
  * Kept as a named function rather than inlined so the worker's copy can be
  * compared against it directly — the two must produce byte-identical strings or
  * a redelivered event passes the spool barrier and inserts a second message.
+ *
+ * Keyed on the bridge session, which names the division's Page. Marketing's
+ * session key is the tenant id itself, so every key minted before divisions
+ * existed is still the key that event maps to today.
  */
 export function facebookExternalId(
-  tenantId: string,
+  sessionKey: string,
   event: string,
   message: { threadId?: string; externalMessageId?: string | null; senderId?: string; seq?: number; text?: string } | null,
   comment: { commentId?: string } | null,
@@ -443,14 +485,14 @@ export function facebookExternalId(
   if (message) {
     // Facebook's own id when it exists — an identity it assigned beats one we
     // derived, and it stays stable even if the text is edited afterwards.
-    if (message.externalMessageId) return `fb_dm:${tenantId}:${message.externalMessageId}`;
+    if (message.externalMessageId) return `fb_dm:${sessionKey}:${message.externalMessageId}`;
     return crypto.createHash('sha256')
-      .update(`fb_dm:${tenantId}:${message.threadId}:${message.senderId}:${message.seq}:${message.text}`)
+      .update(`fb_dm:${sessionKey}:${message.threadId}:${message.senderId}:${message.seq}:${message.text}`)
       .digest('hex');
   }
-  if (comment) return `fb_comment:${tenantId}:${comment.commentId}`;
+  if (comment) return `fb_comment:${sessionKey}:${comment.commentId}`;
   // Session-state events are status transitions, not customer data that must
   // never duplicate, so the clock stands in for an id the same way the
   // wa-bridge route already does for its lifecycle events.
-  return `fb_bridge:${tenantId}:${event}:${Date.now()}`;
+  return `fb_bridge:${sessionKey}:${event}:${Date.now()}`;
 }

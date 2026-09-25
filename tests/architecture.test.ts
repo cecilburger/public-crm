@@ -177,3 +177,27 @@ describe('migrations are forward-only', () => {
     }
   });
 });
+
+describe('routes act inside the request\'s division', () => {
+  /**
+   * `ctx.asTenant` is what pins the Marketing/AI division onto a route's
+   * transaction. A route that opened its own `withTenant` would run with the
+   * tenant alone — tenant-wide, both divisions visible — so only the files
+   * that run before a session exists, or that take their division from a
+   * bridge session instead of a user, may do it.
+   */
+  const ALLOWED = [
+    'apps/api/src/routes/auth.ts',      // sign-in, refresh and sign-out: no division involved
+    'apps/api/src/routes/mfa.ts',       // the second factor, before a session exists
+    'apps/api/src/routes/checkout.ts',  // a public capability URL
+    'apps/api/src/routes/webhooks.ts',  // bridge events, scoped to the division their session key names
+  ];
+
+  it('opens a transaction only through asTenant', async () => {
+    const callers: string[] = [];
+    for (const file of await sourceFiles('apps/api/src/routes')) {
+      if (/\bwithTenant\s*\(/.test(await read(file))) callers.push(file);
+    }
+    expect(callers.sort()).toEqual([...ALLOWED].sort());
+  });
+});

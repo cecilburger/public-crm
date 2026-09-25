@@ -1777,7 +1777,7 @@ async function queueCommentAction(
 
   try {
     await api(`/v1/facebook-bridge/comments/${commentId}/${step}`, { method: 'POST', body: { text } });
-    revalidatePath(`/obrolan/komentar/${commentId}`);
+    revalidatePath('/obrolan/komentar/[id]', 'page');
     revalidatePath('/obrolan', 'layout');
     return { ok: true };
   } catch (err) {

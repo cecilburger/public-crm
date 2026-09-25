@@ -520,7 +520,9 @@ describe("recognising the Page's own comment", () => {
 
 describe('the bridge client, against the comment contract', () => {
   const client = new FbBridgeClient('http://bridge.test', 's3cret');
-  const target = { tenantId: 't1', postId: POST, commentId: '7001', text: 'Halo' };
+  // The bridge is addressed by session, which for a Marketing Page is the
+  // bare tenant id — hence the unchanged `/sessions/t1/…` paths below.
+  const target = { sessionKey: 't1', postId: POST, commentId: '7001', text: 'Halo' };
 
   const bridgeReplies = (status: number, body: unknown) => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), {
