@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { appUrl } from '@/lib/basePath';
 
 const AT = 'kirana_at';
 const RT = 'kirana_rt';
@@ -52,12 +53,12 @@ export async function middleware(req: NextRequest) {
   if (pathname === '/masuk/kode') return ensureCsrf(NextResponse.next());
 
   if (pathname === '/masuk') {
-    if (access && expiry(access) > Date.now()) return NextResponse.redirect(new URL('/obrolan', req.url));
+    if (access && expiry(access) > Date.now()) return NextResponse.redirect(appUrl(req, '/obrolan'));
     return ensureCsrf(NextResponse.next());
   }
 
   const signIn = () => {
-    const url = new URL('/masuk', req.url);
+    const url = appUrl(req, '/masuk');
     if (pathname !== '/') url.searchParams.set('next', pathname + search);
     const res = NextResponse.redirect(url);
     for (const c of [AT, RT, WS, DIV]) res.cookies.delete(c);

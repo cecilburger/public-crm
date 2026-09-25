@@ -3,6 +3,7 @@ import { call, ApiError } from '@/lib/api';
 import { AT, RT, WS, MFA, cookieOptions } from '@/lib/session';
 import { CSRF } from '@/lib/csrf';
 import { t } from '@/lib/copy';
+import { appUrl } from '@/lib/basePath';
 
 interface SessionResponse {
   accessToken: string;
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
   const mfaToken = req.cookies.get(MFA)?.value;
 
   const back = (message: string) => {
-    const url = new URL('/masuk/kode', req.url);
+    const url = appUrl(req, '/masuk/kode');
     url.searchParams.set('error', message);
     return NextResponse.redirect(url, { status: 303 });
   };
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
   const expected = req.cookies.get(CSRF)?.value;
   if (!expected || String(form.get('csrf') ?? '') !== expected) return back(t.login.stale);
   if (!mfaToken || !workspace) {
-    return NextResponse.redirect(new URL('/masuk?reason=expired', req.url), { status: 303 });
+    return NextResponse.redirect(appUrl(req, '/masuk?reason=expired'), { status: 303 });
   }
   if (!code) return back(t.security.codeWrong);
 
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
       body: { workspace, mfaToken, code },
     });
 
-    const res = NextResponse.redirect(new URL('/obrolan', req.url), { status: 303 });
+    const res = NextResponse.redirect(appUrl(req, '/obrolan'), { status: 303 });
     res.cookies.set(AT, session.accessToken, { ...cookieOptions, maxAge: session.expiresIn });
     res.cookies.set(RT, session.refreshToken, { ...cookieOptions, maxAge: 60 * 60 * 24 * 30 });
     res.cookies.delete(MFA);

@@ -115,6 +115,7 @@ export const t = {
     shop: 'Nama akun toko',
     shopHint: 'Contoh: toko-demo',
     email: 'Email',
+    username: 'Username',
     password: 'Kata sandi',
     submit: 'Masuk',
     demo: 'COBA DULU',

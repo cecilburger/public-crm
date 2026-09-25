@@ -15,6 +15,7 @@ import { CsrfField } from '@/components/Csrf';
 import { CancelTaskButton } from '@/components/CancelTaskButton';
 import { SyncBadges } from '@/components/SyncBadges';
 import { formatEventWhen } from '@/components/GoogleCalendarEventDetailDrawer';
+import { withBase } from '@/lib/basePath';
 
 const ROW_H = 42;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -581,7 +582,7 @@ export function TaskCalendar({
     if (!googleStatus.connected) { setGoogleEvents([]); return; }
     const { from, to } = periodRange(mode, anchor);
     const controller = new AbortController();
-    fetch(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`, { signal: controller.signal })
+    fetch(withBase(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`), { signal: controller.signal })
       .then((res) => res.json())
       .then((data: { events?: GoogleCalendarEvent[] }) => setGoogleEvents(data.events ?? []))
       .catch(() => {});

@@ -3,6 +3,8 @@ import { call, ApiError } from '@/lib/api';
 import { t } from '@/lib/copy';
 import { AT, RT, WS, MFA, DIV, cookieOptions } from '@/lib/session';
 import { CSRF } from '@/lib/csrf';
+import { appUrl } from '@/lib/basePath';
+import { fixedWorkspace, loginEmail } from '@/lib/signIn';
 
 interface LoginResponse {
   accessToken?: string;
@@ -21,13 +23,13 @@ interface LoginResponse {
  */
 export async function POST(req: NextRequest) {
   const form = await req.formData();
-  const workspace = String(form.get('workspace') ?? '').trim();
-  const email = String(form.get('email') ?? '').trim();
+  const workspace = fixedWorkspace() || String(form.get('workspace') ?? '').trim();
+  const email = loginEmail(String(form.get('email') ?? ''));
   const password = String(form.get('password') ?? '');
   const next = String(form.get('next') ?? '/obrolan');
 
   const back = (message: string) => {
-    const url = new URL('/masuk', req.url);
+    const url = appUrl(req, '/masuk');
     url.searchParams.set('error', message);
     url.searchParams.set('workspace', workspace);
     return NextResponse.redirect(url, { status: 303 });
@@ -50,7 +52,7 @@ export async function POST(req: NextRequest) {
     // Password accepted, but there is no session yet — hold the receipt in its
     // own short cookie and ask for the code.
     if (session.mfaRequired && session.mfaToken) {
-      const res = NextResponse.redirect(new URL('/masuk/kode', req.url), { status: 303 });
+      const res = NextResponse.redirect(appUrl(req, '/masuk/kode'), { status: 303 });
       res.cookies.set(MFA, session.mfaToken, { ...cookieOptions, maxAge: 300 });
       res.cookies.set(WS, workspace, { ...cookieOptions, maxAge: 60 * 60 * 24 * 30 });
       return res;
@@ -60,7 +62,7 @@ export async function POST(req: NextRequest) {
     // Only same-origin paths, so a crafted ?next= cannot bounce a signed-in user
     // to somebody else's site with a fresh session.
     const target = next.startsWith('/') && !next.startsWith('//') ? next : '/obrolan';
-    const res = NextResponse.redirect(new URL(target, req.url), { status: 303 });
+    const res = NextResponse.redirect(appUrl(req, target), { status: 303 });
     res.cookies.set(AT, session.accessToken, { ...cookieOptions, maxAge: session.expiresIn ?? 900 });
     res.cookies.set(RT, session.refreshToken, { ...cookieOptions, maxAge: 60 * 60 * 24 * 30 });
     res.cookies.set(WS, workspace, { ...cookieOptions, maxAge: 60 * 60 * 24 * 30 });

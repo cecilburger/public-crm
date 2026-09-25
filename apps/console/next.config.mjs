@@ -1,5 +1,10 @@
 /** @type {import('next').NextConfig} */
+// Mount point when the console shares a domain (dashboardmcn.my.id/crm).
+// Build-time: `CONSOLE_BASE_PATH=/crm npm run build:console`. Empty = the root.
+const basePath = process.env.CONSOLE_BASE_PATH || '';
+
 export default {
+  basePath,
   reactStrictMode: true,
   poweredByHeader: false,
   // Keep a page the browser has already rendered for 30 s, so going back to
@@ -9,7 +14,7 @@ export default {
   // themselves (AutoRefresh) — so what you just changed is never shown stale.
   experimental: { staleTimes: { dynamic: 30 } },
   eslint: { ignoreDuringBuilds: true },
-  env: { KIRANA_API_URL: process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080' },
+  env: { KIRANA_API_URL: process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080', NEXT_PUBLIC_BASE_PATH: basePath },
   // konva's package resolves to a Node build that `require`s the native
   // `canvas` package — never actually reached (the editor is dynamically
   // imported with `ssr: false`), but webpack still tries to resolve it while
