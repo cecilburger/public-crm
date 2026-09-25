@@ -25,8 +25,14 @@ const root = path.join(import.meta.dirname, '..');
 const appDir = path.join(root, 'apps', 'bd-brain');
 
 function findPython(): string {
+  // A relative BD_BRAIN_PYTHON (the README's own example is
+  // `apps/bd-brain/.venv/bin/python`) is relative to the repo root, but the
+  // child runs with cwd apps/bd-brain — resolved here, or the probe passes
+  // and the spawn fails with ENOENT.
   const preferred = process.env.BD_BRAIN_PYTHON;
-  const candidates = preferred ? [preferred] : ['python3', 'python'];
+  const candidates = preferred
+    ? [preferred.includes('/') || preferred.includes('\\') ? path.resolve(root, preferred) : preferred]
+    : ['python3', 'python'];
   for (const candidate of candidates) {
     const probe = spawnSync(candidate, ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'], {
       stdio: 'ignore', shell: process.platform === 'win32',
