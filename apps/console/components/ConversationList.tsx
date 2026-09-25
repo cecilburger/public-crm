@@ -102,15 +102,6 @@ export function ConversationList(
     { key: 'selesai', label: t.chats.filterDone, n: counts.selesai },
   ];
 
-  const channelTabs = [
-    { key: 'semua', label: t.inbox.channelAll },
-    { key: 'whatsapp', label: t.inbox.channelWhatsapp },
-    { key: 'facebook_dm', label: t.inbox.channelFacebookDm },
-    { key: 'instagram_dm', label: t.inbox.channelInstagramDm },
-    { key: 'facebook_comment', label: t.inbox.channelFacebookComment },
-    { key: 'instagram_comment', label: t.inbox.channelInstagramComment },
-  ];
-
   // The two filter rows are independent and each survives the other changing:
   // narrowing to Facebook while reading "Perlu dibalas" stays on "Perlu
   // dibalas" rather than silently widening back to everything.
@@ -153,30 +144,6 @@ export function ConversationList(
           </Link>
         ))}
       </div>
-
-      {showChannelFilter ? (
-        /* Wraps, unlike the status row above it. `.filters` scrolls
-           horizontally by default, which is right for three tabs and wrong for
-           six: the row scrolled itself to the active tab and clipped the
-           options at both ends, so an agent could not see what else was on
-           offer without dragging a row nothing suggested was draggable. */
-        <div
-          className="filters"
-          role="navigation"
-          aria-label="Saring kanal"
-          style={{ flexWrap: 'wrap', overflowX: 'visible' }}
-        >
-          {channelTabs.map((tab) => (
-            <Link
-              key={tab.key}
-              href={hrefWith({ ch: tab.key })}
-              aria-current={channel === tab.key ? 'page' : undefined}
-            >
-              {tab.label}
-            </Link>
-          ))}
-        </div>
-      ) : null}
 
       {/* Both notices sit where the missing items would have been, because an
           empty list is indistinguishable from a broken one and the wrong

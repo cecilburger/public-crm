@@ -60,13 +60,13 @@ html.rail-collapsed { --rail: var(--rail-collapsed); }
     --ink-3: #7679A4;
     --line: #232659;
     --line-2: #343879;
-    --brand: #8385F2;
-    --brand-ink: #08091C;
+    --brand: #5B54E8;
+    --brand-ink: #F5F4FF;
     --brand-soft: #1C1F5C;
     --accent: #EFB253;
     --accent-soft: #33260C;
-    --good: #3ECFB0;
-    --good-soft: #0C3730;
+    --good: #3ECF6B;
+    --good-soft: #0C3722;
     --warn: #E8944A;
     --warn-soft: #38220C;
     --danger: #F4707F;
@@ -89,13 +89,13 @@ html.rail-collapsed { --rail: var(--rail-collapsed); }
   --ink-3: #7679A4;
   --line: #232659;
   --line-2: #343879;
-  --brand: #8385F2;
-  --brand-ink: #08091C;
+  --brand: #5B54E8;
+  --brand-ink: #F5F4FF;
   --brand-soft: #1C1F5C;
   --accent: #EFB253;
   --accent-soft: #33260C;
-  --good: #3ECFB0;
-  --good-soft: #0C3730;
+  --good: #3ECF6B;
+  --good-soft: #0C3722;
   --warn: #E8944A;
   --warn-soft: #38220C;
   --danger: #F4707F;
@@ -105,6 +105,45 @@ html.rail-collapsed { --rail: var(--rail-collapsed); }
   --chart-1: #3987e5;
   --chart-2: #d95926;
   --chart-3: #199e70;
+}
+
+/*
+ * Dark-mode active-state fill — solid brand color instead of the soft tint
+ * light mode (and the rest of dark mode's badges/chips) uses, matching the
+ * reference palette where the active rail item, tab and filter pill read as
+ * one filled violet chip rather than a tinted highlight. Scoped to dark mode
+ * only; every other soft-tint usage (chips, badges, thread rows) is untouched.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .navitem[aria-current="page"],
+  :root:not([data-theme="light"]) .navitem-toggle[aria-current="page"],
+  :root:not([data-theme="light"]) .rail-sub-row[aria-current="page"],
+  :root:not([data-theme="light"]) .navitem:has(> .link-pending),
+  :root:not([data-theme="light"]) .rail-sub-row:has(> .link-pending),
+  :root:not([data-theme="light"]) .tabs a[aria-current="page"],
+  :root:not([data-theme="light"]) .calendar-pill-btn.active {
+    background: var(--brand);
+    color: var(--brand-ink);
+  }
+  :root:not([data-theme="light"]) .navitem[aria-current="page"] .count {
+    background: var(--brand-ink);
+    color: var(--brand);
+  }
+}
+
+:root[data-theme="dark"] .navitem[aria-current="page"],
+:root[data-theme="dark"] .navitem-toggle[aria-current="page"],
+:root[data-theme="dark"] .rail-sub-row[aria-current="page"],
+:root[data-theme="dark"] .navitem:has(> .link-pending),
+:root[data-theme="dark"] .rail-sub-row:has(> .link-pending),
+:root[data-theme="dark"] .tabs a[aria-current="page"],
+:root[data-theme="dark"] .calendar-pill-btn.active {
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+:root[data-theme="dark"] .navitem[aria-current="page"] .count {
+  background: var(--brand-ink);
+  color: var(--brand);
 }
 
 * { box-sizing: border-box; }
@@ -1010,7 +1049,7 @@ td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-num
 
 /* Settings sub-navigation */
 .tabs { display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
-.tabs a { padding: 5px 11px; border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.tabs a { padding: 5px 11px; border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; flex: none; }
 .tabs a:hover { background: var(--panel-2); color: var(--ink); }
 .tabs a[aria-current="page"] { background: var(--brand-soft); color: var(--brand); }
 

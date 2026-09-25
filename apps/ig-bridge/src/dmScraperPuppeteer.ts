@@ -122,12 +122,79 @@ export async function gotoInbox(page: Page): Promise<void> {
 }
 
 /**
+ * A row's visible text carries relative-time stamps ("4m", "16h", "Active
+ * now", their Indonesian equivalents) that tick over on their own as the
+ * clock advances, with no message ever having changed. Confirmed live: left
+ * unstripped, this reads as "the row changed" every time one of those ticks,
+ * re-triggering a full re-read of the thread forever — a self-sustaining
+ * loop, not a one-off. Stripping these known-volatile substrings before
+ * comparing is what makes the signature track actual content instead of the
+ * clock. Shared between the observer's inline scan and `readInboxThreads`'
+ * standalone one, string-injected like `FIRST_LEAF_TEXT_JS` for the same
+ * reason (see `installInboxObserver`'s own note on why these are strings,
+ * not real functions).
+ */
+const NORMALISE_SIGNATURE_JS = `
+  function normaliseSignature(text) {
+    return text
+      .replace(/\\bActive\\s+(now|\\d+\\s*[a-z]+\\s+ago)\\b/gi, '')
+      .replace(/\\bAktif\\s+(sekarang|\\d+\\s*[a-z]+\\s+(yang\\s+)?lalu)\\b/gi, '')
+      .replace(/\\b\\d+\\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|w|mnt|jam|hr|hari|mgg|minggu)\\b/gi, '')
+      .replace(/\\s+/g, ' ')
+      .trim();
+  }
+`;
+
+/** Same row → `{key, signature}` reading the observer's `scan()` does,
+ * shared so `readInboxThreads` below reads a row exactly the way the
+ * observer would have. */
+const SCAN_THREADS_JS = `
+  function scanThreads() {
+    var list = document.querySelector('div[aria-label="Thread list"]');
+    var rows = list ? Array.prototype.slice.call(list.querySelectorAll('div[role="button"]')) : [];
+    return rows.map(function (el) {
+      var key = firstLeafText(el);
+      return { key: key, signature: normaliseSignature((el.innerText || '').slice(0, 300)) };
+    // A row with no readable name at all (an icon-only control like the
+    // compose button, occasionally caught by the broad role="button" query)
+    // has nothing to key or re-find it by later — skip it.
+    }).filter(function (t) { return t.key; });
+  }
+`;
+
+/**
+ * Reads the inbox's current thread list directly, the same shape the
+ * `MutationObserver` in `installInboxObserver` reports on change — a
+ * poll-based second opinion for `dmWatcher`'s housekeeping to reconcile
+ * against, so a thread the observer silently stopped reporting (its own
+ * callback binding gone stale, the observed subtree swapped out from under
+ * it by a React re-render, or any other reason a live, responsive page still
+ * goes quiet) surfaces again within one housekeeping cycle instead of
+ * staying invisible until someone notices and restarts the process by hand.
+ * Confirmed live: exactly that happened for over an hour with no error
+ * anywhere — the page passed every liveness check the whole time.
+ */
+export async function readInboxThreads(page: Page): Promise<InboxThread[]> {
+  const json = await page.evaluate(`
+    (function () {
+      ${FIRST_LEAF_TEXT_JS}
+      ${NORMALISE_SIGNATURE_JS}
+      ${SCAN_THREADS_JS}
+      return JSON.stringify(scanThreads());
+    })();
+  `) as string;
+  return JSON.parse(json) as InboxThread[];
+}
+
+/**
  * The alternative to polling: instead of re-opening the inbox every few
  * minutes (itself a repeating, scriptable pattern), this installs a
  * `MutationObserver` on a page that is opened once and never navigated
  * away from, and bridges its callbacks to Node via `page.exposeFunction` —
  * much closer to a person just leaving the Instagram tab open and glancing
- * at it, and far more responsive than any poll interval.
+ * at it, and far more responsive than any poll interval. `dmWatcher`'s
+ * housekeeping backs this with a periodic `readInboxThreads` poll, since
+ * this alone has gone quiet on a page that never stopped responding.
  *
  * Sent as a raw string, not a real JS function reference: `tsx`/esbuild's
  * dev-mode name-preserving transform wraps a named local (`function scan()
@@ -179,36 +246,12 @@ export async function installInboxObserver(
       if (window.__igObserverInstalled) return;
       window.__igObserverInstalled = true;
       ${FIRST_LEAF_TEXT_JS}
-
-      // A row's visible text carries relative-time stamps ("4m", "16h",
-      // "Active now", their Indonesian equivalents) that tick over on their
-      // own as the clock advances, with no message ever having changed.
-      // Confirmed live: left unstripped, this reads as "the row changed"
-      // every time one of those ticks, re-triggering a full re-read of the
-      // thread forever — a self-sustaining loop, not a one-off. Stripping
-      // these known-volatile substrings before comparing is what makes the
-      // signature track actual content instead of the clock.
-      function normaliseSignature(text) {
-        return text
-          .replace(/\\bActive\\s+(now|\\d+\\s*[a-z]+\\s+ago)\\b/gi, '')
-          .replace(/\\bAktif\\s+(sekarang|\\d+\\s*[a-z]+\\s+(yang\\s+)?lalu)\\b/gi, '')
-          .replace(/\\b\\d+\\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|w|mnt|jam|hr|hari|mgg|minggu)\\b/gi, '')
-          .replace(/\\s+/g, ' ')
-          .trim();
-      }
+      ${NORMALISE_SIGNATURE_JS}
+      ${SCAN_THREADS_JS}
 
       var debounceTimer = null;
       function scan() {
-        var list = document.querySelector('div[aria-label="Thread list"]');
-        var rows = list ? Array.prototype.slice.call(list.querySelectorAll('div[role="button"]')) : [];
-        var threads = rows.map(function (el) {
-          var key = firstLeafText(el);
-          return { key: key, signature: normaliseSignature((el.innerText || '').slice(0, 300)) };
-        // A row with no readable name at all (an icon-only control like the
-        // compose button, occasionally caught by the broad role="button"
-        // query) has nothing to key or re-find it by later — skip it.
-        }).filter(function (t) { return t.key; });
-        window.${callbackName}(JSON.stringify(threads));
+        window.${callbackName}(JSON.stringify(scanThreads()));
       }
 
       var observer = new MutationObserver(function () {

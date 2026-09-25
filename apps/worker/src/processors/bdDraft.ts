@@ -250,9 +250,24 @@ async function applyActions(
     ...step.conversation,
     node: setNode?.type === 'set_node' ? setNode.node : step.conversation.node,
     outcome: setNode?.type === 'set_node' ? setNode.outcome : step.conversation.outcome,
-    // The booking call advanced the conversation further than `step` did —
-    // it is the one that knows the meeting time and the Meet link.
-    ...(booking ? { meeting_at: booking.meeting_at, meet_link: booking.meet_link } : {}),
+    // The booking call advanced the conversation further than `step` did — it
+    // is the one that knows the meeting time and the Meet link, *and* the one
+    // that actually moves the node to `scheduled` on success (`step` only ever
+    // decides to try; `/v1/book` is what runs `on_meeting_booked`). Reading
+    // `meeting_at`/`meet_link` from it while leaving `node` on the pre-booking
+    // value left the conversation stuck at `scheduling` forever after a real
+    // booking — the next message re-entered `_SCHEDULING_NODES` handling,
+    // re-ran `_book`, and collided with the very slot it had just booked
+    // ("jadwal kami sudah terisi" for its own meeting). On a failed or
+    // slot-unavailable booking `booking.conversation.node` is unchanged from
+    // what was sent in (`_offer_slots`/`_booking_failed` never touch it), so
+    // trusting it here is safe on every path, not just the success one.
+    ...(booking ? {
+      node: booking.conversation.node,
+      outcome: booking.conversation.outcome,
+      meeting_at: booking.meeting_at,
+      meet_link: booking.meet_link,
+    } : {}),
   };
 
   // A booking that ran is no longer deferred work — it happened, and its own

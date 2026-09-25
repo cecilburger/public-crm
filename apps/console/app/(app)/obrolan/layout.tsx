@@ -2,6 +2,7 @@ import { api, type ConversationSummary, type FacebookComment } from '@/lib/api';
 import { awaitingReply } from '@/lib/format';
 import { t } from '@/lib/copy';
 import { ConversationList } from '@/components/ConversationList';
+import { ChannelTabs } from '@/components/ChannelTabs';
 import { AutoRefresh } from '@/components/AutoRefresh';
 
 export const dynamic = 'force-dynamic';
@@ -37,6 +38,7 @@ export default async function ChatsLayout({ children }: { children: React.ReactN
         <span className="spacer" />
         <AutoRefresh seconds={10} renderedAt={Date.now()} />
       </div>
+      <ChannelTabs />
       <div className="inbox">
         <ConversationList
           conversations={conversations}

@@ -4,7 +4,7 @@ import type { Page } from 'puppeteer';
 import type { SessionManager } from './sessionManager.ts';
 import {
   gotoInbox, installInboxObserver, discoverThreadId, readThreadMessages, acceptPendingRequests,
-  isSessionExpiredError, type InboxThread, type ScrapedMessage,
+  isSessionExpiredError, readInboxThreads, type InboxThread, type ScrapedMessage,
 } from './dmScraperPuppeteer.ts';
 
 export type DmWatcherEvent =
@@ -162,6 +162,19 @@ export class DmWatcher {
           this.log.warn({ tenantId }, 'ig-bridge: observed tenant\'s inbox tab went unresponsive — re-attaching');
           this.observedTenants.delete(tenantId);
           this.observerPages.delete(tenantId);
+        } else if (page) {
+          // The liveness ping above only proves the page can still run
+          // arbitrary JS — it says nothing about whether the `MutationObserver`
+          // installed on it is still actually firing. Confirmed live: a page
+          // that passed this exact ping every 10 minutes for over an hour
+          // still had a real inbound message sitting unreported the whole
+          // time, no error anywhere. `readInboxThreads` reads the thread list
+          // directly, the same way the observer's own `scan()` would, and
+          // `handleInboxChange` already dedupes against `lastSignatures` — so
+          // this is a no-op on every cycle the observer *did* keep up, and
+          // the one catch that matters on a cycle it silently didn't.
+          await this.readInboxThreadsAndReconcile(tenantId, page).catch((err) =>
+            this.log.warn({ err, tenantId }, 'ig-bridge: fallback inbox poll failed'));
         }
       }
       if (!this.observedTenants.has(tenantId)) {
@@ -228,6 +241,19 @@ export class DmWatcher {
       }
       throw err;
     }
+  }
+
+  /** Housekeeping's poll-based backstop for `handleInboxChange` — same
+   * dedup, same downstream path, just sourced from a direct read instead of
+   * the observer's callback. Chained onto `processingChain` too, so a poll
+   * landing mid-observer-callback (or the reverse) reads and writes
+   * `lastSignatures` one at a time rather than racing it. */
+  private async readInboxThreadsAndReconcile(tenantId: string, page: Page): Promise<void> {
+    const threads = await readInboxThreads(page);
+    const prior = this.processingChain.get(tenantId) ?? Promise.resolve();
+    const next = prior.then(() => this.handleInboxChange(tenantId, threads));
+    this.processingChain.set(tenantId, next);
+    await next;
   }
 
   private async handleInboxChange(tenantId: string, threads: InboxThread[]): Promise<void> {
