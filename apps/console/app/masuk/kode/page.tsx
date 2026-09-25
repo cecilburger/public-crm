@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { t } from '@/lib/copy';
 import { csrfToken } from '@/lib/csrf';
 import { MFA } from '@/lib/session';
+import { withBase } from '@/lib/basePath';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export default async function MfaCodePage({
       <div className="card panel" style={{ boxShadow: 'var(--shadow)' }}>
         <div className="body">
           <div className="brand" style={{ padding: 0 }}>
-            <img src="/logo.webp" alt="" className="mark" />
+            <img src={withBase('/logo.webp')} alt="" className="mark" />
             <span className="brand-name">{t.app.name}</span>
           </div>
           <div>
@@ -32,7 +33,7 @@ export default async function MfaCodePage({
 
           {params.error ? <p className="error" role="alert">{params.error}</p> : null}
 
-          <form action="/api/session/mfa" method="post" className="stack" style={{ gap: 12 }}>
+          <form action={withBase('/api/session/mfa')} method="post" className="stack" style={{ gap: 12 }}>
             <input type="hidden" name="csrf" value={csrf} />
             <div className="field">
               <label htmlFor="code">{t.security.codeLabel}</label>

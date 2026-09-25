@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { t } from '@/lib/copy';
+import { withBase } from '@/lib/basePath';
 
 const MIN_GAP_MS = 1500;
 
@@ -61,7 +62,7 @@ export function AutoRefresh({ seconds = 10, renderedAt }: { seconds?: number; re
       if (!document.hidden && missed) { missed = false; schedule(); }
     };
 
-    const source = new EventSource('/api/realtime');
+    const source = new EventSource(withBase('/api/realtime'));
     source.onmessage = schedule;
 
     const id = setInterval(() => {

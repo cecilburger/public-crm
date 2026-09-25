@@ -8,6 +8,7 @@ import { CsrfField } from '@/components/Csrf';
 import { DocumentKindField } from '@/components/DocumentKindField';
 import { DocumentModelField } from '@/components/DocumentModelField';
 import type { DocRecord, DocumentKind, DocumentModel } from '@/lib/api';
+import { withBase } from '@/lib/basePath';
 
 /** Opens on a document's "Detail" action — same slide-in shell as
  *  `DocumentDrawer`, pre-filled and saving through `updateDocument`. */
@@ -87,7 +88,7 @@ export function DocumentDetailDrawer({
 
               <div className="record-field">
                 <span style={{ display: 'flex', gap: 8 }}>
-                  <a href={`/api/dokumen/${doc.id}/generate`} target="_blank" rel="noreferrer" className="btn ghost sm">
+                  <a href={withBase(`/api/dokumen/${doc.id}/generate`)} target="_blank" rel="noreferrer" className="btn ghost sm">
                     {t.document.generate}
                   </a>
                   <Link href={`/customize/dokumen/${doc.id}/editor`} className="btn ghost sm">

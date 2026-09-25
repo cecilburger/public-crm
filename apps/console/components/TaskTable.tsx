@@ -17,6 +17,7 @@ import { TaskCalendar } from '@/components/TaskCalendar';
 import { KindIcon } from '@/components/KindIcon';
 import { SendCalendarEventEmailButton } from '@/components/SendCalendarEventEmailButton';
 import { GoogleCalendarEventDetailDrawer } from '@/components/GoogleCalendarEventDetailDrawer';
+import { withBase } from '@/lib/basePath';
 
 const GOOGLE_WINDOW_DAYS = 30;
 
@@ -96,7 +97,7 @@ export function TaskTable({
     const to = new Date(from);
     to.setDate(to.getDate() + GOOGLE_WINDOW_DAYS);
     const controller = new AbortController();
-    fetch(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`, { signal: controller.signal })
+    fetch(withBase(`/api/google-calendar/events?from=${from.toISOString()}&to=${to.toISOString()}`), { signal: controller.signal })
       .then((res) => res.json())
       .then((data: { events?: GoogleCalendarEvent[] }) => setGoogleEvents(data.events ?? []))
       .catch(() => {});
@@ -164,7 +165,7 @@ export function TaskTable({
                 </button>
               </form>
             ) : (
-              <a href={`/api/google-calendar/connect?from=${encodeURIComponent(pathname)}`} className="btn ghost sm">
+              <a href={withBase(`/api/google-calendar/connect?from=${encodeURIComponent(pathname)}`)} className="btn ghost sm">
                 {t.tasks.googleConnect}
               </a>
             )}

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { t } from '@/lib/copy';
 import type { SearchResult } from '@/app/api/search/route';
+import { withBase } from '@/lib/basePath';
 
 const CATEGORY_ORDER: SearchResult['category'][] = ['contact', 'deal', 'order', 'task', 'brand'];
 
@@ -50,7 +51,7 @@ export function GlobalSearch() {
     setLoading(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
+        const res = await fetch(withBase(`/api/search?q=${encodeURIComponent(query.trim())}`));
         const data = await res.json() as { results: SearchResult[] };
         setResults(data.results);
         setActiveIndex(0);
