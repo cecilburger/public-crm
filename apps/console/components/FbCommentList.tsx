@@ -67,7 +67,7 @@ export function FbCommentList({ comments }: { comments: FacebookComment[] }) {
               >
                 <span className="row1">
                   {g.needsReply ? <span className="dot warn" aria-label={t.chats.needsReply} /> : null}
-                  <span className="who">{t.inbox.postLabel(g.postId)}</span>
+                  <span className="who">{t.inbox.postContext} {g.postId}</span>
                   <span className="when tnum" suppressHydrationWarning>{ago(g.latestAt)}</span>
                 </span>
                 <span className="row2">
