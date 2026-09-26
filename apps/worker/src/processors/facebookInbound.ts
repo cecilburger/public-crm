@@ -127,10 +127,12 @@ export async function processFbBridgeEvent(
         commentedAt: parseAt(c.commentedAt) ?? null,
       }), scope);
     // Ids only — never the words, never the commenter's name.
-    const event = result.duplicate ? 'fb_comment_duplicate' : 'fb_comment_persisted';
+    const event = result.previousPostId ? 'fb_comment_post_moved'
+      : result.duplicate ? 'fb_comment_duplicate' : 'fb_comment_persisted';
     console.log(JSON.stringify({
       event, at: new Date().toISOString(), tenantId: home.tenantId, divisionId: home.divisionId, sessionKey, pageId: c.pageId,
       postId: c.postId, commentId: c.commentId, parentCommentId: c.parentCommentId ?? null, rowId: result.id,
+      ...(result.previousPostId ? { previousPostId: result.previousPostId, rowsMoved: result.rowsMoved } : {}),
     }));
     return { status: 'processed' };
   }

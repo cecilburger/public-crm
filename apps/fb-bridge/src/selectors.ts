@@ -308,6 +308,14 @@ export const COMMENTS = {
   postSurface: ['div[role="dialog"][aria-modal="true"]', 'div[role="main"]', 'div[role="feed"]'],
   /** One post within that feed. */
   post: ['div[role="article"]', 'div[data-pagelet^="FeedUnit"]'],
+  /**
+   * A post's own caption, inside its article. Confirmed live 2026-09-26 on
+   * the Page timeline and on a post's permalink dialog alike; the preview
+   * node is the one inside it, kept as the fallback. A comment carries a
+   * `data-ad-preview` node too, which is why the parser only takes one whose
+   * nearest article is the post itself.
+   */
+  postMessage: ['[data-ad-rendering-role="story_message"]', '[data-ad-preview="message"]'],
   /** One comment within a post. Facebook labels these in the accessibility
    * tree as "Comment by <name>", which is also where the author name comes
    * from when no profile link is rendered. */
@@ -584,14 +592,9 @@ export const COMMENT_ACTIONS = {
     ...within('[role="button"][aria-label="Kirim pesan"]'),
   ],
   waitMs: 10_000,
-  // The private-DM confirmation window. Left at 20s: proven live to be enough
-  // for a Messenger thread, which is a persistent conversation Facebook keeps
-  // warm — unlike a fresh public reply, it has never been observed arriving
-  // late here.
-  confirmMs: 20_000,
-  // The PUBLIC reply confirmation window — deliberately separate from
-  // `confirmMs` above rather than one shared number raised for both. Confirmed
-  // live: a reply on a genuinely fresh post can take longer than 20s for
+  // The PUBLIC reply confirmation window. (The private reply confirms on
+  // fresh reads of the conversation, on its own schedule in sessionManager.)
+  // Confirmed live: a reply on a genuinely fresh post can take longer than 20s for
   // Facebook's own backend to publish and render, well after the click, the
   // type and the Enter all succeeded — which once left the CRM holding a
   // terminal 'failed' status for a reply that Facebook had, in fact, already

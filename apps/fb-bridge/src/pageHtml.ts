@@ -519,18 +519,62 @@ export async function assertBusinessSuiteThreadSurface(page: Page, threadId: str
   return evidence ? validateBusinessSuiteThreadSurface(evidence, threadId) : false;
 }
 
+/** The private-reply dialog's composer and send control, as seen inside the dialog. */
+const PRIVATE_MESSAGE_EDITOR = 'div[role="textbox"][data-lexical-editor="true"]';
+const PRIVATE_SEND_CONTROLS = [
+  '[role="button"][aria-label="Send Message"]',
+  '[role="button"][aria-label="Send message"]',
+  '[role="button"][aria-label="Kirim Pesan"]',
+  '[role="button"][aria-label="Kirim pesan"]',
+] as const;
+
+/**
+ * The private-message dialogs in a piece of markup — the same reading the
+ * in-page evidence script takes, over HTML instead of a live document, so the
+ * selectors are held to Facebook's real markup by a fixture. (Visibility is a
+ * layout fact HTML does not carry; the in-page script checks it.)
+ */
+export function privateMessageDialogsFromHtml(html: string): PrivateMessageDialogEvidence[] {
+  const root = parseHtml(html);
+  const found: El[] = [];
+  for (const selector of COMMENT_ACTIONS.messageDialog) {
+    for (const node of root.querySelectorAll(selector)) if (!found.includes(node)) found.push(node);
+  }
+  return found.map((dialog) => ({
+    label: dialog.getAttribute('aria-label') ?? '',
+    editor: dialog.querySelector(PRIVATE_MESSAGE_EDITOR) !== null,
+    sendControl: PRIVATE_SEND_CONTROLS.some((selector) => dialog.querySelector(selector) !== null),
+  }));
+}
+
+/**
+ * The private-reply dialog's "Send Message": enabled, still disabled, or not
+ * rendered. Facebook marks it `aria-disabled="true"` until the typed text has
+ * registered; a click before that is silently ignored.
+ */
+export async function readPrivateSendState(page: Page): Promise<'enabled' | 'disabled' | 'missing' | null> {
+  return await page.evaluate(`
+    (function () {
+      var selectors = ${JSON.stringify(COMMENT_ACTIONS.messageSendButton)};
+      for (var i = 0; i < selectors.length; i++) {
+        var el = document.querySelector(selectors[i]);
+        if (!el) continue;
+        var box = el.getBoundingClientRect();
+        if (!box || box.width <= 0 || box.height <= 0) continue;
+        return el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled';
+      }
+      return 'missing';
+    })();
+  `).catch(() => null) as 'enabled' | 'disabled' | 'missing' | null;
+}
+
 /** The raw page program used by {@link assertPrivateMessageSurface}. */
 export function buildPrivateMessageSurfaceEvidenceScript(): string {
   return `
     (function () {
       var messageDialogs = ${JSON.stringify(COMMENT_ACTIONS.messageDialog)};
-      var messageEditor = 'div[role="textbox"][data-lexical-editor="true"]';
-      var messageSendControls = [
-        '[role="button"][aria-label="Send Message"]',
-        '[role="button"][aria-label="Send message"]',
-        '[role="button"][aria-label="Kirim Pesan"]',
-        '[role="button"][aria-label="Kirim pesan"]'
-      ];
+      var messageEditor = ${JSON.stringify(PRIVATE_MESSAGE_EDITOR)};
+      var messageSendControls = ${JSON.stringify(PRIVATE_SEND_CONTROLS)};
       var detailSelectors = ${JSON.stringify(BIZ_THREAD.detailView)};
       var businessEditors = ${JSON.stringify(BIZ_COMPOSER.box)};
       var selectedContainers = ${JSON.stringify(BIZ_INBOX.selectedLinkContainer)};

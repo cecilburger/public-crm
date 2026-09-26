@@ -1,11 +1,12 @@
 import path from 'node:path';
 import Fastify from 'fastify';
 import {
-  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, SendNotAttemptedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
+  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, SendNotAttemptedError, ThreadRequiresAcceptanceError, SessionManager,
 } from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
 import { createCrmClient } from './crmClient.ts';
+import { commentActionBody, commentActionStatus } from './commentActionErrors.ts';
 
 const PORT = Number(process.env.PORT ?? 8092);
 const FB_BRIDGE_SECRET = process.env.FB_BRIDGE_SECRET ?? 'dev-fb-bridge-secret-change-me';
@@ -14,7 +15,7 @@ const authDir = path.join(import.meta.dirname, '..', '.fb_bridge_auth');
 
 const app = Fastify({ logger: true });
 
-const sessions = new SessionManager(authDir);
+const sessions = new SessionManager(authDir, app.log);
 
 /**
  * A session key is a division's profile name, issued by the CRM: Marketing's
@@ -37,7 +38,9 @@ async function tenantOf(sessionKey: string): Promise<string> {
 const crm = createCrmClient({ apiUrl: KIRANA_API_URL, secret: FB_BRIDGE_SECRET, tenantOf, log: app.log });
 
 const messenger = new MessengerWatcher(sessions, (ev) => void crm.postEvent(ev), app.log, crm.knownIds);
-const comments = new CommentWatcher(sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds);
+const comments = new CommentWatcher(
+  sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds, crm.recordPostDetails,
+);
 
 // Both watchers' own first pass resumes every tenant with a persisted profile.
 // `tsx watch` restarts on every code change and in production a redeploy or a
@@ -224,31 +227,12 @@ app.post<{ Params: { sessionKey: string }; Body: { postId?: string; commentId?: 
       return reply.status(400).send({ error: 'postId, commentId and text are required' });
     }
     try {
-      const { threadId } = await sessions.privateReplyToComment(req.params.sessionKey, { postId, commentId, text });
-      return reply.send({ sent: true, threadId });
+      const { threadId, messageId } = await sessions.privateReplyToComment(req.params.sessionKey, { postId, commentId, text });
+      return reply.send({ sent: true, threadId, messageId });
     } catch (err) {
       return reply.status(commentActionStatus(err)).send(commentActionBody(err));
     }
   });
-
-/** The status the worker keys its permanent/transient decision on. */
-function commentActionStatus(err: unknown): number {
-  if (err instanceof CommentActionNotImplementedError) return 501;
-  if (err instanceof CommentNotFoundError) return 409;
-  if (err instanceof CommentActionUnavailableError) return 409;
-  if (err instanceof NoActiveSessionError) return 404;
-  return 502;
-}
-
-function commentActionBody(err: unknown): { error: string; code?: string } {
-  const message = err instanceof Error ? err.message : 'Gagal menindaklanjuti komentar Facebook';
-  if (err instanceof CommentActionNotImplementedError) return { error: message, code: 'comment_action_not_implemented' };
-  if (err instanceof CommentNotFoundError) return { error: message, code: 'comment_not_found' };
-  if (err instanceof CommentActionUnavailableError) return { error: message, code: err.code };
-  if (err instanceof NoActiveSessionError) return { error: message };
-  if (err instanceof SendNotConfirmedError) return { error: message, code: 'reply_not_confirmed' };
-  return { error: message };
-}
 
 /** Deletes the stored Chromium profile. This is what makes "disconnect" in the
  * CRM actually revoke the session rather than just hide it. */

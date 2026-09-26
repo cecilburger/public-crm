@@ -1,5 +1,6 @@
 import type { FbBridgeEvent } from './events.ts';
 import type { Logger } from './messengerWatcher.ts';
+import type { PostDetailsUpdate } from './parsers/postDetails.ts';
 
 export interface CrmClientDeps {
   apiUrl: string;
@@ -14,7 +15,8 @@ export interface CrmClientDeps {
 export interface CrmClient {
   postEvent(ev: FbBridgeEvent): Promise<boolean>;
   knownIds(sessionKey: string, externalIds: string[]): Promise<Set<string>>;
-  knownCommentIds(sessionKey: string, commentIds: string[]): Promise<Set<string>>;
+  knownCommentIds(sessionKey: string, commentIds: string[], postByComment?: Record<string, string>): Promise<Set<string>>;
+  recordPostDetails(sessionKey: string, pageId: string, posts: PostDetailsUpdate[]): Promise<boolean>;
 }
 
 /**
@@ -65,7 +67,9 @@ export function createCrmClient(deps: CrmClientDeps): CrmClient {
   }
 
   async function askKnown(
-    sessionKey: string, body: { externalIds: string[]; commentIds?: string[] }, what: string,
+    sessionKey: string,
+    body: { externalIds: string[]; commentIds?: string[]; commentPosts?: Record<string, string> },
+    what: string,
   ): Promise<{ known?: string[]; knownComments?: string[] } | null> {
     try {
       const res = await http(`${deps.apiUrl}/v1/webhooks/fb-bridge/known`, {
@@ -105,12 +109,46 @@ export function createCrmClient(deps: CrmClientDeps): CrmClient {
    * only memory of what it has delivered (see `CommentWatcher`). Same endpoint
    * and same failure rule: an unreachable CRM answers "nothing", so the sweep
    * offers everything again and the CRM's unique index absorbs it.
+   *
+   * The post each comment was just read under goes along with it: Facebook
+   * re-issues a post's `pfbid…` slug, and the CRM calls a comment known only
+   * when it holds it under the slug the post has now — otherwise it is offered
+   * again and re-filed rather than left under a post id that no longer exists.
    */
-  async function knownCommentIds(sessionKey: string, commentIds: string[]): Promise<Set<string>> {
+  async function knownCommentIds(
+    sessionKey: string, commentIds: string[], postByComment?: Record<string, string>,
+  ): Promise<Set<string>> {
     if (commentIds.length === 0) return new Set();
-    const body = await askKnown(sessionKey, { externalIds: [], commentIds }, 'comment');
+    const body = await askKnown(sessionKey, {
+      externalIds: [], commentIds, ...(postByComment ? { commentPosts: postByComment } : {}),
+    }, 'comment');
     return new Set(body?.knownComments ?? []);
   }
 
-  return { postEvent, knownIds, knownCommentIds };
+  /**
+   * What each post on the Page is — its caption and its age — for the inbox to
+   * name a comment group by. Same channel and secret as everything else here.
+   * True once the CRM took them; anything else is false, and the watcher
+   * offers those posts again on its next pass.
+   */
+  async function recordPostDetails(sessionKey: string, pageId: string, posts: PostDetailsUpdate[]): Promise<boolean> {
+    if (posts.length === 0) return true;
+    try {
+      const res = await http(`${deps.apiUrl}/v1/webhooks/fb-bridge/posts`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ tenantId: await deps.tenantOf(sessionKey), sessionKey, pageId, posts }),
+      });
+      if (!res.ok) {
+        deps.log.warn({ status: res.status, sessionKey, posts: posts.length }, 'fb-bridge: kirana api refused post details');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      deps.log.warn({ err, sessionKey }, 'fb-bridge: could not reach kirana api for post details');
+      return false;
+    }
+  }
+
+  return { postEvent, knownIds, knownCommentIds, recordPostDetails };
 }

@@ -305,18 +305,20 @@ describe('when the comment sweep runs', () => {
     const sessions = { knownSessionKeys: async () => ['k1'] };
     const watcher = new CommentWatcher(sessions as never, () => true, log());
     const sweep = vi.spyOn(watcher, 'sweep').mockResolvedValue(null);
+    // Full sweeps only: the once-a-minute pulses between them have their own test.
+    const full = () => sweep.mock.calls.filter(([, trigger]) => trigger !== 'pulse');
 
     watcher.start();
     await vi.advanceTimersByTimeAsync(0);
-    expect(sweep.mock.calls).toEqual([['k1', 'startup']]);
+    expect(full()).toEqual([['k1', 'startup']]);
 
     await vi.advanceTimersByTimeAsync(SWEEP_INTERVAL_MS - 1);
-    expect(sweep).toHaveBeenCalledTimes(1);
+    expect(full()).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
-    expect(sweep.mock.calls[1]).toEqual(['k1', 'interval']);
+    expect(full()[1]).toEqual(['k1', 'interval']);
 
     watcher.onSessionReady('k2');
-    expect(sweep.mock.calls[2]).toEqual(['k2', 'ready']);
+    expect(full()[2]).toEqual(['k2', 'ready']);
     watcher.stop();
   });
 });
@@ -402,6 +404,60 @@ describe('a whole sweep against a Page that is still rendering', () => {
     expect(surfaces.filter((s) => s.postId !== postIds[1]).every((s) => s.found === false)).toBe(true);
     expect(page.close).toHaveBeenCalled();
   });
+
+  // Live, 2026-09-26: 11 of 45 sweeps found 0 or 1 of the Page's 3 posts. Reproduced 3 of 3 by opening
+  // another tab in the bridge's browser mid-discovery — what the inbox watcher does to read a thread.
+  // The sweep's tab turns `visibilityState: hidden` and Facebook stops hydrating the post placeholders,
+  // in view or not, for as long as it stays hidden; brought back to visible, both hydrate within 2s.
+  it('discovers every recent post while another bridge tab is in front', async () => {
+    vi.useFakeTimers();
+    const timeline = await fixture('page-timeline-live.html');
+    const postIds = parseFacebookComments(timeline, PAGE).postIds;
+
+    // Another tab took the front before discovery began. Only a tab that still
+    // renders as if in front gets the placeholders it scrolls to hydrated.
+    let rendersInBackground = false;
+    let hydrated = false;
+    const page = {
+      goto: vi.fn(async () => null),
+      waitForSelector: vi.fn(async () => null),
+      close: vi.fn(async () => {}),
+      createCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string, params?: { enabled?: boolean }) => {
+          if (method === 'Emulation.setFocusEmulationEnabled') rendersInBackground = params?.enabled === true;
+        }),
+        detach: vi.fn(async () => {}),
+      })),
+      evaluate: vi.fn(async (script: unknown) => {
+        const src = String(script);
+        if (src.includes('visibilityState')) return rendersInBackground ? 'visible' : 'hidden';
+        if (src.startsWith('window.scrollBy')) { if (rendersInBackground) hydrated = true; return undefined; }
+        if (/var postId = "/.test(src)) return null;                     // no post surfaces needed here
+        if (src.includes('var selectors')) return hydrated ? timeline : hydrateOnly(timeline, 1);
+        throw new Error(`unexpected script: ${src.slice(0, 60)}`);
+      }),
+    };
+    const sessions = {
+      getPageMarker: async () => MARKER, newPage: async () => page, assertUsable: async () => {},
+      forgetSession: () => {}, knownSessionKeys: async () => ['k1'],
+    };
+    const logger = log();
+    const watcher = new CommentWatcher(sessions as never, () => true, logger, async () => new Set());
+
+    const running = watcher.sweep('k1', 'interval');
+    await vi.runAllTimersAsync();
+    const summary = await running;
+
+    expect(summary).toMatchObject({ posts: 3 });
+    const discovered = logger.info.mock.calls.map(([f]) => f as Record<string, unknown>)
+      .find((f) => f.event === 'fb_posts_discovered')!;
+    expect(discovered).toMatchObject({ count: 3, postIds });
+    // Every step on record, so a short sweep says exactly where it stalled and whether the tab was rendering.
+    expect(discovered.steps).toEqual([
+      expect.objectContaining({ step: 'first-read', posts: 1, postArticles: 3, postArticlesWithoutId: 2, visible: true }),
+      expect.objectContaining({ step: 'scroll-1', posts: 3, postArticlesWithoutId: 0, visible: true }),
+    ]);
+  });
 });
 
 describe('the bridge\'s CRM client', () => {
@@ -450,6 +506,14 @@ describe('the bridge\'s CRM client', () => {
       body: { tenantId: MARKER.tenantId, sessionKey: 'k1', externalIds: [], commentIds: ['c1', 'c2'] },
     }]);
 
+    // Naming the post each comment was read under is how the CRM tells a
+    // stored comment from one whose post Facebook has since renamed.
+    const withPosts = client(() => Response.json({ known: [], knownComments: [] }));
+    expect(await withPosts.crm.knownCommentIds('k1', ['c1'], { c1: 'pfbid0Renamed' })).toEqual(new Set());
+    expect(withPosts.calls[0]!.body).toEqual({
+      tenantId: MARKER.tenantId, sessionKey: 'k1', externalIds: [], commentIds: ['c1'], commentPosts: { c1: 'pfbid0Renamed' },
+    });
+
     expect(await client(() => new Response('', { status: 400 })).crm.knownCommentIds('k1', ['c1'])).toEqual(new Set());
     expect(await client(() => 'unreachable').crm.knownCommentIds('k1', ['c1'])).toEqual(new Set());
     const none = client(() => Response.json({}));
@@ -492,6 +556,26 @@ describe('handing comments to the CRM', () => {
     // A restart, or the next interval: the CRM holds it, so nothing is sent.
     expect(await watcher.emitNew('k1', MARKER, [parsed('c2')])).toMatchObject({ known: 1, fresh: 0 });
     expect(offered).toEqual(['c2', 'c2']);
+  });
+
+  it('offers a stored comment again when the CRM holds it under a post slug Facebook has since replaced', async () => {
+    // What the CRM holds, by comment: filed under the slug the post had before.
+    const stored = new Map([['c1', 'pfbid0Old']]);
+    const offered: FbBridgeEvent[] = [];
+    const watcher = new CommentWatcher({} as never, (ev) => {
+      offered.push(ev);
+      if (ev.event === 'comment') stored.set(ev.comment.commentId, ev.comment.postId);
+      return true;
+    }, log(), async (_k, ids, posts) =>
+      new Set(ids.filter((id) => stored.has(id) && (!posts?.[id] || stored.get(id) === posts[id]))));
+
+    expect(await watcher.emitNew('k1', MARKER, [parsed('c1')])).toMatchObject({ known: 0, fresh: 1 });
+    expect(offered).toEqual([expect.objectContaining({
+      event: 'comment', comment: expect.objectContaining({ commentId: 'c1', postId: 'pfbid0Test02' }),
+    })]);
+    // Filed under the slug it was read under, it is known again: nothing more is sent.
+    expect(await watcher.emitNew('k1', MARKER, [parsed('c1')])).toMatchObject({ known: 1, fresh: 0 });
+    expect(offered).toHaveLength(1);
   });
 
   it('logs each boundary with ids only', async () => {

@@ -89,7 +89,7 @@ export class FbBridgeClient {
    * the only handle the CRM will ever have on that conversation, which is why
    * a 200 without one is treated as a failure rather than shrugged off.
    */
-  async privateReplyToComment(args: CommentTarget): Promise<{ threadId: string }> {
+  async privateReplyToComment(args: CommentTarget): Promise<{ threadId: string; messageId: string | null }> {
     const body = await this.post(
       `/internal/sessions/${args.sessionKey}/comments/private-reply`,
       { postId: args.postId, commentId: args.commentId, text: args.text },
@@ -104,7 +104,9 @@ export class FbBridgeClient {
         JSON.stringify({ error: 'bridge answered 200 without a threadId', code: 'malformed_response' }),
         { permanent: true });
     }
-    return { threadId };
+    // Facebook's own id for the delivered message, when the bridge could read it.
+    const messageId = (body as { messageId?: unknown } | null)?.messageId;
+    return { threadId, messageId: typeof messageId === 'string' && messageId !== '' ? messageId : null };
   }
 
   private async post(path: string, payload: unknown, what: string): Promise<unknown> {

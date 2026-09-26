@@ -15,11 +15,16 @@ import {
   listButtonLabels, readCommentHtml, readComposerText, readContainerHtml, readPostSurfaceHtml,
 } from './pageHtml.ts';
 import { countOwnCommentReplies, parseFacebookComments } from './parsers/comments.ts';
-import { countMessagesWithText } from './parsers/businessSuiteThread.ts';
+import { countMessagesWithText, messageIdsWithText } from './parsers/businessSuiteThread.ts';
 import { firstHrefMatch, parseHtml } from './parsers/dom.ts';
 import { businessSuiteTransport } from './transport/businessSuite.ts';
 import { messengerDotComTransport } from './transport/messengerDotCom.ts';
-import type { TransportContext } from './transport/types.ts';
+import type { TransportContext, ThreadTransport } from './transport/types.ts';
+import {
+  confirmPrivateDelivery, enterPrivateText, runPrivateReply, waitForSendEnabled,
+} from './privateReply.ts';
+import { keepRenderingInBackground } from './commentPulse.ts';
+import type { Logger } from './messengerWatcher.ts';
 
 // Same interop dance as `apps/ig-bridge/src/sessionManager.ts`, and for the
 // same reason: `puppeteer-extra`'s default export needs CJS/ESM interop this
@@ -30,6 +35,23 @@ const puppeteerExtra = addExtra(puppeteer as unknown as Parameters<typeof addExt
 puppeteerExtra.use(StealthPlugin());
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const SILENT: Logger = { info: () => {}, warn: () => {}, error: () => {} };
+
+/**
+ * The private reply's own budgets. The dialog was measured opening within
+ * ~0.5–6s; "Send Message" enabling a few hundred ms after the text lands. The
+ * confirmation re-reads the customer's conversation FRESH at these offsets
+ * after the send — a tab that was open before the send never showed the
+ * delivered message live — and a sighting must survive the dwell.
+ */
+const PRIVATE_SURFACE_BUDGET_MS = 15_000;
+const PRIVATE_SEND_ENABLE_BUDGET_MS = 5_000;
+const PRIVATE_CONFIRM_CHECKS_MS = [2_000, 10_000, 20_000] as const;
+const PRIVATE_CONFIRM_DWELL_MS = 3_000;
+// Bounded so the whole private reply stays well inside the worker's 300s
+// request timeout: a pressed send must come back as "confirmed" or "may have
+// been sent", never as a dropped connection.
+const PRIVATE_THREAD_READ_BUDGET_MS = 25_000;
 
 /** Polls a condition until it holds or the budget runs out. Facebook renders a
  * post's comments well after `domcontentloaded`, and a fixed sleep either wastes
@@ -184,7 +206,7 @@ export class SessionManager {
   private loginWindows = new Map<string, Browser>();
   private lastErrors = new Map<string, string>();
 
-  constructor(private authDir: string) {}
+  constructor(private authDir: string, private log: Logger = SILENT) {}
 
   private profileDir(sessionKey: string): string {
     return path.join(this.authDir, sessionKey);
@@ -813,45 +835,40 @@ export class SessionManager {
 
   /**
    * Private Messenger message to a commenter, through the comment's own
-   * "Send message" control.
+   * "Send message" control — Facebook's private reply.
    *
-   * Confirmation does not come from the dialog — Facebook closes it whether or
-   * not the message went. It comes from the commenter's Messenger thread, read
-   * through the same transport and the same own-bubble count that confirms an
-   * ordinary reply. The thread id is the commenter's profile id, which on the
-   * Page's inbox is exactly what `selected_item_id` carries for a Messenger
-   * conversation — confirmed live against a known contact.
+   * Measured live (2026-09-26): the control opens `Message <commenter>` as a
+   * dialog in the SAME tab, beside the post's public composers; its "Send
+   * Message" button enables a few hundred ms after the text lands; and a
+   * delivered private reply shows up in a FRESH read of the commenter's
+   * Messenger conversation, not in a Business Suite tab left open from before
+   * the send. The order and the single send live in `runPrivateReply`; this
+   * supplies the browser work.
    */
-  async privateReplyToComment(sessionKey: string, target: CommentTarget): Promise<{ threadId: string }> {
+  async privateReplyToComment(
+    sessionKey: string, target: CommentTarget,
+  ): Promise<{ threadId: string; messageId: string | null }> {
     const marker = await this.getPageMarker(sessionKey);
     if (!marker) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
     const ctx: TransportContext = { pageName: marker.pageName, assetId: marker.assetId ?? null };
     const transport = ctx.assetId ? businessSuiteTransport : messengerDotComTransport;
+    const ids = { sessionKey, pageId: marker.pageId, postId: target.postId, commentId: target.commentId };
+    const log = (event: string, fields: Record<string, unknown> = {}) => this.log.info({ event, ...ids, ...fields }, event);
 
-    const t0 = Date.now();
-    // Off unless asked for. These marks are what localised the hang that three
-    // rounds of guessing could not — the click, not the navigation — so they
-    // stay, behind a switch, rather than being deleted and rewritten the next
-    // time Facebook moves something.
-    const mark = (step: string) => {
-      trace('private-reply', `${step} +${Date.now() - t0}ms`);
-    };
     const postPage = await this.newPage(sessionKey);
     if (!postPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
-    let threadPage: Page | null = null;
+    // The dialog opens on this tab while other tabs (the conversation reads
+    // below, the watchers) come and go in front of it.
+    await keepRenderingInBackground(postPage, this.log, ids);
 
     try {
       await postPage.goto(URLS.postPermalink(marker.pageId, target.postId, target.commentId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      mark('goto-post');
       await this.assertUsable(postPage);
-      mark('post-usable');
       const found = await waitFor(async () => (await readCommentHtml(postPage, target.commentId)) !== null,
         COMMENT_ACTIONS.waitMs);
-      mark('find-comment');
       if (!found) {
         throw new CommentNotFoundError('Komentar ini tidak ditemukan di postingan Halaman — mungkin sudah dihapus atau disembunyikan');
       }
-
       const commentHtml = (await readCommentHtml(postPage, target.commentId)) ?? '';
       const threadId = firstHrefMatch(parseHtml(commentHtml), PROFILE_ID_RE);
       if (!threadId) {
@@ -864,142 +881,107 @@ export class SessionManager {
           'Nama pengomentar tidak terbaca — tujuan pesan pribadi tidak dapat dipastikan', 'private_reply_unavailable',
         );
       }
-      const expectedSurface = { contactId: threadId, contactName };
-
-      // The thread is opened BEFORE the send so the baseline count is taken
-      // against the same page the confirmation will read.
-      threadPage = await this.newPage(sessionKey);
-      mark('open-thread');
-      if (!threadPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
-      await threadPage.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      mark('goto-thread');
-      await this.assertUsable(threadPage);
-      mark('thread-usable');
-      await threadPage.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
-      // The PLAIN read, not the annotating one. Confirming delivery does not
-      // need to know which side each bubble is on — the count is a delta on
-      // text this service just sent — and the annotating read walks every
-      // message's ancestors calling getComputedStyle, which is where a live
-      // run wedged past the protocol timeout.
-      const readThread = async () => (await readContainerHtml(threadPage!, BIZ_THREAD.messageList)) ?? '';
-      await settleSurface(threadPage, readThread, SURFACE_BUDGET_MS);
-      const before = countMessagesWithText(await readThread(), target.text);
-      mark('baseline');
-
-      const opened = await hasCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe);
-      if (!opened) {
+      if (!(await hasCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe))) {
         throw new CommentActionUnavailableError('Facebook tidak menyediakan pesan pribadi untuk komentar ini', 'private_reply_unavailable');
       }
-
-      // Everything the browser had before the click, so a page that merely
-      // navigated into the messaging surface can be told from one that was
-      // already showing a composer.
+      const expected = { contactId: threadId, contactName };
       const browser = await this.ensureBrowser(sessionKey);
       if (!browser) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
-      const known = new Set(await browser.pages().catch(() => [] as Page[]));
+      // Facebook's ids for rows with this text, before the send and at the
+      // reading that confirmed it: the one that is new is this message, and it
+      // is recorded under the key the inbox watcher will read it back as.
+      let baselineIds: string[] = [];
+      let seenIds: string[] = [];
+      const countSent = async () => {
+        const read = await this.freshConversationRead(sessionKey, transport, ctx, threadId, target.text);
+        if (read) seenIds = read.ids;
+        return read ? read.count : null;
+      };
 
-      // Fired, not awaited: this click tears down the clicked page's execution
-      // context as the messaging surface opens, and awaiting it hung until the
-      // protocol timeout. A composer appearing SOMEWHERE is the evidence.
-      fireCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe);
-      mark('click-send-message');
-
-      const surface = await resolvePrivateReplySurface(browser, known, COMMENT_ACTIONS.waitMs);
-      if (!surface) {
-        throw new CommentActionUnavailableError(
-          'Facebook tidak membuka kotak pesan pribadi untuk komentar ini', 'private_reply_unavailable',
-        );
-      }
-      mark(`composer-found on ${surface.url().slice(0, 80)}`);
-
-      // This assertion is the safety boundary. A post permalink is a dialog
-      // too, and its public Reply editor is a Lexical textbox too. Neither
-      // fact licenses typing. The exact customer plus a private composer and
-      // send mechanism have to be present in the same DOM observation first.
-      const privateSurface = await withDeadline(
-        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan tujuan pesan pribadi',
-      );
-      if (!privateSurface) {
-        throw new CommentActionUnavailableError(
-          'Facebook tidak dapat membuktikan bahwa kotak ini pesan pribadi untuk pengomentar yang benar — tidak ada yang diketik',
-          'private_reply_unavailable',
-        );
-      }
-      const editor = privateSurface === 'dialog' ? COMMENT_ACTIONS.messageEditor : BIZ_COMPOSER.box;
-      const focused = await withDeadline(focusComposer(surface, editor), COMMENT_ACTIONS.waitMs, 'membuka kotak pesan');
-      if (!focused) {
-        throw new CommentActionUnavailableError(
-          'Kotak pesan pribadinya tidak bisa diketik — Facebook menutupnya sebelum sempat diisi',
-          'private_reply_unavailable',
-        );
-      }
-      mark('focused-editor');
-
-      // The focus call can land after a SPA rerender. Re-prove the destination
-      // immediately before CDP inserts text; if it changed, leaving an empty
-      // composer behind is safe while one character in a public comment is not.
-      const stillPrivate = await withDeadline(
-        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan kotak pesan pribadi',
-      );
-      if (stillPrivate !== privateSurface) {
-        throw new CommentActionUnavailableError(
-          'Kotak pesan berubah sebelum diisi — tidak ada yang dikirim', 'private_reply_unavailable',
-        );
-      }
-      await withDeadline(surface.keyboard.sendCharacter(target.text), COMMENT_ACTIONS.waitMs, 'mengetik pesan');
-      const typed = await readComposerText(surface, editor);
-      mark(`typed (kotak berisi ${JSON.stringify((typed ?? '').slice(0, 40))})`);
-      if (!typed) {
-        throw new SendNotConfirmedError(
-          'Teksnya tidak masuk ke kotak pesan pribadi — tidak ada yang dikirim',
-        );
-      }
-
-      // The dialog offers an explicit Send button; a plain Messenger composer
-      // does not, and Enter is the send there. Both surfaces are possible.
-      if (DEBUG) trace('private-reply', `controls: ${(await listButtonLabels(surface)).join(' | ')}`);
-
-      // Enter is the send in a Messenger composer and NOTHING like it on a
-      // post page, where the nearest text box is the comment reply box and
-      // Enter publishes. That is not hypothetical: while the selectors below
-      // were scoped to "any modal", this line typed a private reply into the
-      // comment box and published it, twice, on the Page's own post. So Enter
-      // is only ever pressed on a surface that is a conversation, and the
-      // dialog is sent with its own button or not at all.
-      const sendSurface = await withDeadline(
-        assertPrivateMessageSurface(surface, expectedSurface), COMMENT_ACTIONS.waitMs, 'memastikan tujuan sebelum mengirim',
-      );
-      if (sendSurface !== privateSurface) {
-        throw new CommentActionUnavailableError(
-          'Kotak pesan berubah sebelum dikirim — tidak ada yang dikirim', 'private_reply_unavailable',
-        );
-      }
-      if (sendSurface === 'dialog') {
-        fireClick(surface, COMMENT_ACTIONS.messageSendButton);
-      } else {
-        await surface.keyboard.press('Enter');
-      }
-      mark(`sent via ${sendSurface === 'dialog' ? 'tombol dialog' : 'Enter di percakapan'}`);
-
-      // Polled in place, never reloaded. Business Suite is a single-page app
-      // that updates its own transcript, and reloading it on a loop is both
-      // slow and where a live run wedged for 188 seconds.
-      const stayed = await deliveredAndStayed(
-        async () => countMessagesWithText(await readThread(), target.text),
-        before, Date.now() + COMMENT_ACTIONS.confirmMs,
-      );
-      if (stayed) return { threadId };
-      throw new SendNotConfirmedError(
-        'Pesan pribadi sudah dikirim dari dialog tapi tidak muncul di percakapan Messenger — kemungkinan ditolak diam-diam oleh Facebook',
-      );
+      await runPrivateReply<Page>({
+        // A commenter who never messaged the Page has no conversation to
+        // prove, and that is the first contact a private reply exists for:
+        // after a second unproven read the baseline is zero, and the
+        // confirmation still counts only on a PROVEN read of their thread.
+        baseline: async () => {
+          const count = (await countSent()) ?? (await countSent());
+          if (count === null) log('fb_private_baseline_unproven', {});
+          baselineIds = count === null ? [] : seenIds;
+          return count ?? 0;
+        },
+        openSurface: async () => {
+          const known = new Set(await browser.pages().catch(() => [] as Page[]));
+          // Fired, not awaited: the click can tear down the clicked page's
+          // execution context as the surface opens. The surface is the evidence.
+          fireCommentControl(postPage, target.commentId, COMMENT_ACTIONS.sendMessageButtonRe);
+          const surface = await resolvePrivateReplySurface(browser, known, PRIVATE_SURFACE_BUDGET_MS);
+          log('fb_private_surface_candidate', {
+            found: Boolean(surface), sameTab: surface === postPage, url: surface?.url().slice(0, 80) ?? null,
+          });
+          return surface;
+        },
+        proveSurface: (surface) => withDeadline(
+          assertPrivateMessageSurface(surface, expected), COMMENT_ACTIONS.waitMs, 'memastikan tujuan pesan pribadi'),
+        enterText: (surface, kind) => withDeadline(
+          enterPrivateText(surface, kind === 'dialog' ? COMMENT_ACTIONS.messageEditor : BIZ_COMPOSER.box, target.text),
+          COMMENT_ACTIONS.waitMs, 'mengetik pesan pribadi'),
+        sendEnabled: async (surface, kind) =>
+          (kind === 'dialog' ? waitForSendEnabled(surface, PRIVATE_SEND_ENABLE_BUDGET_MS) : true),
+        // Exactly once. The dialog is sent with its own button; Enter only on a
+        // surface proven to be the commenter's conversation — on a post page
+        // the nearest box is the public reply, where Enter publishes.
+        pressSend: async (surface, kind) => {
+          if (kind === 'dialog') fireClick(surface, COMMENT_ACTIONS.messageSendButton);
+          else await surface.keyboard.press('Enter');
+        },
+        confirm: (before) => confirmPrivateDelivery(countSent, before, {
+          checksAtMs: PRIVATE_CONFIRM_CHECKS_MS, dwellMs: PRIVATE_CONFIRM_DWELL_MS,
+        }),
+        isPassthrough: (err) => err instanceof SessionExpiredError || err instanceof CheckpointRequiredError
+          || err instanceof NoActiveSessionError,
+        log,
+      });
+      const fresh = seenIds.filter((id) => !baselineIds.includes(id));
+      return { threadId, messageId: fresh.length === 1 ? fresh[0]! : null };
     } catch (err) {
       if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
         this.forgetSession(sessionKey, (err as Error).message);
       }
       throw err;
     } finally {
-      await threadPage?.close().catch(() => {});
       await postPage.close().catch(() => {});
+    }
+  }
+
+  /**
+   * How many messages with exactly this text the commenter's conversation
+   * holds, and their ids, from a FRESH load in a tab of its own — or null when the page
+   * cannot prove it is that conversation (Business Suite silently shows
+   * another one while it hydrates, and a count from the wrong conversation
+   * would confirm a send that never happened).
+   */
+  private async freshConversationRead(
+    sessionKey: string, transport: ThreadTransport, ctx: TransportContext, threadId: string, text: string,
+  ): Promise<{ count: number; ids: string[] } | null> {
+    const page = await this.newPage(sessionKey);
+    if (!page) return null;
+    try {
+      return await withDeadline((async () => {
+        await keepRenderingInBackground(page, this.log, { sessionKey });
+        await page.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        await this.assertUsable(page);
+        await page.waitForSelector(transport.threadWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
+        const read = async () => (await readContainerHtml(page, BIZ_THREAD.messageList)) ?? '';
+        await settleSurface(page, read, SURFACE_BUDGET_MS);
+        if (transport === businessSuiteTransport && !(await assertBusinessSuiteThreadSurface(page, threadId))) return null;
+        const html = await read();
+        return { count: countMessagesWithText(html, text), ids: messageIdsWithText(html, text) };
+      })(), PRIVATE_THREAD_READ_BUDGET_MS, 'membaca percakapan Messenger');
+    } catch (err) {
+      if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) throw err;
+      return null;
+    } finally {
+      await page.close().catch(() => {});
     }
   }
 
@@ -1211,34 +1193,17 @@ export async function resolvePrivateReplySurface(
     // Facebook's own private-reply dialog, wherever it opened.
     for (const page of ordered) {
       if (await composerHasSettled(page, COMMENT_ACTIONS.messageEditor)) {
-        trace('private-reply', () => `surface: dialog on ${page.url().slice(0, 80)}`);
+        trace('private-reply', () => `surface: dialog on ${known.has(page) ? 'a tab open before the click' : 'a new tab'} ${page.url().slice(0, 80)}`);
         return page;
       }
     }
-    // A tab Facebook opened for this click, which may be a plain Messenger
-    // conversation rather than a dialog.
-    for (const page of ordered) {
-      if (known.has(page)) continue;
-      if (await composerHasSettled(page, BIZ_COMPOSER.box)) {
-        trace('private-reply', () => `surface: new tab ${page.url().slice(0, 80)}`);
-        return page;
-      }
-    }
-    // Only once nothing else has appeared: the conversation this service
-    // already had open. It reaches the same person, so it is a real fallback —
-    // but taking it EARLY is not a fallback at all, it is a race that the
-    // already-open tab always wins, and it wins before Facebook has had time
-    // to open the dialog at all. Confirmed live: chosen 81ms after the click.
-    if (Date.now() >= deadline) {
-      for (const page of ordered) {
-        if (!known.has(page)) continue;
-        if (await composerHasSettled(page, BIZ_COMPOSER.box)) {
-          trace('private-reply', () => `surface: fallback to open thread ${page.url().slice(0, 80)}`);
-          return page;
-        }
-      }
-      return null;
-    }
+    // Only Facebook's private-reply dialog, never a plain conversation tab —
+    // whether it was open before the click (the bridge's own inbox) or opened
+    // during it (another job's thread read or outbound send, which would pass
+    // every identity check). Typing there sends an ordinary DM from someone
+    // else's tab, unlinked from the comment. Measured live, the click opens its
+    // dialog in the same tab; running out of time means nothing is typed.
+    if (Date.now() >= deadline) return null;
     await sleep(400);
   }
 }

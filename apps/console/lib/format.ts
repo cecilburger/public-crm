@@ -33,6 +33,11 @@ export function duration(ms: number): string {
   return mins === 0 ? `${hours} jam` : `${hours} jam ${mins} menit`;
 }
 
+/** Day and month alone — "26 Sep" — where the year is plain from context. */
+export function dayMonth(iso: string): string {
+  return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+}
+
 /** A plain calendar date, no time — target periods, deal close dates. */
 export function dateOnly(iso: string): string {
   return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });

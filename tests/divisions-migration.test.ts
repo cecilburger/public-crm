@@ -23,6 +23,12 @@ const SCOPED = [
   'google_calendar_connections',
 ] as const;
 
+/**
+ * Division-scoped from the day they were created, after 0059 — so absent from
+ * the 0058 tenant built below, and held to the same rules once migrated.
+ */
+const SCOPED_LATER = ['facebook_posts'] as const;
+
 /** No division column of their own; guarded through their parent (0060). */
 const DERIVED = [
   'message_drafts', 'message_outbox', 'timeline_events', 'order_items', 'payment_links',
@@ -223,7 +229,7 @@ describe('migrating an existing workspace into divisions', () => {
   });
 
   it('makes the division mandatory, with Marketing as the default', async () => {
-    for (const table of SCOPED) {
+    for (const table of [...SCOPED, ...SCOPED_LATER]) {
       const [col] = await db.query<{ is_nullable: string; column_default: string | null }>(
         `select is_nullable, column_default from information_schema.columns
           where table_name = $1 and column_name = 'division_id'`, [table]);
@@ -235,7 +241,7 @@ describe('migrating an existing workspace into divisions', () => {
   it('guards every division-scoped table, and every table hanging off one, with a restrictive policy', async () => {
     const rows = await db.query<{ tablename: string; permissive: string }>(
       `select tablename, permissive from pg_policies where policyname = 'division_isolation' order by tablename`);
-    expect(rows.map((r) => r.tablename).sort()).toEqual([...SCOPED, ...DERIVED, ...CHATBOT].sort());
+    expect(rows.map((r) => r.tablename).sort()).toEqual([...SCOPED, ...SCOPED_LATER, ...DERIVED, ...CHATBOT].sort());
     for (const row of rows) expect(row.permissive, row.tablename).toBe('RESTRICTIVE');
   });
 

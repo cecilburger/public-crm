@@ -1,6 +1,8 @@
 import { t } from '@/lib/copy';
 import { ago } from '@/lib/format';
 import type { FacebookComment } from '@/lib/api';
+import { postOfComments } from '@/lib/inbox';
+import { POST_TITLE_MAX, detailSubtitle, postHeading } from '@/lib/facebookPost';
 import { CommentActions } from '@/components/CommentActions';
 
 /**
@@ -24,17 +26,25 @@ import { CommentActions } from '@/components/CommentActions';
 export function CommentPostThread({ postId, comments }: { postId: string; comments: FacebookComment[] }) {
   const sorted = [...comments].sort((a, b) =>
     (b.commentedAt ?? b.createdAt).localeCompare(a.commentedAt ?? a.createdAt));
-  const first = sorted[0];
-  const pageName = first?.pageName || first?.pageId || '';
+  // Named by what the post says; `postId` stays what it links and replies by.
+  const heading = postHeading(postOfComments(comments), { max: POST_TITLE_MAX.detail, dateStyle: 'long' });
 
   return (
     <div className="thread">
       <div className="thread-head">
-        <div>
-          <strong>{t.inbox.postLabel(postId)}</strong>
-          <div className="dim" style={{ fontSize: 12 }}>
-            {t.inbox.commentCount(comments.length)}{pageName ? ` · ${pageName}` : ''}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <strong style={{ display: 'block', overflowWrap: 'anywhere' }}>{heading.title}</strong>
+          <div className="dim" style={{ fontSize: 12 }} suppressHydrationWarning>
+            {detailSubtitle(heading, comments.length)}
           </div>
+          {/* The whole caption, lines kept, once the title had to cut it. Text,
+              never markup: it is the Page's words, read off Facebook. */}
+          {heading.truncated && heading.fullText ? (
+            <details style={{ marginTop: 4, fontSize: 12 }}>
+              <summary style={{ cursor: 'pointer' }}>{t.inbox.postFullCaption}</summary>
+              <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{heading.fullText}</p>
+            </details>
+          ) : null}
         </div>
         <span className="spacer" />
         <a href={`https://www.facebook.com/${postId}`} target="_blank" rel="noopener noreferrer"

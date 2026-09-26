@@ -10,6 +10,7 @@ import {
   type InboxItem,
 } from '@/lib/inbox';
 import { inboxBotChip } from '@/lib/chatbot';
+import { POST_TITLE_MAX, listMeta, postHeading } from '@/lib/facebookPost';
 
 /**
  * Three filters, and the useful one is first.
@@ -191,6 +192,8 @@ export function ConversationList(
               const active = pathname === href;
               const latest = group.comments[group.comments.length - 1];
               const query = params.toString();
+              // Named by what the post says, not by Facebook's id for it.
+              const heading = postHeading(group.post, { max: POST_TITLE_MAX.list, dateStyle: 'short' });
               return (
                 <Link
                   key={`post:${group.postId}`}
@@ -200,15 +203,20 @@ export function ConversationList(
                 >
                   <span className="row1">
                     {group.needsReply ? <span className="dot warn" aria-label={t.chats.needsReply} /> : null}
-                    <span className="who">{t.inbox.postLabel(group.postId)}</span>
+                    <span className="who" title={heading.fullText ?? undefined}>{heading.title}</span>
                     <span className="when tnum" suppressHydrationWarning>{ago(group.latestAt)}</span>
                   </span>
+                  {/* The date is local to whoever renders it, like `ago`. */}
                   <span className="row2">
-                    <span className="chip">{t.inbox.commentCount(group.comments.length)}</span>
-                    {latest ? (
-                      <span className="preview">{latest.authorName || '—'}: {latest.body}</span>
-                    ) : null}
+                    <span className="dim tnum" style={{ fontSize: 12 }} suppressHydrationWarning>
+                      {listMeta(heading, group.comments.length)}
+                    </span>
                   </span>
+                  {latest ? (
+                    <span className="row2" style={{ marginTop: 2 }}>
+                      <span className="preview">{latest.authorName || '—'}: {latest.body}</span>
+                    </span>
+                  ) : null}
                 </Link>
               );
             })

@@ -501,6 +501,10 @@ export interface FacebookComment {
   dmAt: string | null;
   dmError: string | null;
   attempts: number;
+  /** The caption of the post this comment is on, and when that post went up —
+   * what the inbox names the post by. Null until the bridge has described it. */
+  postText: string | null;
+  postCreatedAt: string | null;
 }
 
 export interface IgMetaConnection {

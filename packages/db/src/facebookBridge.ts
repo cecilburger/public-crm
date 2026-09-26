@@ -3,6 +3,7 @@ import { tenantKeys, sealField, openField, fieldIndex, type TenantKeys } from '.
 import { recordConversationActivity } from './metering.ts';
 import { audit } from './audit.ts';
 import { divisionSql } from './divisions.ts';
+import { carryFacebookPostDetails } from './facebookPosts.ts';
 
 /**
  * Everything the Facebook side of the CRM writes, in one module.
@@ -478,16 +479,35 @@ export async function knownMessengerMessageIds(
  * comment not named here and nothing else, so a comment is ingested once, a
  * restart re-sends nothing, and a CRM rebuilt from scratch gets every comment
  * still on the Page — which a file of "seen" ids on the bridge could not do.
+ *
+ * When the bridge names the post it read a comment under, the comment counts
+ * as known only if it is stored under that same post. Facebook re-issues a
+ * post's `pfbid…` slug — confirmed live, the same post served under a new slug
+ * overnight — and a comment known by id alone was never offered again, so its
+ * row kept a post id Facebook no longer uses. Not known here is what lets the
+ * sweep offer it once more and `recordFacebookComment` move it.
  */
 export async function knownFacebookCommentIds(
-  ctx: Ctx, args: { commentIds: string[] },
+  ctx: Ctx, args: { commentIds: string[]; postIdByComment?: ReadonlyMap<string, string> },
 ): Promise<Set<string>> {
-  if (args.commentIds.length === 0) return new Set();
-  const rows = await ctx.tx.query<{ comment_id: string }>(
-    `select comment_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
+  const stored = await storedFacebookCommentPosts(ctx, args);
+  const known = [...stored].filter(([commentId, postId]) => {
+    const offered = args.postIdByComment?.get(commentId);
+    return !offered || offered === postId;
+  });
+  return new Set(known.map(([commentId]) => commentId));
+}
+
+/** The post each of these comments is stored under, for the ones that are stored at all. */
+export async function storedFacebookCommentPosts(
+  ctx: Ctx, args: { commentIds: string[] },
+): Promise<Map<string, string>> {
+  if (args.commentIds.length === 0) return new Map();
+  const rows = await ctx.tx.query<{ comment_id: string; post_id: string }>(
+    `select comment_id, post_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
     [ctx.tenantId, args.commentIds],
   );
-  return new Set(rows.map((r) => r.comment_id));
+  return new Map(rows.map((r) => [r.comment_id, r.post_id]));
 }
 
 /* --------------------------------------------------------------- comments */
@@ -495,6 +515,10 @@ export async function knownFacebookCommentIds(
 export interface CommentResult {
   id: string;
   duplicate: boolean;
+  /** Set when a stored comment was re-read under a post slug Facebook has since re-issued. */
+  previousPostId?: string;
+  /** How many stored comments on that post moved to the new slug with it, itself included. */
+  rowsMoved?: number;
 }
 
 /**
@@ -510,7 +534,9 @@ export interface CommentResult {
  * is the point: a comment the watcher re-reads on a later reconciliation pass
  * is the *same* comment, and the first reading of it is the one to keep — an
  * edited comment overwriting the original would quietly erase what the customer
- * actually said first.
+ * actually said first. The post id is the one exception: it is Facebook's
+ * address for the post rather than anything the customer wrote, and it moves
+ * to the slug the post is served under now.
  */
 export async function recordFacebookComment(
   ctx: Ctx,
@@ -544,11 +570,30 @@ export async function recordFacebookComment(
   );
   if (inserted[0]) return { id: inserted[0].id, duplicate: false };
 
-  const existing = await ctx.tx.query<{ id: string }>(
-    `select id from facebook_comments where tenant_id = $1 and comment_id = $2`,
+  const existing = await ctx.tx.query<{ id: string; post_id: string; page_id: string }>(
+    `select id, post_id, page_id from facebook_comments where tenant_id = $1 and comment_id = $2`,
     [ctx.tenantId, args.commentId],
   );
-  return { id: existing[0]!.id, duplicate: true };
+  const row = existing[0]!;
+  if (row.post_id === args.postId) return { id: row.id, duplicate: true };
+
+  // The one field a re-reading may change: which slug Facebook serves the post
+  // under. A comment id belongs to one post for good, so a different slug is
+  // the same post renamed — see `knownFacebookCommentIds`. The old slug names
+  // that one post, so every comment filed under it moves together: a sweep
+  // re-reads only what is rendered, and a reply left collapsed would otherwise
+  // stay behind as a second group for the same post.
+  const moved = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments set post_id = $4
+      where tenant_id = $1 and page_id = $2 and post_id = $3
+      returning id`,
+    [ctx.tenantId, row.page_id, row.post_id, args.postId],
+  );
+  // The post's caption and age describe the post, not the slug: they follow it.
+  if (moved.length > 0) await carryFacebookPostDetails(ctx, { fromPostId: row.post_id, toPostId: args.postId });
+  return moved.some((m) => m.id === row.id)
+    ? { id: row.id, duplicate: true, previousPostId: row.post_id, rowsMoved: moved.length }
+    : { id: row.id, duplicate: true };
 }
 
 /* ------------------------------------------------- comment processing state */
@@ -775,6 +820,14 @@ export interface FacebookCommentRow {
   dmAt: Date | null;
   dmError: string | null;
   attempts: number;
+  /**
+   * The caption of the post this comment is on, and when that post went up —
+   * what the inbox names a comment group after (`facebook_posts`, 0063). Null
+   * until the bridge has described the post, and for every comment stored
+   * before it could: the console falls back to "Postingan Facebook".
+   */
+  postText: string | null;
+  postCreatedAt: Date | null;
 }
 
 /** A comment row as stored, before its sealed columns are opened. */
@@ -785,11 +838,18 @@ interface StoredCommentRow {
   commented_at: Date | null; created_at: Date; status: CommentStatus;
   public_reply_at: Date | null; public_reply_error: string | null;
   dm_at: Date | null; dm_error: string | null; attempts: number;
+  post_text: string | null; post_created_at: Date | null;
 }
 
-const COMMENT_COLUMNS = `id, division_id, page_id, page_name, post_id, comment_id, parent_comment_id,
-            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
-            status, public_reply_at, public_reply_error, dm_at, dm_error, attempts`;
+const COMMENT_COLUMNS = `c.id, c.division_id, c.page_id, c.page_name, c.post_id, c.comment_id, c.parent_comment_id,
+            c.author_external_id_enc, c.author_name_enc, c.body_enc, c.commented_at, c.created_at,
+            c.status, c.public_reply_at, c.public_reply_error, c.dm_at, c.dm_error, c.attempts,
+            p.post_text, p.post_created_at`;
+
+/** Each comment beside its post's details, when the bridge has described that post — in the comment's own division. */
+const COMMENT_FROM = `facebook_comments c
+       left join facebook_posts p
+         on p.tenant_id = c.tenant_id and p.division_id = c.division_id and p.post_id = c.post_id`;
 
 function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow): FacebookCommentRow {
   return {
@@ -802,6 +862,7 @@ function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow)
     status: r.status,
     publicReplyAt: r.public_reply_at, publicReplyError: r.public_reply_error,
     dmAt: r.dm_at, dmError: r.dm_error, attempts: r.attempts,
+    postText: r.post_text, postCreatedAt: r.post_created_at,
   };
 }
 
@@ -814,9 +875,9 @@ export async function listFacebookComments(
 ): Promise<FacebookCommentRow[]> {
   const rows = await ctx.tx.query<StoredCommentRow>(
     `select ${COMMENT_COLUMNS}
-       from facebook_comments
-      where tenant_id = $1 and ($3::text is null or post_id = $3)
-      order by coalesce(commented_at, created_at) desc
+       from ${COMMENT_FROM}
+      where c.tenant_id = $1 and ($3::text is null or c.post_id = $3)
+      order by coalesce(c.commented_at, c.created_at) desc
       limit $2`,
     [ctx.tenantId, Math.min(args.limit ?? 50, 200), args.postId ?? null],
   );
@@ -838,7 +899,7 @@ export async function getFacebookComment(ctx: Ctx, args: { id: string }): Promis
   // the queue would retry eight times to the same answer.
   if (!/^[0-9a-f-]{36}$/i.test(args.id)) return null;
   const rows = await ctx.tx.query<StoredCommentRow>(
-    `select ${COMMENT_COLUMNS} from facebook_comments where tenant_id = $1 and id = $2`,
+    `select ${COMMENT_COLUMNS} from ${COMMENT_FROM} where c.tenant_id = $1 and c.id = $2`,
     [ctx.tenantId, args.id],
   );
   if (!rows[0]) return null;

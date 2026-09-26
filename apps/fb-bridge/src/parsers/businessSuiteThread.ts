@@ -241,6 +241,22 @@ function dropNestedRows(rows: El[]): El[] {
 }
 
 /**
+ * Facebook's own id of every transcript row that says exactly this text, read
+ * through `messageIdOf` — the same reading the inbox watcher keys on — so a
+ * sent message can be recorded under the key the watcher will later read it
+ * back as, and reconciliation finds it already there.
+ */
+export function messageIdsWithText(html: string, text: string): string[] {
+  const root = parseHtml(html);
+  const container = queryFirst(root, BIZ_THREAD.messageList) ?? root;
+  const wanted = text.trim();
+  return queryAll(container, BIZ_THREAD.row)
+    .filter((row) => textOf(row).trim() === wanted)
+    .map(messageIdOf)
+    .filter((id): id is string => id !== null);
+}
+
+/**
  * How many messages in this transcript say exactly this, whichever way they
  * went.
  *

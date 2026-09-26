@@ -550,7 +550,8 @@ describe('the bridge client, against the comment contract', () => {
 
     const result = await client.privateReplyToComment(target);
 
-    expect(result).toEqual({ threadId: '100000000000555' });
+    // No message id in this answer: the processor files the DM under the comment's own key.
+    expect(result).toEqual({ threadId: '100000000000555', messageId: null });
     expect((fetchMock.mock.calls[0] as unknown as [string])[0])
       .toBe('http://bridge.test/internal/sessions/t1/comments/private-reply');
   });

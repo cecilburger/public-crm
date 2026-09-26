@@ -350,12 +350,13 @@ describe('finding the surface Facebook opened for a private reply', () => {
     expect(late.asked.length).toBeGreaterThan(1);
   });
 
-  it('returns a page that existed before the click and has since grown a Business Suite composer', async () => {
-    // Arrange: a "new" surface is sometimes a reused one. When the Page is
-    // connected through Business Suite, clicking "Send message" can navigate a
-    // tab this service already had open into the inbox — no popup, no new
-    // target, nothing for a creation watcher to see. The composer there is the
-    // Business Suite box, not the modal's.
+  it('never falls back to a conversation tab that was open before the click', async () => {
+    // Arrange: the post page never shows the dialog, and a Business Suite tab
+    // that existed before the click has a composer. That tab is the bridge's
+    // own long-lived inbox (or one it opened itself): typing into it sends an
+    // ordinary DM from a watcher's tab, unlinked from the comment. Measured
+    // live 2026-09-26, the click opens its dialog in the same tab — so a
+    // dialog that never appears means nothing is typed, not a fallback.
     const postPage = fakePage({ shows: null });
     const inboxTab = fakePage({ shows: 'business-suite' });
     const known = knownSet([postPage, inboxTab]);
@@ -364,15 +365,10 @@ describe('finding the surface Facebook opened for a private reply', () => {
     // Act
     const surface = await resolvePrivateReplySurface(browser, known, BUDGET_MS);
 
-    // Assert: found — and only after the budget ran out, having asked every
-    // page about the dialog over and over first. The order matters: a modal on
-    // the post page is the surface the click was aimed at, so it must win over
-    // an inbox tab that merely happens to have a composer in it.
-    expect(surface).toBe(inboxTab.page);
-    expect(inboxTab.asked.at(-1)).toBe('business-suite');
-    // Asked more than once on purpose: a composer only counts once it has
-    // survived being looked at a few times in a row.
-    expect(inboxTab.asked.filter((q) => q === 'business-suite').length).toBeGreaterThan(1);
+    // Assert: nothing, after asking every page about the dialog until the budget ran out.
+    expect(surface).toBeNull();
+    expect(postPage.asked.filter((q) => q === 'dialog').length).toBeGreaterThan(1);
+    expect(inboxTab.asked).not.toContain('business-suite');
   });
 
   // THE THIRD BUG THIS FILE EXISTS FOR, found live. Clicking "Send message"
@@ -424,9 +420,12 @@ describe('finding the surface Facebook opened for a private reply', () => {
     expect(ownThread.asked).not.toContain('business-suite');
   });
 
-  it('prefers a tab Facebook opened over one this service opened itself', async () => {
-    // Arrange: both show a Business Suite composer. One is ours from before the
-    // click; the other is Facebook's answer to it.
+  it('takes no plain conversation tab at all, whoever opened it', async () => {
+    // Arrange: both show a Business Suite composer — one from before the click,
+    // one that appeared during it. The second may be another job's thread read
+    // or outbound send on this same customer, which passes every identity
+    // check; typing there sends an ordinary DM from someone else's tab. Only
+    // the private-reply dialog is a private reply (measured live 2026-09-26).
     const ownThread = fakePage({ shows: 'business-suite' });
     const known = knownSet([ownThread]);
     const opened = fakePage({ shows: 'business-suite' });
@@ -436,7 +435,7 @@ describe('finding the surface Facebook opened for a private reply', () => {
     const surface = await resolvePrivateReplySurface(browser, known, BUDGET_MS);
 
     // Assert
-    expect(surface).toBe(opened.page);
+    expect(surface).toBeNull();
   });
 
   it('keeps searching past a page whose target died rather than aborting on it', async () => {

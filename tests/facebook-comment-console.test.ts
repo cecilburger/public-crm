@@ -59,6 +59,7 @@ const row = (over: Partial<FacebookCommentRow> = {}): FacebookCommentRow => {
     createdAt: new Date('2026-09-24T08:01:00.000Z'),
     status: 'dm_sent',
     publicReplyAt: null, publicReplyError: null, dmAt: null, dmError: null, attempts: 0,
+    postText: null, postCreatedAt: null,
     ...over,
   };
 };
