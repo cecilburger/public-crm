@@ -478,16 +478,35 @@ export async function knownMessengerMessageIds(
  * comment not named here and nothing else, so a comment is ingested once, a
  * restart re-sends nothing, and a CRM rebuilt from scratch gets every comment
  * still on the Page — which a file of "seen" ids on the bridge could not do.
+ *
+ * When the bridge names the post it read a comment under, the comment counts
+ * as known only if it is stored under that same post. Facebook re-issues a
+ * post's `pfbid…` slug — confirmed live, the same post served under a new slug
+ * overnight — and a comment known by id alone was never offered again, so its
+ * row kept a post id Facebook no longer uses. Not known here is what lets the
+ * sweep offer it once more and `recordFacebookComment` move it.
  */
 export async function knownFacebookCommentIds(
-  ctx: Ctx, args: { commentIds: string[] },
+  ctx: Ctx, args: { commentIds: string[]; postIdByComment?: ReadonlyMap<string, string> },
 ): Promise<Set<string>> {
-  if (args.commentIds.length === 0) return new Set();
-  const rows = await ctx.tx.query<{ comment_id: string }>(
-    `select comment_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
+  const stored = await storedFacebookCommentPosts(ctx, args);
+  const known = [...stored].filter(([commentId, postId]) => {
+    const offered = args.postIdByComment?.get(commentId);
+    return !offered || offered === postId;
+  });
+  return new Set(known.map(([commentId]) => commentId));
+}
+
+/** The post each of these comments is stored under, for the ones that are stored at all. */
+export async function storedFacebookCommentPosts(
+  ctx: Ctx, args: { commentIds: string[] },
+): Promise<Map<string, string>> {
+  if (args.commentIds.length === 0) return new Map();
+  const rows = await ctx.tx.query<{ comment_id: string; post_id: string }>(
+    `select comment_id, post_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
     [ctx.tenantId, args.commentIds],
   );
-  return new Set(rows.map((r) => r.comment_id));
+  return new Map(rows.map((r) => [r.comment_id, r.post_id]));
 }
 
 /* --------------------------------------------------------------- comments */
@@ -495,6 +514,10 @@ export async function knownFacebookCommentIds(
 export interface CommentResult {
   id: string;
   duplicate: boolean;
+  /** Set when a stored comment was re-read under a post slug Facebook has since re-issued. */
+  previousPostId?: string;
+  /** How many stored comments on that post moved to the new slug with it, itself included. */
+  rowsMoved?: number;
 }
 
 /**
@@ -510,7 +533,9 @@ export interface CommentResult {
  * is the point: a comment the watcher re-reads on a later reconciliation pass
  * is the *same* comment, and the first reading of it is the one to keep — an
  * edited comment overwriting the original would quietly erase what the customer
- * actually said first.
+ * actually said first. The post id is the one exception: it is Facebook's
+ * address for the post rather than anything the customer wrote, and it moves
+ * to the slug the post is served under now.
  */
 export async function recordFacebookComment(
   ctx: Ctx,
@@ -544,11 +569,28 @@ export async function recordFacebookComment(
   );
   if (inserted[0]) return { id: inserted[0].id, duplicate: false };
 
-  const existing = await ctx.tx.query<{ id: string }>(
-    `select id from facebook_comments where tenant_id = $1 and comment_id = $2`,
+  const existing = await ctx.tx.query<{ id: string; post_id: string; page_id: string }>(
+    `select id, post_id, page_id from facebook_comments where tenant_id = $1 and comment_id = $2`,
     [ctx.tenantId, args.commentId],
   );
-  return { id: existing[0]!.id, duplicate: true };
+  const row = existing[0]!;
+  if (row.post_id === args.postId) return { id: row.id, duplicate: true };
+
+  // The one field a re-reading may change: which slug Facebook serves the post
+  // under. A comment id belongs to one post for good, so a different slug is
+  // the same post renamed — see `knownFacebookCommentIds`. The old slug names
+  // that one post, so every comment filed under it moves together: a sweep
+  // re-reads only what is rendered, and a reply left collapsed would otherwise
+  // stay behind as a second group for the same post.
+  const moved = await ctx.tx.query<{ id: string }>(
+    `update facebook_comments set post_id = $4
+      where tenant_id = $1 and page_id = $2 and post_id = $3
+      returning id`,
+    [ctx.tenantId, row.page_id, row.post_id, args.postId],
+  );
+  return moved.some((m) => m.id === row.id)
+    ? { id: row.id, duplicate: true, previousPostId: row.post_id, rowsMoved: moved.length }
+    : { id: row.id, duplicate: true };
 }
 
 /* ------------------------------------------------- comment processing state */

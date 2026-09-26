@@ -282,6 +282,82 @@ describe('a Facebook comment reaching the CRM from the bridge', () => {
     expect(await storedRows(commentId)).toHaveLength(1);
   });
 
+  /* ------------------------------------------- a post Facebook renamed */
+
+  // Live, 2026-09-26: the Page's post was served as `pfbid02ukvf…` on the 25th
+  // and as `pfbid0qjKwp…` from 08:07 on the 26th — the same post and the same
+  // comment (920723904113325) under a new slug. The row kept the old one, so
+  // the console filed the comment under a post id Facebook no longer uses and
+  // the post's own page, opened by the id Facebook shows, was "not found".
+  const POST_RENAMED = 'pfbid0qjKwpLs5LjHAqo4dVtDKbWCfqXc2veW44BtADeEjf7jt7kwYYAwQtHL3QeNg53x6l';
+
+  it('does not call a comment known while it is held under a post slug Facebook has since replaced', async () => {
+    const commentId = nextCommentId();
+    expect((await deliver(commentEvent({ commentId }))).statusCode).toBe(200);
+
+    const knownAs = async (postId?: string) => ((await askKnown({
+      tenantId: t.tenantId, sessionKey: t.tenantId, externalIds: [], commentIds: [commentId],
+      ...(postId ? { commentPosts: { [commentId]: postId } } : {}),
+    })).json() as { knownComments: string[] }).knownComments;
+
+    expect(await knownAs(POST_ID)).toEqual([commentId]);
+    expect(await knownAs(POST_RENAMED)).toEqual([]);
+    // A bridge that names no post is answered by comment id alone, as before.
+    expect(await knownAs()).toEqual([commentId]);
+  });
+
+  it('moves a stored comment to the slug its post is served under now — one row, first words kept, one event', async () => {
+    const commentId = nextCommentId();
+    // A reply on the same post that the next sweep does not re-read (collapsed
+    // under "View replies"), and a comment on a different post.
+    const replyId = nextCommentId();
+    const elsewhereId = nextCommentId();
+    const OTHER_POST = 'pfbid0HPrwUhAJcRm3H6rN3k1tkRviUjohgzWYdXYmAfGx1o739f4t7qU4BUZKMGV5BFQhl';
+    expect((await deliver(commentEvent({ commentId }))).statusCode).toBe(200);
+    expect((await deliver(commentEvent({ commentId: replyId, parentCommentId: commentId }))).statusCode).toBe(200);
+    expect((await deliver(commentEvent({ commentId: elsewhereId, postId: OTHER_POST }))).statusCode).toBe(200);
+    const [before] = await storedRows(commentId);
+    jobs.length = 0;
+    workerLog.length = 0;
+
+    // Re-read under the renamed post, with its wording edited on Facebook in
+    // the meantime — which must not replace what the customer first wrote.
+    const moved = await deliver(commentEvent({ commentId, postId: POST_RENAMED, text: 'diedit kemudian' }));
+
+    expect(moved.statusCode).toBe(200);
+    expect(jobs).toEqual(['inbound.normalise']);
+    const rows = await storedRows(commentId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: before!.id, post_id: POST_RENAMED, division_id: t.divisions.marketing, parent_comment_id: null, status: 'new',
+    });
+    expect(await spooled(t.tenantId, commentId)).toEqual([{ id: expect.any(String), status: 'processed' }]);
+    expect(workerLog.filter((l) => l.event === 'fb_comment_post_moved')).toEqual([expect.objectContaining({
+      commentId, rowId: before!.id, postId: POST_RENAMED, previousPostId: POST_ID,
+    })]);
+    expect(workerLog.some((l) => l.event === 'fb_comment_persisted')).toBe(false);
+    // The slug names the post, so the whole post moves at once — a reply the
+    // sweep did not re-read is not left behind as a second group for one post.
+    expect((await storedRows(replyId))[0]).toMatchObject({ post_id: POST_RENAMED, parent_comment_id: commentId });
+    expect((await storedRows(elsewhereId))[0]).toMatchObject({ post_id: OTHER_POST });
+
+    expect((await inbox()).filter((c) => c.commentId === commentId)).toEqual([expect.objectContaining({
+      id: before!.id, postId: POST_RENAMED, body: 'Ada size M kak?',
+    })]);
+
+    // Held under the new slug now: the bridge's next sweep is told so, and an
+    // offer that arrives anyway is the plain duplicate it always was.
+    const known = await askKnown({
+      tenantId: t.tenantId, sessionKey: t.tenantId, externalIds: [], commentIds: [commentId],
+      commentPosts: { [commentId]: POST_RENAMED },
+    });
+    expect((known.json() as { knownComments: string[] }).knownComments).toEqual([commentId]);
+    jobs.length = 0;
+    expect((await deliver(commentEvent({ commentId, postId: POST_RENAMED }))).statusCode).toBe(200);
+    expect(jobs).toEqual([]);
+    expect(await storedRows(commentId)).toHaveLength(1);
+  });
+
   /* ------------------------------------------------- what the CRM holds */
 
   it('tells the bridge exactly which comment ids it already holds', async () => {
@@ -362,6 +438,8 @@ describe('a Facebook comment reaching the CRM from the bridge', () => {
       { commentId: nextCommentId(), pageId: undefined },
       { commentId: nextCommentId(), text: undefined },
       { commentId: nextCommentId(), text: '' },
+      // Not a string: compared against the stored post it would look "moved" on every offer.
+      { commentId: nextCommentId(), postId: 122106639681479772 },
     ];
 
     for (const fields of broken) {

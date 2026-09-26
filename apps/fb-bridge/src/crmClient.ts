@@ -14,7 +14,7 @@ export interface CrmClientDeps {
 export interface CrmClient {
   postEvent(ev: FbBridgeEvent): Promise<boolean>;
   knownIds(sessionKey: string, externalIds: string[]): Promise<Set<string>>;
-  knownCommentIds(sessionKey: string, commentIds: string[]): Promise<Set<string>>;
+  knownCommentIds(sessionKey: string, commentIds: string[], postByComment?: Record<string, string>): Promise<Set<string>>;
 }
 
 /**
@@ -65,7 +65,9 @@ export function createCrmClient(deps: CrmClientDeps): CrmClient {
   }
 
   async function askKnown(
-    sessionKey: string, body: { externalIds: string[]; commentIds?: string[] }, what: string,
+    sessionKey: string,
+    body: { externalIds: string[]; commentIds?: string[]; commentPosts?: Record<string, string> },
+    what: string,
   ): Promise<{ known?: string[]; knownComments?: string[] } | null> {
     try {
       const res = await http(`${deps.apiUrl}/v1/webhooks/fb-bridge/known`, {
@@ -105,10 +107,19 @@ export function createCrmClient(deps: CrmClientDeps): CrmClient {
    * only memory of what it has delivered (see `CommentWatcher`). Same endpoint
    * and same failure rule: an unreachable CRM answers "nothing", so the sweep
    * offers everything again and the CRM's unique index absorbs it.
+   *
+   * The post each comment was just read under goes along with it: Facebook
+   * re-issues a post's `pfbid…` slug, and the CRM calls a comment known only
+   * when it holds it under the slug the post has now — otherwise it is offered
+   * again and re-filed rather than left under a post id that no longer exists.
    */
-  async function knownCommentIds(sessionKey: string, commentIds: string[]): Promise<Set<string>> {
+  async function knownCommentIds(
+    sessionKey: string, commentIds: string[], postByComment?: Record<string, string>,
+  ): Promise<Set<string>> {
     if (commentIds.length === 0) return new Set();
-    const body = await askKnown(sessionKey, { externalIds: [], commentIds }, 'comment');
+    const body = await askKnown(sessionKey, {
+      externalIds: [], commentIds, ...(postByComment ? { commentPosts: postByComment } : {}),
+    }, 'comment');
     return new Set(body?.knownComments ?? []);
   }
 

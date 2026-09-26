@@ -63,7 +63,17 @@ export interface ParsedComments {
    * caller uses these to go and read each post properly.
    */
   postIds: string[];
+  /**
+   * Each post's comment count, off its own summary ("3 comments",
+   * "14 komentar"). A post whose summary is not rendered is absent. The
+   * once-a-minute pulse compares these to decide which post to open: a count
+   * that rose is a new comment or reply on that post.
+   */
+  commentCounts: Record<string, number>;
 }
+
+/** The summary under a post: "3 comments", "1 comment", "14 komentar", "1,2 rb komentar", "2.4K comments". */
+const COMMENT_COUNT_RE = /^([\d.,]+)\s*(rb|k|jt|m)?\s*(?:comments?|komentar)$/i;
 
 /**
  * Reads Page comments off a rendered feed or a single post.
@@ -90,6 +100,7 @@ export function parseFacebookComments(
   // enclosing post article as the fallback for a build that does not.
   const nodes = queryAll(feed, COMMENTS.comment);
   const postIds: string[] = [];
+  const commentCounts: Record<string, number> = {};
   let postArticles = 0;
   let postArticlesWithoutId = 0;
   for (const post of queryAll(feed, COMMENTS.post)) {
@@ -99,6 +110,8 @@ export function parseFacebookComments(
     const id = firstHrefMatch(post, POST_ID_RE);
     if (!id) { postArticlesWithoutId += 1; continue; }
     if (!postIds.includes(id)) postIds.push(id);
+    const count = commentCountOf(post);
+    if (count !== null && commentCounts[id] === undefined) commentCounts[id] = count;
   }
   const comments: ParsedComment[] = [];
   let droppedNoId = 0;
@@ -131,7 +144,34 @@ export function parseFacebookComments(
   }
   return {
     comments, droppedNoId, droppedNoPost, droppedPageOwn, matchedComments, postIds, postArticles, postArticlesWithoutId,
+    commentCounts,
   };
+}
+
+/**
+ * A post's comment count from its own summary — never from text inside one of
+ * its comments, where a customer can write "5 comments" as easily as anything.
+ */
+function commentCountOf(post: El): number | null {
+  for (const el of post.querySelectorAll('span[dir="auto"], div[role="button"]')) {
+    if (nearestArticle(el) !== post) continue;
+    const match = COMMENT_COUNT_RE.exec(textOf(el));
+    if (match) return countValue(match[1]!, match[2]);
+  }
+  return null;
+}
+
+function nearestArticle(el: El): El | null {
+  let node = el.parentNode as El | null;
+  while (node && node.getAttribute?.('role') !== 'article') node = node.parentNode as El | null;
+  return node;
+}
+
+/** "3" → 3; "1,2" + "rb" → 1200; "2.4" + "K" → 2400. Abbreviated counts are approximate, which only blunts the pulse. */
+function countValue(digits: string, suffix: string | undefined): number {
+  if (!suffix) return Number(digits.replace(/[.,]/g, ''));
+  const base = Number(digits.replace(',', '.'));
+  return Math.round(base * (/^(?:k|rb)$/i.test(suffix) ? 1_000 : 1_000_000));
 }
 
 interface CommentAuthor {
