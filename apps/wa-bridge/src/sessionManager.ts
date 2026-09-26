@@ -89,6 +89,15 @@ function webVersionCache(): Record<string, unknown> | undefined {
 }
 
 /**
+ * On the Linux server Chrome runs as an unprivileged service user, and Ubuntu
+ * 24.04's AppArmor policy refuses the user namespaces Chrome's sandbox needs —
+ * every launch dies with "No usable sandbox!". The page it loads is WhatsApp
+ * Web and nothing else, so running without that sandbox is the usual trade.
+ * Left on elsewhere (a developer's Mac), where the sandbox works.
+ */
+const CHROME_ARGS = process.platform === 'linux' ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];
+
+/**
  * One Puppeteer-backed Client per channel, keyed by `channelId`. `LocalAuth`'s
  * own `clientId` option namespaces each session's files under one shared
  * `dataPath`, which is what lets one process hold several tenants' WhatsApp
@@ -96,6 +105,13 @@ function webVersionCache(): Record<string, unknown> | undefined {
  */
 export class SessionManager {
   private clients = new Map<string, WAClient>();
+
+  // Sessions that have reached 'ready'. The heartbeat only judges these: a
+  // session still showing its QR answers `getState()` with something other
+  // than CONNECTED by design, and treating that as death tore the browser
+  // down mid-pairing — the code on screen went dead before anyone could
+  // scan it, and a fresh one replaced it every two minutes.
+  private readyIds = new Set<string>();
 
   // `message_create` fires for a message this process just sent via `send()`
   // just as much as for one a customer sent — WhatsApp echoes both directions
@@ -168,7 +184,52 @@ export class SessionManager {
     } catch {
       // No port file, or nothing listening — launch our own below.
     }
-    return { headless: true };
+    return { headless: true, args: CHROME_ARGS, ...(await this.chromePath()) };
+  }
+
+  /**
+   * Which Chrome to launch, when Puppeteer's own download cannot be trusted.
+   *
+   * Confirmed live: the Chrome Puppeteer downloads into `~/.cache/puppeteer`
+   * was left half-unpacked (its Framework missing), every launch died with a
+   * `dlopen` error, and no QR was ever produced — the console just waited.
+   * `WA_CHROME_PATH` pins a browser explicitly; otherwise an installed Google
+   * Chrome is used when Puppeteer's copy is not actually launchable.
+   */
+  private async chromePath(): Promise<{ executablePath?: string }> {
+    const pinned = process.env.WA_CHROME_PATH?.trim();
+    if (pinned) return { executablePath: pinned };
+    const bundled = await this.bundledChromeWorks();
+    if (bundled) return {};
+    const candidates = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    ];
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate);
+        return { executablePath: candidate };
+      } catch {
+        // Not installed here.
+      }
+    }
+    return {};
+  }
+
+  private bundledChromeChecked: Promise<boolean> | null = null;
+
+  private bundledChromeWorks(): Promise<boolean> {
+    this.bundledChromeChecked ??= (async () => {
+      try {
+        const { default: puppeteer } = await import('puppeteer');
+        const browser = await puppeteer.launch({ headless: true, args: CHROME_ARGS });
+        await browser.close();
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    return this.bundledChromeChecked;
   }
 
   /**
@@ -219,12 +280,15 @@ export class SessionManager {
     this.clients.set(channelId, client);
 
     client.on('qr', async (qr) => {
-      const dataUrl = await QRCode.toDataURL(qr);
-      // WhatsApp Web rotates the code roughly every 20-45s until it is
-      // scanned; the console re-polls faster than that so it never shows a
-      // dead one.
+      // Large and with its quiet zone intact: WhatsApp's pairing payload is a
+      // long string, and the library's default ~4px-per-module image, scaled
+      // up in the console, was too soft for some phone cameras to lock on.
+      const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'L', margin: 4, width: 512 });
+      // WhatsApp Web rotates the code about once a minute until it is
+      // scanned (measured: ~60s apart); the console re-polls faster than
+      // that so it never shows a dead one.
       this.onEvent({ channelId, event: 'qr', at: new Date().toISOString(),
-        qr: { dataUrl, expiresInMs: 45_000 } });
+        qr: { dataUrl, expiresInMs: 60_000 } });
     });
 
     client.on('authenticated', () => {
@@ -244,6 +308,7 @@ export class SessionManager {
     });
 
     client.on('ready', async () => {
+      this.readyIds.add(channelId);
       // WhatsApp's newer accounts identify themselves by a LID (a masked,
       // rotating ID) rather than their real number — `client.info.wid` is
       // whichever one the account happens to have, so `.user` alone is not
@@ -266,6 +331,7 @@ export class SessionManager {
 
     client.on('disconnected', (reason) => {
       this.clients.delete(channelId);
+      this.readyIds.delete(channelId);
       this.onEvent({ channelId, event: 'disconnected', at: new Date().toISOString(),
         disconnected: { reason: String(reason) } });
     });
@@ -337,6 +403,7 @@ export class SessionManager {
       // tab open against the same profile — three of them, on the session that
       // led to this code being written.
       this.clients.delete(channelId);
+      this.readyIds.delete(channelId);
       await client.destroy().catch(() => {});
 
       if (looksLoggedOut(err)) {
@@ -352,6 +419,13 @@ export class SessionManager {
         throw new NotAuthenticatedError(
           'Sesi WhatsApp sudah tidak tertaut — WhatsApp menyajikan halaman QR, bukan aplikasinya');
       }
+      // Said to the CRM, not just thrown: a start now finishes in the
+      // background, so nobody is waiting on this promise to read the error,
+      // and the console would otherwise sit on "Memulai…" forever.
+      this.onEvent({
+        channelId, event: 'disconnected', at: new Date().toISOString(),
+        disconnected: { reason: `Gagal memulai WhatsApp Web: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300) },
+      });
       throw err;
     }
   }
@@ -451,6 +525,7 @@ export class SessionManager {
 
   private async checkAll(onDead: (channelId: string) => void): Promise<void> {
     for (const [channelId, client] of [...this.clients]) {
+      if (!this.readyIds.has(channelId)) continue;
       let alive = false;
       try {
         const state = await Promise.race([
@@ -467,6 +542,7 @@ export class SessionManager {
       // Drop it before re-initialising, or `start` returns early on the
       // dead client still sitting in the map and nothing is repaired.
       this.clients.delete(channelId);
+      this.readyIds.delete(channelId);
       await client.destroy().catch(() => {});
       onDead(channelId);
     }
@@ -481,6 +557,7 @@ export class SessionManager {
     const client = this.clients.get(channelId);
     if (!client) return;
     this.clients.delete(channelId);
+    this.readyIds.delete(channelId);
     await client.logout().catch(() => {});
     await client.destroy().catch(() => {});
   }

@@ -29,6 +29,8 @@
     "dev:ig-bridge": "npm run dev -w @kirana/ig-bridge",
     "dev:wa-bridge": "npm run dev -w @kirana/wa-bridge",
     "dev:fb-bridge": "npm run dev -w @kirana/fb-bridge",
+    "dev:bd-brain": "tsx --env-file=.env tools/bd-brain.ts",
+    "test:bd-brain": "tsx tools/bd-brain.ts --test",
     "dev:stack": "tsx --env-file=.env tools/dev-stack.ts",
     "rotate": "tsx --env-file=.env packages/db/src/cli-rotate.ts"
   },

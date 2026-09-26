@@ -104,9 +104,33 @@ async function resumeSessions(): Promise<void> {
 
 app.get('/healthz', async () => ({ status: 'ok' }));
 
+/**
+ * How long a start request waits before answering "on its way".
+ *
+ * `initialize()` only resolves once web.whatsapp.com has fully loaded and the
+ * library has injected itself — measured live at 10s on a good connection and
+ * 87s on a slow one. The console's "Sambung ulang" / "Hubungkan nomor" sat on
+ * that whole wait, looking frozen, while the QR it was waiting for had long
+ * since arrived through the webhook. The QR never needed this response: it
+ * travels as its own event. A fast failure (a login that is plainly gone) still
+ * gets its 409; anything slower carries on in the background and reports
+ * through the same events the console already reads.
+ */
+const START_WAIT_MS = 5_000;
+
 app.post<{ Params: { channelId: string } }>('/internal/sessions/:channelId/start', async (req, reply) => {
+  const channelId = req.params.channelId;
+  const starting = sessions.start(channelId);
   try {
-    await sessions.start(req.params.channelId);
+    const finished = await Promise.race([
+      starting.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), START_WAIT_MS)),
+    ]);
+    if (!finished) {
+      starting.catch((err) => {
+        app.log.warn({ err, channelId }, 'wa-bridge: session failed to start in the background');
+      });
+    }
     return reply.status(202).send({ started: true });
   } catch (err) {
     // 409, not 500: nothing here is broken, the stored login is simply gone and

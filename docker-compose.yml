@@ -63,10 +63,36 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AUTOPILOT_MODEL: ${AUTOPILOT_MODEL:-claude-opus-5}
       AUTOPILOT_EFFORT: ${AUTOPILOT_EFFORT:-medium}
+      # The BD brain (apps/bd-brain), by service name. Same secret on both.
+      BD_BRAIN_URL: http://bd-brain:4321
+      BD_BRAIN_SECRET: ${BD_BRAIN_SECRET:-dev-bd-brain-secret-change-me}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      bd-brain: { condition: service_healthy }
     volumes: [".:/app", "/app/node_modules"]
+
+  # The chatbot that answers brands and books meetings — Python, stateless,
+  # asked over HTTP by the worker. Keeps nothing: Postgres is its memory.
+  bd-brain:
+    build: { context: apps/bd-brain }
+    environment:
+      BD_BRAIN_SECRET: ${BD_BRAIN_SECRET:-dev-bd-brain-secret-change-me}
+      BD_WHATSAPP_NUMBER: ${BD_WHATSAPP_NUMBER:-}
+      BD_BRAIN_SIMULATE_CALENDAR: ${BD_BRAIN_SIMULATE_CALENDAR:-false}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      USE_LLM_INTENTS: ${USE_LLM_INTENTS:-false}
+      USE_LLM_REPLIES: ${USE_LLM_REPLIES:-false}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+    # Google OAuth client + token (apps/bd-brain/secrets/, gitignored). The
+    # token is written by `python -m bd_bot gcal-auth` on a machine with a
+    # browser and copied here.
+    volumes: ["./apps/bd-brain/secrets:/app/secrets:ro"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:4321/healthz', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   console:
     build: { context: ., dockerfile: ops/Dockerfile }

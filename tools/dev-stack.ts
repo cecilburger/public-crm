@@ -28,7 +28,6 @@ import {
   ensureConversation,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
-import QRCode from 'qrcode';
 import { buildApp, type Dispatch } from '../apps/api/src/app.ts';
 import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
@@ -37,6 +36,9 @@ import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
 import {
   processCommentPublicReply, processCommentDm, processCommentAutopilot, type CommentActionJob,
 } from '../apps/worker/src/processors/facebookComments.ts';
+import { processBdDraft } from '../apps/worker/src/processors/bdDraft.ts';
+import { processIgCommentReply } from '../apps/worker/src/processors/igCommentReply.ts';
+import { BdBrainClient } from '../apps/worker/src/bdBrain.ts';
 import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billingRollup.ts';
 import { startLocalPostgres } from './local-postgres.ts';
 import { importFromPglite } from './pglite-import.ts';
@@ -189,14 +191,13 @@ const min = 60_000;
 const hour = 60 * min;
 
 // The wa-bridge numbers behind "Status Nomor" — a spread of session states
-// (a couple actually live, one mid-pairing, one that errored out, one that
+// (a couple actually live, one never paired, one that errored out, one that
 // dropped) so the monitoring table isn't just a wall of green dots.
 //
-// The "mid-pairing" one needs a real `qr_data` image, not just the
-// `qr_pending` status — the console only shows the "Lihat QR" button when
-// both are set (same as a real pending session mid-pairing would have),
-// so a QR-less pending row is invisible in the UI, not just unstyled.
-const demoQrDataUrl = await QRCode.toDataURL('https://wa.me/qr/demo-pairing-toko-demo');
+// None of them carries a QR. A seeded code was a picture of a made-up URL:
+// it looked exactly like a real pairing code in "Lihat QR", people scanned
+// it, and WhatsApp rejected it. Every QR the console shows comes from
+// `apps/wa-bridge` (whatsapp-web.js) — "Hubungkan nomor" or "Sambung ulang".
 
 const waBridgeSpecs: {
   displayName: string; phone?: string; sessionStatus: string; channelStatus: string;
@@ -209,7 +210,7 @@ const waBridgeSpecs: {
   { displayName: 'WA Toko — Reseller',      phone: '+6281199000002', sessionStatus: 'ready',        channelStatus: 'connected',  lastSeenAgo: 40 * min, maxPerDay: 100,
     chat: { meeting: 1, minat: 8, balas: 42, belum: 210, tolak: 6, bot: 54 } },
   // Never finished pairing — no chats to have a funnel over yet.
-  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'qr_pending',   channelStatus: 'connecting', maxPerDay: 50, qrData: demoQrDataUrl,
+  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'disconnected', channelStatus: 'connecting', maxPerDay: 50,
     chat: { meeting: 0, minat: 0, balas: 0, belum: 0, tolak: 0, bot: 0 } },
   { displayName: 'WA Toko — Admin Lama',    phone: '+6281199000004', sessionStatus: 'error',        channelStatus: 'error',      lastSeenAgo: 3 * 24 * hour, lastError: 'Sesi keluar otomatis — perangkat tertaut dicabut dari HP', maxPerDay: 80,
     chat: { meeting: 0, minat: 2, balas: 10, belum: 305, tolak: 40, bot: 0 } },
@@ -761,6 +762,31 @@ const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
+// The BD brain, same wiring as apps/worker/src/main.ts: a brand writing in
+// on WhatsApp Web or an Instagram DM is routed to `bd.draft` by the ingress,
+// and without this the dev stack dropped that job on the floor — the message
+// showed in the console and nothing ever answered it. `npm run dev:bd-brain`
+// in another terminal; unset, the job says so once per message.
+const bdBrain = process.env.BD_BRAIN_URL
+  ? new BdBrainClient(process.env.BD_BRAIN_URL, process.env.BD_BRAIN_SECRET ?? '')
+  : null;
+if (!bdBrain) console.warn('[dev-stack] BD_BRAIN_URL is not set — BD conversations will not be answered');
+
+const commentTexts = async (): Promise<{ publicReply: string; dmOpener: string } | null> => {
+  if (!process.env.BD_BRAIN_URL) return null;
+  try {
+    const res = await fetch(`${process.env.BD_BRAIN_URL}/v1/comment-reply`, {
+      headers: { authorization: `Bearer ${process.env.BD_BRAIN_SECRET ?? ''}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { publicReply?: string; dmOpener?: string };
+    return body.publicReply && body.dmOpener ? { publicReply: body.publicReply, dmOpener: body.dmOpener } : null;
+  } catch {
+    return null;
+  }
+};
+
 // Named rather than written inline into `buildApp` so the comment processors
 // can dispatch back into it: a sweep queues reply and DM jobs exactly as the
 // real worker does, and here they run straight away, in order.
@@ -773,12 +799,25 @@ const dispatch: Dispatch = async ({ queue, payload, delayMs }) => {
     await processInboundWebhook(
       {
         db, control: db, kek,
-        dispatch: async (job) => { if (job.queue === 'autopilot.draft') await runAutopilot(job.payload); },
+        // The ingress decides which brain answers; both land here.
+        dispatch: async (job) => { await dispatch(job); },
         publish: (tenantId, event) => realtime.publish(tenantId, event),
       },
       (payload as { webhookEventId: string }).webhookEventId);
   }
   if (queue === 'autopilot.draft') await runAutopilot(payload);
+  if (queue === 'bd.draft') {
+    if (!bdBrain) {
+      console.warn('[dev-stack] bd.draft skipped — BD_BRAIN_URL is not configured');
+    } else {
+      await processBdDraft({ db, kek, brain: bdBrain, dispatch }, payload as { tenantId: string; conversationId: string; text: string })
+        .catch((err) => console.error('[dev-stack] bd.draft failed:', (err as Error).message));
+    }
+  }
+  if (queue === 'igComment.reply') {
+    await processIgCommentReply({ db, kek, igBridge, commentTexts }, payload as { tenantId: string; commentId: string })
+      .catch((err) => console.error('[dev-stack] igComment.reply failed:', (err as Error).message));
+  }
   if (queue === 'outbound.send') {
     const job = payload as { tenantId: string; messageId: string };
     // The seeded demo channels (Obrolan's WhatsApp/Instagram) carry no real

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { api, ApiError } from '@/lib/api';
+import { appUrl } from '@/lib/basePath';
 
 /** Where `/api/google-calendar/callback` sends the browser back to once the
  * OAuth round-trip is done — Tugas and Kalender both link here (see
@@ -17,7 +18,7 @@ const RETURN_COOKIE = 'kirana_gcal_return';
  * an explanation instead of a bare framework error page.
  */
 export async function GET(req: NextRequest) {
-  const redirectUri = `${req.nextUrl.origin}/api/google-calendar/callback`;
+  const redirectUri = appUrl(req, '/api/google-calendar/callback').toString();
   // Only a same-app relative path is trusted here — `from` is a plain query
   // param, so anyone could craft a link with something else in it, and this
   // value gets redirected to unchecked once the OAuth trip completes.
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const detail = err instanceof ApiError ? err.message : 'unknown';
     return NextResponse.redirect(
-      new URL(`${from}?gcal=error&detail=${encodeURIComponent(detail)}`, req.nextUrl.origin),
+      appUrl(req, `${from}?gcal=error&detail=${encodeURIComponent(detail)}`),
     );
   }
 }

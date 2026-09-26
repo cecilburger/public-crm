@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { rp, num, ago, clock, initials, awaitingReply, isPairing } from '../apps/console/lib/format.ts';
 import { expiresAt } from '../apps/console/lib/session.ts';
+import { appUrl } from '../apps/console/lib/basePath.ts';
 
 describe('console formatting', () => {
   afterEach(() => vi.useRealTimers());
@@ -92,5 +93,19 @@ describe('the WhatsApp pairing refresh rule', () => {
     for (const s of ['ready', 'error', 'disconnected']) {
       expect(isPairing({ sessionStatus: s, qrExpiresAt: at(20_000) }, now)).toBe(false);
     }
+  });
+});
+
+describe('redirect targets behind a proxy', () => {
+  it('uses the address the browser used, not the one the console listens on', () => {
+    const req = new Request('https://localhost:13000/api/session', {
+      headers: { 'x-forwarded-host': 'dashboardmcn.my.id', 'x-forwarded-proto': 'https' },
+    });
+    expect(appUrl(req, '/obrolan').href).toBe('https://dashboardmcn.my.id/obrolan');
+  });
+
+  it('falls back to the request itself with no proxy in front', () => {
+    const req = new Request('http://localhost:3000/api/session', { headers: { host: 'localhost:3000' } });
+    expect(appUrl(req, '/masuk?reason=expired').href).toBe('http://localhost:3000/masuk?reason=expired');
   });
 });

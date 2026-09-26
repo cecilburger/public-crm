@@ -5,6 +5,7 @@ import { deleteDocument } from '@/app/(app)/actions';
 import { t } from '@/lib/copy';
 import { CsrfField } from '@/components/Csrf';
 import type { DocRecord } from '@/lib/api';
+import { withBase } from '@/lib/basePath';
 
 /** Detail (opens the slide-in drawer) and Delete — everything a row needs
  *  without leaving the list. */
@@ -14,7 +15,7 @@ export function DocumentRowActions({ doc, onDetail }: { doc: DocRecord; onDetail
   return (
     <>
       <span style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-        <a href={`/api/dokumen/${doc.id}/generate`} target="_blank" rel="noreferrer" className="btn ghost sm">
+        <a href={withBase(`/api/dokumen/${doc.id}/generate`)} target="_blank" rel="noreferrer" className="btn ghost sm">
           {t.document.generate}
         </a>
         <button type="button" className="btn ghost sm" onClick={() => onDetail(doc)}>{t.document.detail}</button>

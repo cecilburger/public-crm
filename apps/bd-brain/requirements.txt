@@ -1,0 +1,16 @@
+# apps/bd-brain — the BD chatbot the CRM's worker asks over HTTP.
+# Pulled from whatsapp-bot-bd on 25 Sep 2026 without its WhatsApp transport,
+# so neonize/segno are gone; the HTTP layer (brain_serve.py) is stdlib only.
+#
+#   python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+
+# --- Google Calendar + Meet (real bookings; BD_BRAIN_SIMULATE_CALENDAR=true does without)
+google-api-python-client>=2.120
+google-auth-httplib2>=0.2
+google-auth-oauthlib>=1.2
+
+# --- optional: Claude for USE_LLM_INTENTS / USE_LLM_REPLIES (off by default)
+anthropic>=0.40
+
+# --- tests: python -m pytest tests -q  (or `npm run test:bd-brain` from the repo root)
+pytest>=8
