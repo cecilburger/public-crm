@@ -1,7 +1,7 @@
 import { guardOutbound, sendRatePerSecond, normalisePhone, toMicros, META_RATE_IDR } from '@kirana/core';
 import {
   withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, getDecryptedIgToken,
-  divisionSessionKey, type Database,
+  divisionSessionKey, setHandling, type Database,
 } from '@kirana/db';
 import type { MetaClient } from '../meta.ts';
 import type { WaBridgeClient } from '../waBridge.ts';
@@ -324,8 +324,33 @@ async function scheduleRetry(tx: Tx, job: { tenantId: string; messageId: string 
 export async function markSendExhausted(
   db: Database, tenantId: string, messageId: string, lastError: string,
 ): Promise<void> {
-  await withTenant(db, tenantId, (tx) =>
-    markFailed(tx, { tenantId, messageId }, `Gagal setelah beberapa kali percobaan: ${lastError}`.slice(0, 500)));
+  await withTenant(db, tenantId, async (tx) => {
+    await markFailed(tx, { tenantId, messageId }, `Gagal setelah beberapa kali percobaan: ${lastError}`.slice(0, 500));
+
+    // `handOverFailedChatbotJob` in main.ts only covers the brain-side queues
+    // (chatbot.reply, bd.draft) — a reply the brain produced just fine but
+    // the bridge could never actually deliver (this queue) fell through that
+    // gap entirely, leaving the conversation on `handling = 'bot'` forever
+    // with no one told the customer never got an answer. Same hand-over
+    // `markChatbotExhausted` does on the brain side, triggered from the
+    // delivery side instead.
+    //
+    // Not for Instagram: chat-ig runs bot-only by product decision, with no
+    // hand-over control in that page's UI — flipping `handling` there would
+    // silence the bot with no way to notice or undo it from the console.
+    const rows = await tx.query<{ conversation_id: string; sender_type: string; division_id: string; channel_kind: string }>(
+      `select m.conversation_id, m.sender_type, ch.division_id, ch.kind as channel_kind
+         from messages m join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+        where m.tenant_id = $1 and m.id = $2`,
+      [tenantId, messageId],
+    );
+    const msg = rows[0];
+    if (msg && msg.channel_kind !== 'instagram_bridge' && (msg.sender_type === 'bot' || msg.sender_type === 'autopilot')) {
+      await setHandling({ tx, tenantId, divisionId: msg.division_id }, {
+        conversationId: msg.conversation_id, handling: 'needs_human', onlyFrom: ['bot'],
+      });
+    }
+  });
 }
 
 async function markFailed(tx: Tx, job: { tenantId: string; messageId: string }, reason: string) {

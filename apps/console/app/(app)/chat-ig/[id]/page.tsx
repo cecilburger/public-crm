@@ -9,7 +9,6 @@ import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 import { AddClientFromChatButton } from '@/components/AddClientFromChatButton';
 import { ScrollToLatest } from '@/components/ScrollToLatest';
-import { BotControls } from '@/components/BotControls';
 import { senderLabelKey, isMachineWritten, isUndelivered } from '@/lib/chatbot';
 
 export const dynamic = 'force-dynamic';
@@ -53,11 +52,6 @@ export default async function ChatIgThreadPage({ params }: { params: Promise<{ i
           </div>
 
           <span className="spacer" style={{ marginLeft: 'auto' }} />
-
-          {conversation.chatbot_owned ? (
-            <BotControls conversationId={conversation.id} handling={conversation.handling}
-                         optOut={conversation.opt_out} escalationReason={conversation.last_escalation_reason} />
-          ) : null}
 
           {!mine ? (
             <form action={assignConversation}>

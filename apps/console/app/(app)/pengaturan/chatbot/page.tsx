@@ -4,7 +4,6 @@ import { t } from '@/lib/copy';
 import type { Handling } from '@/lib/chatbot';
 import { SettingsTabs } from '@/components/SettingsTabs';
 import { DivisionBadge } from '@/components/DivisionBadge';
-import { ChatbotSwitch, ChannelChatbotToggle } from '@/components/ChatbotSwitch';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,9 +16,10 @@ const CHANNEL_STATUS_CHIP: Record<string, string> = {
 /**
  * Pengaturan → Chatbot.
  *
- * The bot answers a DM only when both switches here are on: the division's,
- * and the account's own. There is no engine to pick — trained-cb is the only
- * one — and Autopilot keeps its own page for the Meta channels.
+ * The bot answers every DM on every account here — there is no on/off switch,
+ * division-level or per-account, any more. There is no engine to pick either
+ * — trained-cb is the only one — and Autopilot keeps its own page for the
+ * Meta channels.
  */
 export default async function ChatbotSettingsPage() {
   const overview = await api<ChatbotOverview>('/v1/chatbot');
@@ -44,8 +44,6 @@ export default async function ChatbotSettingsPage() {
           </div>
         ) : null}
 
-        <ChatbotSwitch enabled={overview.enabled} />
-
         <div className="panel">
           <header><h2>{t.chatbot.countsTitle}</h2></header>
           <div className="body">
@@ -64,9 +62,6 @@ export default async function ChatbotSettingsPage() {
           <header><h2>{t.chatbot.channelsTitle}</h2></header>
           <div className="body stack" style={{ gap: 12 }}>
             <p className="record-hint" style={{ margin: 0 }}>{t.chatbot.channelsNote}</p>
-            {!overview.enabled && overview.channels.some((c) => c.chatbotEnabled) ? (
-              <p className="dim" style={{ margin: 0, fontSize: 12.5 }}>{t.chatbot.divisionOffNote}</p>
-            ) : null}
           </div>
           {overview.channels.length === 0 ? (
             <p className="empty">{t.chatbot.noChannels}</p>
@@ -77,25 +72,18 @@ export default async function ChatbotSettingsPage() {
                   <th>{t.chatbot.channelName}</th>
                   <th>{t.chatbot.channelKind}</th>
                   <th>{t.chatbot.channelStatus}</th>
-                  <th>{t.chatbot.channelChatbot}</th>
                 </tr>
               </thead>
               <tbody>
                 {overview.channels.map((c) => (
                   <tr key={c.id}>
                     <td><b>{c.displayName}</b></td>
-                    <td>
-                      {t.channels[c.kind] ?? c.kind}
-                      {c.kind === 'messenger_bridge' && !c.chatbotEnabled ? (
-                        <><br /><span className="dim" style={{ fontSize: 12 }}>{t.chatbot.messengerNote}</span></>
-                      ) : null}
-                    </td>
+                    <td>{t.channels[c.kind] ?? c.kind}</td>
                     <td>
                       <span className={CHANNEL_STATUS_CHIP[c.status] ?? 'chip'}>
                         {t.chatbot.channelStatuses[c.status] ?? c.status}
                       </span>
                     </td>
-                    <td><ChannelChatbotToggle channelId={c.id} enabled={c.chatbotEnabled} /></td>
                   </tr>
                 ))}
               </tbody>

@@ -376,10 +376,5 @@ describe('migrating an existing workspace into divisions', () => {
     expect(listed.map((d) => d.key)).toEqual(['marketing', 'ai']);
     expect(divisions.marketing).toBe(listed[0]!.id);
     expect(divisions.ai).toBe(listed[1]!.id);
-
-    const settings = await db.query<{ division_id: string; enabled: boolean }>(
-      'select division_id, enabled from chatbot_settings where tenant_id = $1', [fresh]);
-    expect(Object.fromEntries(settings.map((r) => [r.division_id, r.enabled])))
-      .toEqual({ [divisions.marketing]: true, [divisions.ai]: false });
   });
 });

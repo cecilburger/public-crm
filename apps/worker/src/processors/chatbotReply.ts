@@ -5,7 +5,30 @@ import {
   markChatbotRunExhausted, unsentChatbotReplies, recordSkippedChatbotRun,
   type Database, type Sql, type Handling, type ChatbotOwnership,
 } from '@kirana/db';
-import type { BdAction, BdBooking, BdBrainClient, BdConversation, BdStep } from '../bdBrain.ts';
+import type { BdAction, BdBooking, BdBrainClient, BdConversation, BdStep, BdTurn } from '../bdBrain.ts';
+
+/**
+ * What the flow calls the channel a conversation is on.
+ *
+ * `bd_bot.flow.dm_channel` reads `Conversation.source` ('' / 'instagram' /
+ * 'facebook') to choose the DM opener over the WhatsApp form and to switch
+ * on the DM → WhatsApp hand-off. In the bot the Meta transport records it;
+ * here the channel row already knows, and the flow cannot infer it from a
+ * UUID jid. Before this existed an Instagram DM was answered with the
+ * WhatsApp qualification form and could never be moved to WhatsApp.
+ */
+function bdSourceOf(channelKind: string | null | undefined): '' | 'instagram' | 'facebook' {
+  switch (channelKind) {
+    case 'instagram':
+    case 'instagram_bridge':
+      return 'instagram';
+    case 'messenger':
+    case 'messenger_bridge':
+      return 'facebook';
+    default:
+      return '';
+  }
+}
 
 /**
  * The trained-cb DM chatbot: one inbound message on a WhatsApp Web, Instagram
@@ -280,6 +303,7 @@ async function answer(deps: ChatbotDeps, job: ChatbotJob, run: Run): Promise<Cha
 
 interface StateRow {
   contact_id: string; status: string; assignee_id: string | null;
+  channel_kind: string;
   contact_name: string | null;
   brand_name: string | null; brand_category: string | null;
   node: string | null; outcome: string | null;
@@ -321,12 +345,14 @@ async function gateInTx(tx: Sql, deps: ChatbotDeps, job: ChatbotJob): Promise<Ga
 
   const rows = await tx.query<StateRow>(
     `select c.contact_id, c.status, c.assignee_id,
+            ch.kind as channel_kind,
             ct.display_name as contact_name,
             b.name as brand_name, b.category as brand_category,
             s.node, s.outcome, s.gadget_loops, s.unknown_streak, s.price_stage,
             s.email_enc, s.meet_link, s.stopped_reason,
             s.last_inbound_at, s.last_outbound_at, s.meeting_at
        from conversations c
+       join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
        join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
        left join brands b on b.contact_id = c.contact_id and b.tenant_id = c.tenant_id
        left join bd_conversation_state s
@@ -377,6 +403,7 @@ function toBdConversation(conversationId: string, state: State): BdConversation 
     last_inbound_at: iso(row.last_inbound_at),
     last_outbound_at: iso(row.last_outbound_at),
     meeting_at: iso(row.meeting_at),
+    source: bdSourceOf(row.channel_kind),
   };
 }
 
@@ -393,7 +420,12 @@ interface Brained {
 
 async function askBrain(deps: ChatbotDeps, job: ChatbotJob, run: Run, state: State, now: Date): Promise<Brained> {
   const brain = deps.brain!;
-  const step = await brain.step({ conversation: toBdConversation(job.conversationId, state), text: state.text, now });
+  // Every step, not just the scheduling calls: the brain's loop breaker,
+  // echo check and "did we just ask the focus question" gate all read this.
+  const history = await recentTurns(deps, job);
+  const step = await brain.step({
+    conversation: toBdConversation(job.conversationId, state), text: state.text, now, history,
+  });
   const propose = step.actions.find((a): a is ProposeSlots => a.type === 'propose_slots');
 
   // `step` only decides to book; choosing when needs a calendar and a reading
@@ -402,8 +434,7 @@ async function askBrain(deps: ChatbotDeps, job: ChatbotJob, run: Run, state: Sta
   if (!propose) return { step, booking: null, offered: [], verifyBooking: false };
 
   // Agreement with no time named yet — the turn a lead is most likely lost
-  // on, so it is never left unanswered.
-  const history = await recentTurns(deps, job);
+  // on, so it is never left unanswered. Reuses the same turns `step` just read.
   try {
     const result = await brain.proposeSlots({
       conversation: step.conversation, fallbackText: propose.fallback_text, fallbackKey: propose.fallback_key,
@@ -441,13 +472,14 @@ async function bookOnce(
   }
 }
 
-/** The last few turns, oldest first — where the day and hour a contact named usually are. */
-async function recentTurns(
-  deps: ChatbotDeps, job: ChatbotJob,
-): Promise<{ direction: 'in' | 'out'; body: string }[]> {
+/** The last few turns, oldest first — what the brain reads for the loop
+ * breaker, the echo check, and to find a day and hour the contact named a
+ * message or two ago. `at` is real so the brain's time-windowed guards
+ * count real minutes, not a turn placed an hour ago by default. */
+async function recentTurns(deps: ChatbotDeps, job: ChatbotJob): Promise<BdTurn[]> {
   return withTenant(deps.db, job.tenantId, async (tx) => {
-    const rows = await tx.query<{ direction: string; body_enc: string | null }>(
-      `select direction, body_enc from messages
+    const rows = await tx.query<{ direction: string; body_enc: string | null; created_at: Date; status: string }>(
+      `select direction, body_enc, created_at, status from messages
         where tenant_id = $1 and conversation_id = $2
         order by created_at desc limit 8`,
       [job.tenantId, job.conversationId],
@@ -455,9 +487,17 @@ async function recentTurns(
     const keys = await tenantKeys(tx, deps.kek, job.tenantId);
     return [...rows]
       .reverse()
+      // An outbound row the customer never actually received (still
+      // `queued`, or `failed` after the bridge send didn't confirm) is not
+      // something the bot already said — leaving it in here fed bd-brain's
+      // own loop guard a message it thinks it already sent, so a customer
+      // repeating themselves after a failed send got no reply at all
+      // ("refusing to send the same message twice") instead of a retry.
+      .filter((r) => r.direction === 'inbound' || ['sent', 'delivered', 'read'].includes(r.status))
       .map((r) => ({
         direction: (r.direction === 'inbound' ? 'in' : 'out') as 'in' | 'out',
         body: r.body_enc ? openField(keys, job.tenantId, r.body_enc) : '',
+        at: new Date(r.created_at).toISOString(),
       }))
       .filter((t) => t.body);
   }, { divisionId: job.divisionId });
@@ -510,7 +550,19 @@ function nextState(brained: Brained): BdConversation {
     ...step.conversation,
     node,
     outcome: setNode?.type === 'set_node' ? setNode.outcome : step.conversation.outcome,
-    ...(booking ? { meeting_at: booking.meeting_at, meet_link: booking.meet_link } : {}),
+    // The booking call advanced the conversation further than `step` did —
+    // it is the one that knows the meeting time and the Meet link, and it
+    // is the one that moved the node: the flow's `on_meeting_booked` sets
+    // SCHEDULED inside `/v1/book`, not inside `/v1/step`. Taking only the
+    // meeting fields left the row at `scheduling` after a successful
+    // booking, so the brand's next "ok, terima kasih" re-entered the
+    // booking branch instead of the meeting-day handling, and the
+    // reminder/no-show ladder never armed.
+    ...(booking ? {
+      meeting_at: booking.meeting_at, meet_link: booking.meet_link,
+      ...(booking.conversation.node ? { node: booking.conversation.node } : {}),
+      ...(booking.conversation.outcome ? { outcome: booking.conversation.outcome } : {}),
+    } : {}),
     ...(optOut ? { stopped_reason: 'opt_out' } : {}),
   };
 }

@@ -7,10 +7,10 @@ import { divisionSql } from './divisions.ts';
 /**
  * The trained-cb DM chatbot's rows (migration 0061).
  *
- * The bot answers a conversation only when its division has the chatbot on,
- * its connected account has it on, the account is one of the DM bridges, and
- * the conversation's `handling` is still `bot`. Every piece of that is read
- * here, so the worker, the API and the console reach the same answer.
+ * The bot answers every conversation on one of the DM bridges whose
+ * `handling` is still `bot` — there is no division- or account-level
+ * on/off switch any more. Every piece of that is read here, so the worker,
+ * the API and the console reach the same answer.
  */
 
 export const CHATBOT_CHANNEL_KINDS = ['whatsapp_web', 'instagram_bridge', 'messenger_bridge'] as const;
@@ -54,47 +54,6 @@ export function isChatbotChannelKind(kind: string): kind is ChatbotChannelKind {
   return (CHATBOT_CHANNEL_KINDS as readonly string[]).includes(kind);
 }
 
-/* ---------------------------------------------------------------- settings */
-
-export interface ChatbotSettings {
-  enabled: boolean;
-  updatedAt: Date | null;
-  updatedBy: string | null;
-}
-
-/** The division's switch. A missing row is off. */
-export async function getChatbotSettings(ctx: ChatbotCtx): Promise<ChatbotSettings> {
-  const rows = await ctx.tx.query<{ enabled: boolean; updated_at: Date; updated_by: string | null }>(
-    `select enabled, updated_at, updated_by from chatbot_settings
-      where tenant_id = $1 and division_id = ${divisionSql(2)}`,
-    [ctx.tenantId, ctx.divisionId ?? null],
-  );
-  const row = rows[0];
-  if (!row) return { enabled: false, updatedAt: null, updatedBy: null };
-  return { enabled: row.enabled, updatedAt: row.updated_at, updatedBy: row.updated_by };
-}
-
-export async function setChatbotEnabled(
-  ctx: ChatbotCtx, args: { enabled: boolean; actorId: string },
-): Promise<ChatbotSettings> {
-  const before = await getChatbotSettings(ctx);
-  const rows = await ctx.tx.query<{ division_id: string; enabled: boolean; updated_at: Date; updated_by: string | null }>(
-    `insert into chatbot_settings (tenant_id, division_id, enabled, updated_by, updated_at)
-     values ($1, ${divisionSql(4)}, $2, $3, now())
-     on conflict (tenant_id, division_id) do update set
-       enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = now()
-     returning division_id, enabled, updated_at, updated_by`,
-    [ctx.tenantId, args.enabled, args.actorId, ctx.divisionId ?? null],
-  );
-  const row = rows[0]!;
-  await audit(ctx.tx, ctx.tenantId, {
-    actorType: 'user', actorId: args.actorId, action: 'chatbot.settings_changed',
-    resourceType: 'division', resourceId: row.division_id,
-    meta: { enabled: row.enabled, previous: before.enabled },
-  });
-  return { enabled: row.enabled, updatedAt: row.updated_at, updatedBy: row.updated_by };
-}
-
 /* ---------------------------------------------------------------- channels */
 
 export interface ChatbotChannelRow {
@@ -102,40 +61,16 @@ export interface ChatbotChannelRow {
   kind: ChatbotChannelKind;
   display_name: string;
   status: string;
-  chatbot_enabled: boolean;
 }
 
-/** The division's DM accounts the chatbot can serve, each with its own switch. */
+/** The division's DM accounts the chatbot answers — every one of them, now. */
 export async function listChatbotChannels(ctx: ChatbotCtx): Promise<ChatbotChannelRow[]> {
-  return ctx.tx.query<{
-    id: string; kind: ChatbotChannelKind; display_name: string; status: string; chatbot_enabled: boolean;
-  }>(
-    `select id, kind, display_name, status, chatbot_enabled from channels
+  return ctx.tx.query<{ id: string; kind: ChatbotChannelKind; display_name: string; status: string }>(
+    `select id, kind, display_name, status from channels
       where tenant_id = $1 and division_id = ${divisionSql(2)} and kind = any($3::text[])
       order by created_at`,
     [ctx.tenantId, ctx.divisionId ?? null, kinds()],
   );
-}
-
-/** Null when the channel is not visible here or is not a kind the chatbot serves. */
-export async function setChannelChatbotEnabled(
-  ctx: ChatbotCtx, args: { channelId: string; enabled: boolean; actorId: string },
-): Promise<ChatbotChannelRow | null> {
-  const rows = await ctx.tx.query<{
-    id: string; kind: ChatbotChannelKind; display_name: string; status: string; chatbot_enabled: boolean;
-  }>(
-    `update channels set chatbot_enabled = $3
-      where tenant_id = $1 and id = $2 and kind = any($4::text[])
-      returning id, kind, display_name, status, chatbot_enabled`,
-    [ctx.tenantId, args.channelId, args.enabled, kinds()],
-  );
-  const row = rows[0];
-  if (!row) return null;
-  await audit(ctx.tx, ctx.tenantId, {
-    actorType: 'user', actorId: args.actorId, action: 'channel.chatbot_changed',
-    resourceType: 'channel', resourceId: row.id, meta: { kind: row.kind, enabled: row.chatbot_enabled },
-  });
-  return row;
 }
 
 /* --------------------------------------------------------------- ownership */
@@ -143,8 +78,6 @@ export async function setChannelChatbotEnabled(
 export interface ChatbotOwnership {
   /** trained-cb owns this conversation — Autopilot must never act on it, whatever `handling` says. */
   owned: boolean;
-  divisionEnabled: boolean;
-  channelEnabled: boolean;
   channelKind: string;
   handling: Handling;
   /** The contact opted out, on this conversation or an earlier one. */
@@ -154,7 +87,7 @@ export interface ChatbotOwnership {
 
 /**
  * Keyed on the conversation's own division, not the caller's, so a job that
- * runs tenant-wide still reads the right switch. `lock` takes the
+ * runs tenant-wide still reads the right account. `lock` takes the
  * conversation row for the rest of the transaction — the re-check that makes
  * a takeover landing mid-run win.
  */
@@ -162,15 +95,12 @@ export async function chatbotOwnership(
   ctx: ChatbotCtx, conversationId: string, opts: { lock?: boolean } = {},
 ): Promise<ChatbotOwnership | null> {
   const rows = await ctx.tx.query<{
-    handling: Handling; division_id: string; channel_kind: string; channel_enabled: boolean;
-    division_enabled: boolean; opt_out: boolean;
+    handling: Handling; division_id: string; channel_kind: string; opt_out: boolean;
   }>(
-    `select c.handling, c.division_id, ch.kind as channel_kind, ch.chatbot_enabled as channel_enabled,
-            coalesce(cs.enabled, false) as division_enabled,
+    `select c.handling, c.division_id, ch.kind as channel_kind,
             ${CONTACT_OPTED_OUT} as opt_out
        from conversations c
        join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
-       left join chatbot_settings cs on cs.tenant_id = c.tenant_id and cs.division_id = c.division_id
       where c.tenant_id = $1 and c.id = $2
       ${opts.lock ? 'for update of c' : ''}`,
     [ctx.tenantId, conversationId],
@@ -178,9 +108,7 @@ export async function chatbotOwnership(
   const row = rows[0];
   if (!row) return null;
   return {
-    owned: row.division_enabled && row.channel_enabled && isChatbotChannelKind(row.channel_kind),
-    divisionEnabled: row.division_enabled,
-    channelEnabled: row.channel_enabled,
+    owned: isChatbotChannelKind(row.channel_kind),
     channelKind: row.channel_kind,
     handling: row.handling,
     optOut: row.opt_out,

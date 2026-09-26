@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid, notFound, forbidden, conflict, canTouchConversation, type Actor } from '@kirana/core';
+import { notFound, forbidden, conflict, canTouchConversation, type Actor } from '@kirana/core';
 import {
-  getChatbotSettings, setChatbotEnabled, listChatbotChannels, setChannelChatbotEnabled, chatbotHandlingCounts,
-  takeoverConversation, resumeBot, isChatbotChannelKind, divisionSql, type Sql,
+  listChatbotChannels, chatbotHandlingCounts,
+  takeoverConversation, resumeBot, divisionSql, type Sql,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
@@ -11,7 +11,6 @@ import type { AppCtx } from '../app.ts';
 const BRAIN_WARNING_WINDOW_HOURS = 24;
 
 const idParams = z.object({ id: z.string().uuid() });
-const enabledBody = z.object({ enabled: z.boolean() });
 
 const scoped = (tx: Sql, actor: Actor) => ({ tx, tenantId: actor.tenantId, divisionId: actor.divisionId ?? null });
 
@@ -28,8 +27,8 @@ async function assertCanTouch(tx: Sql, actor: Actor, conversationId: string): Pr
 }
 
 /**
- * The trained-cb DM chatbot: the division's switch, each DM account's opt-in,
- * and the hand-offs between the bot and a person on one conversation.
+ * The trained-cb DM chatbot: always on for every DM account, and the
+ * hand-offs between the bot and a person on one conversation.
  */
 export function registerChatbotRoutes(app: FastifyInstance, ctx: AppCtx): void {
 
@@ -37,7 +36,6 @@ export function registerChatbotRoutes(app: FastifyInstance, ctx: AppCtx): void {
     ctx.guard(req, 'conversation:read');
     return ctx.asTenant(req, async (tx, actor) => {
       const scope = scoped(tx, actor);
-      const settings = await getChatbotSettings(scope);
       const channels = await listChatbotChannels(scope);
       const counts = await chatbotHandlingCounts(scope);
       const warning = await tx.query<{ found: boolean }>(
@@ -51,46 +49,12 @@ export function registerChatbotRoutes(app: FastifyInstance, ctx: AppCtx): void {
         [actor.tenantId, actor.divisionId ?? null, BRAIN_WARNING_WINDOW_HOURS],
       );
       return {
-        enabled: settings.enabled,
         channels: channels.map((ch) => ({
-          id: ch.id, kind: ch.kind, displayName: ch.display_name, status: ch.status, chatbotEnabled: ch.chatbot_enabled,
+          id: ch.id, kind: ch.kind, displayName: ch.display_name, status: ch.status,
         })),
         counts,
         brainNotConfiguredRecently: warning[0]?.found ?? false,
       };
-    });
-  });
-
-  app.put('/v1/chatbot', async (req) => {
-    ctx.guard(req, 'autopilot:manage');
-    const body = enabledBody.safeParse(req.body);
-    if (!body.success) throw invalid('enabled must be true or false');
-
-    return ctx.asTenant(req, async (tx, actor) => {
-      const saved = await setChatbotEnabled(scoped(tx, actor), { enabled: body.data.enabled, actorId: actor.userId });
-      return { enabled: saved.enabled };
-    });
-  });
-
-  app.patch('/v1/channels/:id/chatbot', async (req) => {
-    ctx.guard(req, 'channel:manage');
-    const { id } = idParams.parse(req.params);
-    const body = enabledBody.safeParse(req.body);
-    if (!body.success) throw invalid('enabled must be true or false');
-
-    return ctx.asTenant(req, async (tx, actor) => {
-      const rows = await tx.query<{ kind: string }>(
-        'select kind from channels where tenant_id = $1 and id = $2', [actor.tenantId, id]);
-      if (!rows[0]) throw notFound('Channel');
-      if (!isChatbotChannelKind(rows[0].kind)) {
-        throw invalid('The chatbot answers WhatsApp Web, Instagram and Messenger direct messages only',
-          { kind: rows[0].kind });
-      }
-      const saved = await setChannelChatbotEnabled(scoped(tx, actor), {
-        channelId: id, enabled: body.data.enabled, actorId: actor.userId,
-      });
-      if (!saved) throw notFound('Channel');
-      return { id: saved.id, chatbotEnabled: saved.chatbot_enabled };
     });
   });
 

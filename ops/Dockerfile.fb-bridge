@@ -1,0 +1,46 @@
+# apps/fb-bridge as a container. Same shape as ops/Dockerfile.ig-bridge — see
+# that file's header for why Chromium comes from apt instead of Puppeteer's
+# own download, and why PUPPETEER_EXECUTABLE_PATH needs no code change to
+# take effect.
+#
+# The manual-login window (`openLoginWindow` in sessionManager.ts, behind
+# Pengaturan → Facebook → "Hubungkan") is the ONLY way in for this bridge —
+# unlike Instagram there is no password or cookie fallback, on purpose (see
+# .env.example's Facebook bridge section: no Facebook credential is ever
+# meant to pass through the CRM). That window is a REAL, non-headless
+# browser a human has to see and log into — it cannot run inside a normal
+# headless container. Do that first login on a machine with a real display
+# (a laptop running `npm run dev:fb-bridge` works fine) and copy the
+# resulting `.fb_bridge_auth/<sessionKey>/` directory onto this container's
+# volume afterwards.
+FROM node:24-slim AS base
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      chromium ca-certificates fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY apps/fb-bridge/package.json apps/fb-bridge/
+RUN npm ci --omit=dev
+
+FROM base AS runtime
+# Runs unprivileged. The auth (and optional HTML-snapshot debug) directories
+# are created up front so a volume mounted at either path is already owned
+# by the user that writes into it, not root.
+RUN groupadd -g 10001 fbbridge && useradd -u 10001 -g fbbridge -M fbbridge \
+    && mkdir -p /app/apps/fb-bridge/.fb_bridge_auth /app/apps/fb-bridge/.fb_bridge_snapshots \
+    && chown -R fbbridge:fbbridge /app
+COPY --from=deps --chown=fbbridge:fbbridge /app/node_modules ./node_modules
+COPY --chown=fbbridge:fbbridge apps/fb-bridge/src apps/fb-bridge/src
+COPY --chown=fbbridge:fbbridge apps/fb-bridge/package.json apps/fb-bridge/
+USER fbbridge
+EXPOSE 8092
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
+  CMD node -e "fetch('http://127.0.0.1:8092/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "--experimental-strip-types", "apps/fb-bridge/src/main.ts"]

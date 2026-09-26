@@ -1,0 +1,41 @@
+# apps/wa-bridge as a container. whatsapp-web.js drives its own bundled
+# Puppeteer under the hood — same Chromium/env-var setup as
+# ops/Dockerfile.ig-bridge and ops/Dockerfile.fb-bridge, see that file's
+# header for why it comes from apt rather than Puppeteer's own download.
+#
+# Unlike the Instagram and Facebook bridges, pairing here never needs a real
+# display: a new number connects by scanning a QR code the console shows as
+# a plain image (whatsapp-web.js's own `qr` event), the same way WhatsApp Web
+# itself pairs a phone. This image runs the whole bridge headless with no
+# caveats.
+FROM node:24-slim AS base
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      chromium ca-certificates fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY apps/wa-bridge/package.json apps/wa-bridge/
+RUN npm ci --omit=dev
+
+FROM base AS runtime
+# Runs unprivileged. The auth directory is created up front so the
+# LocalAuth profile whatsapp-web.js writes into it survives a volume mount
+# at that exact path without a root step re-chowning it on every start.
+RUN groupadd -g 10001 wabridge && useradd -u 10001 -g wabridge -M wabridge \
+    && mkdir -p /app/apps/wa-bridge/.wwebjs_auth \
+    && chown -R wabridge:wabridge /app
+COPY --from=deps --chown=wabridge:wabridge /app/node_modules ./node_modules
+COPY --chown=wabridge:wabridge apps/wa-bridge/src apps/wa-bridge/src
+COPY --chown=wabridge:wabridge apps/wa-bridge/package.json apps/wa-bridge/
+USER wabridge
+EXPOSE 8090
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
+  CMD node -e "fetch('http://127.0.0.1:8090/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "--experimental-strip-types", "apps/wa-bridge/src/main.ts"]

@@ -921,11 +921,10 @@ export async function listInbox(
     `select c.id, c.status, c.priority, c.assignee_id, c.last_message_at, c.last_inbound_at,
             c.sla_due_at, ct.display_name, ct.phone_enc, ch.kind as channel_kind, ch.id as channel_id,
             c.contact_id, c.created_at, c.first_response_at, c.handling,
-            (ch.chatbot_enabled and ch.kind = any($6::text[]) and coalesce(cs.enabled, false)) as chatbot_owned
+            (ch.kind = any($6::text[])) as chatbot_owned
        from conversations c
        join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
        join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
-       left join chatbot_settings cs on cs.tenant_id = c.tenant_id and cs.division_id = c.division_id
       where c.tenant_id = $1
         and ($2::text is null or c.status = $2)
         and ($3::uuid is null or c.assignee_id = $3)

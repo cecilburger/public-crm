@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AppError, unauthenticated, invalid, verifyPassword, hashPassword, checkLimit, loginKey, type Role,
 } from '@kirana/core';
-import { withTenant, resolveWorkspace, audit, listDivisions, getChatbotSettings } from '@kirana/db';
+import { withTenant, resolveWorkspace, audit, listDivisions } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { issueAccessToken, issueRefreshToken, rotateRefreshToken, revokeFamily, issueMfaToken } from '../tokens.ts';
 
@@ -182,9 +182,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppCtx): void {
       // Both divisions, and which one this request is acting in — the
       // console's switcher renders from exactly this.
       const divisions = await listDivisions(tx, actor.tenantId);
-      const current = divisions.find((d) => d.id === actor.divisionId) ?? divisions[0]!;
-      const chatbot = await getChatbotSettings({ tx, tenantId: actor.tenantId, divisionId: current.id });
-      const division = { ...current, chatbotEnabled: chatbot.enabled };
+      const division = divisions.find((d) => d.id === actor.divisionId) ?? divisions[0]!;
       return { user: rows[0], workspace: tenant[0], division, divisions };
     });
   });

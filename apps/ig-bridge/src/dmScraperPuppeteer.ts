@@ -520,11 +520,18 @@ export class SendNotConfirmedError extends Error {}
 const sameMessage = (a: string, b: string): boolean =>
   a.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsername: string | null): boolean => {
-  const last = messages[messages.length - 1];
-  return !!last && sameMessage(last.text, wanted)
-    && (!ownUsername || last.senderUsername.toLowerCase() === ownUsername.toLowerCase());
-};
+/**
+ * Not just the very last bubble: a contact who replies while we're still
+ * polling for confirmation (very normal mid-chat — they keep typing) pushes
+ * our own message up the thread. Checking only `messages[length - 1]` then
+ * never matches, the 25s deadline is reached, and a message that really did
+ * land on Instagram is reported as `SendNotConfirmedError` — the same tail
+ * window the duplicate-scan above already uses, for the same reason.
+ */
+const lastMessageMatches = (messages: ScrapedMessage[], wanted: string, ownUsername: string | null): boolean =>
+  messages.slice(-5).some((m) =>
+    sameMessage(m.text, wanted)
+    && (!ownUsername || m.senderUsername.toLowerCase() === ownUsername.toLowerCase()));
 
 /**
  * Close whatever Instagram has put in front of the page before touching it.
@@ -609,6 +616,14 @@ export async function sendThreadMessage(
     'textarea[placeholder="Message..."]',
   ].join(', ');
   await page.waitForSelector(selector, { timeout: 15_000 });
+  // Confirmed live: Instagram's own "Turn on Notifications" prompt can pop
+  // up on its own delay, any time after the check above — a dialog that
+  // wasn't there yet when this function started can still be sitting over
+  // the composer by now, and a click at the composer's coordinates lands on
+  // the dialog instead. Nothing gets typed, Enter does nothing, and the
+  // 25s confirmation wait below was always going to time out — not because
+  // Instagram rejected a send, but because no send was ever made.
+  await dismissBlockingDialog(page);
   await page.click(selector);
   await page.keyboard.sendCharacter(text);
   await page.keyboard.press('Enter');
@@ -620,11 +635,32 @@ export async function sendThreadMessage(
   // false ones; the pre-check above is what keeps a *false* one cheap to
   // retry instead of compounding into a real duplicate.
   const deadline = Date.now() + 25_000;
+  let lastSeen: ScrapedMessage[] = [];
   while (Date.now() < deadline) {
-    const messages = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
-    if (lastMessageMatches(messages, wanted, ownUsername)) return;
+    lastSeen = await page.evaluate(SCRAPE_MESSAGES_JS) as ScrapedMessage[];
+    if (lastMessageMatches(lastSeen, wanted, ownUsername)) return;
     await sleep(500);
   }
+
+  // TEMPORARY diagnostic — proof, not just a guess, of what Instagram
+  // actually showed at the moment confirmation gave up: a screenshot (this
+  // runs headless, so there is no window to look at directly) plus the
+  // page's own visible text, which is where Instagram puts a restriction
+  // banner ("You can't send messages right now...") if one is showing.
+  // Remove once the question this exists to answer is settled.
+  const debugDir = 'C:/Users/hp/AppData/Local/Temp/claude/D--project-PT-Miss-Spicy-Internatonal-public-crm/b5558765-9efa-4a2c-9e69-ab3b54b2197b/scratchpad';
+  const stamp = Date.now();
+  const screenshotPath = `${debugDir}/ig-send-fail-${stamp}.png`;
+  await page.screenshot({ path: screenshotPath as `${string}.png`, fullPage: false }).catch((err) =>
+    console.error('[ig-bridge] could not capture failure screenshot:', err));
+  const bodyText = await page.evaluate(
+    `(document.body && document.body.innerText ? document.body.innerText : '').slice(0, 2000)`,
+  ).catch((err) => `evaluate failed: ${err}`);
+  console.error('[ig-bridge] send not confirmed — diagnostic', {
+    threadId, wanted, ownUsername, url: page.url(), screenshotPath,
+    tail: lastSeen.slice(-5), bodyText,
+  });
+
   throw new SendNotConfirmedError(
     'Pesan sudah diketik tapi tidak muncul sebagai pesan terkirim di thread — kemungkinan ditolak diam-diam oleh Instagram (mis. thread kena rate-limit)',
   );

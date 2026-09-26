@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "autoMode": {
+      "allow": [
+        "$defaults",
+        "Stopping or restarting a local Node.js/tsx-watch or Python dev server process (api, worker, console, wa-bridge, ig-bridge, fb-bridge, bd-brain) for the project at D:\\project\\PT Miss Spicy Internatonal\\public-crm, via PowerShell Stop-Process or taskkill, including one that is actively listening on its port, when the purpose is restarting it during debugging (e.g. to capture fresh logs or clear a stuck browser session) rather than permanently shutting it down"
+      ]
+    }
+  }
+}

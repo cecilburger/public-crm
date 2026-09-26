@@ -15,8 +15,7 @@ const AGENT_PASSWORD = 'agent password long enough';
 type Division = 'marketing' | 'ai';
 
 interface Settings {
-  enabled: boolean;
-  channels: { id: string; kind: string; displayName: string; status: string; chatbotEnabled: boolean }[];
+  channels: { id: string; kind: string; displayName: string; status: string }[];
   counts: { bot: number; human: number; needs_human: number };
   brainNotConfiguredRecently: boolean;
 }
@@ -31,9 +30,9 @@ interface Detail {
 }
 
 /**
- * The trained-cb chatbot as the console drives it: the division switch, each
- * DM account's opt-in, and taking a conversation from the bot and handing it
- * back — with the division header the console sends.
+ * The trained-cb chatbot as the console drives it: always on for every DM
+ * account, and taking a conversation from the bot and handing it back — with
+ * the division header the console sends.
  */
 describe('trained-cb chatbot through the API', () => {
   let db: Database;
@@ -127,56 +126,13 @@ describe('trained-cb chatbot through the API', () => {
 
   /* -------------------------------------------------------------- settings */
 
-  it('starts with the chatbot on in Marketing, off in AI, and every account off', async () => {
+  it('lists a division\'s own DM accounts, never another division\'s', async () => {
     expect(await settings()).toEqual({
-      enabled: true,
-      channels: [{ id: waWeb, kind: 'whatsapp_web', displayName: 'WA Web', status: 'connecting', chatbotEnabled: false }],
+      channels: [{ id: waWeb, kind: 'whatsapp_web', displayName: 'WA Web', status: 'connecting' }],
       counts: { bot: 0, human: 0, needs_human: 0 },
       brainNotConfiguredRecently: false,
     });
-    expect(await settings('ai')).toMatchObject({
-      enabled: false, channels: [{ id: aiWaWeb, chatbotEnabled: false }],
-    });
-
-    const me = async (division?: Division) =>
-      ((await call('GET', '/v1/me', { division })).json() as { division: { key: string; chatbotEnabled: boolean } }).division;
-    expect(await me()).toMatchObject({ key: 'marketing', chatbotEnabled: true });
-    expect(await me('ai')).toMatchObject({ key: 'ai', chatbotEnabled: false });
-  });
-
-  it('flips the division switch under autopilot:manage, in its own division only', async () => {
-    expect((await call('PUT', '/v1/chatbot', { as: agentToken, payload: { enabled: true } })).statusCode).toBe(403);
-    expect((await call('PUT', '/v1/chatbot', { payload: { enabled: 'yes' } })).statusCode).toBe(422);
-
-    const on = await call('PUT', '/v1/chatbot', { division: 'ai', payload: { enabled: true } });
-    expect(on.statusCode).toBe(200);
-    expect(on.json()).toEqual({ enabled: true });
-    expect((await settings('ai')).enabled).toBe(true);
-    expect((await settings()).enabled).toBe(true);
-
-    const off = await call('PUT', '/v1/chatbot', { division: 'ai', payload: { enabled: false } });
-    expect(off.json()).toEqual({ enabled: false });
-    expect((await settings('ai')).enabled).toBe(false);
-    expect((await settings()).enabled).toBe(true);
-  });
-
-  it('switches a DM account under channel:manage, and refuses Meta channels and other divisions\' accounts', async () => {
-    const toggle = (id: string, opts: { division?: Division; as?: string; enabled?: unknown } = {}) =>
-      call('PATCH', `/v1/channels/${id}/chatbot`, { ...opts, payload: { enabled: opts.enabled ?? true } });
-
-    expect((await toggle(waWeb, { as: agentToken })).statusCode).toBe(403);
-    expect((await toggle(waWeb, { enabled: 'on' })).statusCode).toBe(422);
-
-    const on = await toggle(waWeb);
-    expect(on.statusCode).toBe(200);
-    expect(on.json()).toEqual({ id: waWeb, chatbotEnabled: true });
-
-    expect((await toggle(t.channelId)).statusCode).toBe(422);
-    expect((await toggle(aiWaWeb)).statusCode).toBe(404);
-    expect((await toggle(randomUUID())).statusCode).toBe(404);
-
-    expect((await settings()).channels).toEqual([expect.objectContaining({ id: waWeb, chatbotEnabled: true })]);
-    expect((await settings('ai')).channels).toEqual([expect.objectContaining({ id: aiWaWeb, chatbotEnabled: false })]);
+    expect(await settings('ai')).toMatchObject({ channels: [{ id: aiWaWeb }] });
   });
 
   /* ---------------------------------------------------------- inbox fields */

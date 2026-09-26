@@ -145,7 +145,15 @@ export function registerInstagramBridgeRoutes(app: FastifyInstance, ctx: AppCtx)
     }
 
     // The window was closed, or timed out, without a session ever appearing.
-    if (stored.status === 'awaiting_login' && !b.awaitingLogin && !b.hasSession) {
+    // Checked by `!b.username`, not `!b.hasSession`: the bridge's `hasSession`
+    // only asks whether the Chromium profile directory has anything in it at
+    // all, which it does the moment the login window's browser launches —
+    // true whether or not the operator ever finished logging in. A window
+    // closed mid-login left `hasSession: true, username: null` here forever,
+    // matching neither this branch nor the `ready` one above it, so the
+    // console was stuck showing "menunggu login manual" with no window left
+    // to finish it in and no way out short of restarting the bridge.
+    if (stored.status === 'awaiting_login' && !b.awaitingLogin && !b.username) {
       await ctx.asTenant(req, (tx) =>
         setIgBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
           status: 'error', challengeType: null,

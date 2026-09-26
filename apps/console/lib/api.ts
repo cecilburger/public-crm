@@ -72,7 +72,7 @@ export interface Me {
   user: { id: string; name: string; email: string; role: Role };
   workspace: { name: string; slug: string; status: string };
   /** The division this request acted in — what the switcher shows as active. */
-  division: Division & { chatbotEnabled?: boolean };
+  division: Division;
   /** Both divisions of the workspace, Marketing first. */
   divisions: Division[];
 }
@@ -140,12 +140,10 @@ export interface ChatbotChannel {
   kind: 'whatsapp_web' | 'instagram_bridge' | 'messenger_bridge';
   displayName: string;
   status: string;
-  chatbotEnabled: boolean;
 }
 
-/** `GET /v1/chatbot` — the division's trained-cb switch and its DM accounts. */
+/** `GET /v1/chatbot` — the division's DM accounts; the bot always answers on all of them. */
 export interface ChatbotOverview {
-  enabled: boolean;
   channels: ChatbotChannel[];
   counts: Record<Handling, number>;
   brainNotConfiguredRecently: boolean;

@@ -640,10 +640,22 @@ export class SessionManager {
       waitUntil: 'domcontentloaded', timeout: 30_000,
     }).catch(() => {});
 
+    // Without the `.catch()`, an exception anywhere inside `awaitBrowserLogin`
+    // — one the several `.catch(() => …)`s inside it don't happen to cover —
+    // rejects this promise, the `.then()` below never runs, and `loginWindows`
+    // keeps the entry forever: every poll of `/status` finds the same session
+    // still "awaiting login", with no window left to finish it in and no way
+    // out short of restarting the bridge process. Settling on failure here
+    // guarantees the map entry is always cleared and the console is always
+    // told something, however this ends.
     void this.awaitBrowserLogin(sessionKey, page).then(async (result) => {
       this.loginWindows.delete(sessionKey);
       await browser.close().catch(() => {});
       onSettled?.(result);
+    }).catch(async (err) => {
+      this.loginWindows.delete(sessionKey);
+      await browser.close().catch(() => {});
+      onSettled?.({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
     });
 
     return { status: 'awaiting_login' };
@@ -863,6 +875,22 @@ export class SessionManager {
         // can see it, and settles the question before a retry is earned.
         if (!(err instanceof SendNotConfirmedError) || !username) throw err;
         if (!(await dmLanded(page, username, text, { sinceMs: startedAt }))) throw err;
+        return;
+      }
+
+      // The other direction of the same problem: the thread page renders a
+      // just-typed bubble optimistically — it's the same client behaviour
+      // that clears the composer regardless of whether Instagram's server
+      // actually accepted the message (see `sendThreadMessage`) — so a
+      // bubble the scrape found can still be one the server silently
+      // rejected a moment later. Confirmed live: a reply reported `sent`
+      // here was never on the recipient's side. When the contact's username
+      // is known, the same inbox call that rescues a false failure above is
+      // asked to agree before this reports success at all.
+      if (username && !(await dmLanded(page, username, text, { sinceMs: startedAt }))) {
+        throw new SendNotConfirmedError(
+          'Pesan tampak terkirim di halaman thread tapi tidak ada di inbox Instagram — kemungkinan ditolak diam-diam setelah tampil sesaat',
+        );
       }
     } catch (err) {
       if (err instanceof SessionExpiredError) this.forgetSession(sessionKey);

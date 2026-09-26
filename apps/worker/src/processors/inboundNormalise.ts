@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import {
   withTenant, withoutTenant, ingestInboundMessage, ingestInboundInstagramMessage, ingestInboundInstagramDmMessage,
   recordPhoneReply, recordIgBridgeAgentReply, advanceDealsOnEvent, getDecryptedIgToken,
-  recordIgComment, bridgeSessionHome, findInstagramBridgeChannel, type Database,
+  recordIgComment, bridgeSessionHome, findInstagramBridgeChannel, setHandling, type Database,
 } from '@kirana/db';
 import { chatbotDispatch } from './chatbotReply.ts';
 
@@ -457,6 +457,16 @@ async function processIgBridgeDmEvent(
     // A reply the agent already sent — from the console or, here, from
     // their own phone — needs no answer; there is nothing new to reply to.
     if (payload.message.direction === 'inbound') {
+      // Chat IG runs bot-only by product decision — its own page carries no
+      // hand-over control to move a conversation off the bot or back onto
+      // it, so nothing here is allowed to leave one stuck off `bot` with no
+      // way to recover it. Every inbound DM brings the conversation back
+      // onto the bot before asking it to answer, regardless of how — an
+      // exhausted send, an old takeover, anything — it drifted off.
+      await withTenant(deps.db, home.tenantId, (tx) =>
+        setHandling({ tx, tenantId: home.tenantId, divisionId: home.divisionId }, {
+          conversationId: result.conversationId, handling: 'bot',
+        }), scope);
       // Same rule as the wa-bridge ingress: trained-cb or a person, never Autopilot.
       await chatbotDispatch(deps, {
         tenantId: home.tenantId, divisionId: home.divisionId,

@@ -10,6 +10,14 @@ import { UnrecoverableError } from 'bullmq';
  * actions. Nothing is stored there, so a restart loses nothing and two tenants
  * cannot meet — the state never leaves this database except for the duration
  * of one call.
+ *
+ * Two things ride along with the state, because the brain runs the bot's
+ * real engine and that engine looks them up in a database it does not have
+ * here: `source`, which tells the flow whether this is a WhatsApp thread or
+ * an Instagram/Facebook DM (the jid is a UUID, so nothing else can), and
+ * `history`, the recent turns, which feed the loop breaker, the echo check,
+ * the "did we just ask for the focus" gate and slot picking. Both come out
+ * of this database on every call, so the brain still keeps nothing.
  */
 
 /** Mirrors `bd_bot.models.Conversation`, field for field. */
@@ -29,6 +37,19 @@ export interface BdConversation {
   unknown_streak?: number;
   price_stage?: number;
   stopped_reason?: string;
+  /** `''` for WhatsApp, `'instagram'` or `'facebook'` for a Meta DM. Decides
+   * the DM opener over the WhatsApp form and switches on the DM → WhatsApp
+   * hand-off (`bd_bot.flow.dm_channel`). */
+  source?: string;
+}
+
+/** One recent turn, oldest first in a list. `at` lets the brain's
+ * time-windowed guards (the loop breaker) see real timestamps; without it
+ * the brain places the turn an hour ago. */
+export interface BdTurn {
+  direction: 'in' | 'out';
+  body: string;
+  at?: string;
 }
 
 export type BdAction =
@@ -109,11 +130,17 @@ export class BdBrainClient {
    * worker for minutes. Ten seconds is generous for the fallback and still
    * short enough that the queue's backoff, not this call, decides how long a
    * message waits.
+   *
+   * `history` is the same recent-turns list `book` and `proposeSlots` get.
+   * It may include the message being stepped as its newest turn — the CRM
+   * records a message before it asks about it — and the brain drops that
+   * copy itself, so the caller need not.
    */
   async step(args: {
     conversation: BdConversation;
     text: string;
     now: Date;
+    history?: BdTurn[];
     intent?: string;
   }): Promise<BdStep> {
     const res = await fetch(`${this.baseUrl}/v1/step`, {
@@ -123,6 +150,7 @@ export class BdBrainClient {
         conversation: args.conversation,
         text: args.text,
         now: jakartaIso(args.now),
+        history: args.history ?? [],
         ...(args.intent ? { intent: args.intent } : {}),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -153,7 +181,7 @@ export class BdBrainClient {
    */
   async book(args: {
     conversation: BdConversation;
-    history: { direction: 'in' | 'out'; body: string }[];
+    history: BdTurn[];
     now: Date;
   }): Promise<BdBooking> {
     const res = await fetch(`${this.baseUrl}/v1/book`, {
@@ -186,7 +214,7 @@ export class BdBrainClient {
     conversation: BdConversation;
     fallbackText: string;
     fallbackKey: string;
-    history: { direction: 'in' | 'out'; body: string }[];
+    history: BdTurn[];
     now: Date;
   }): Promise<{ messages: string[]; conversation: BdConversation }> {
     const res = await fetch(`${this.baseUrl}/v1/propose-slots`, {

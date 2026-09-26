@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   withTenant, createWaBridgeChannel, ingestInboundMessage, queueOutboundMessage, listInbox, listWaBridgeChannels,
-  getChatbotSettings, setChatbotEnabled, listChatbotChannels, setChannelChatbotEnabled, chatbotOwnership,
+  listChatbotChannels, chatbotOwnership,
   claimChatbotRun, releaseStalledRuns, finishChatbotRun, markBookingAttempted, setHandling,
   takeoverConversation, resumeBot, chatbotHandlingCounts, markChatbotRunExhausted, unsentChatbotReplies,
   CHATBOT_LEASE_STALE_MS,
@@ -16,9 +16,9 @@ type Division = 'marketing' | 'ai';
 const metaOf = <T>(meta: unknown): T => (typeof meta === 'string' ? JSON.parse(meta) : meta) as T;
 
 /**
- * The trained-cb chatbot's database layer (0061): the switches, the run
- * ledger that makes a redelivered job harmless and serialises a thread, and
- * the takeover / resume hand-offs between the bot and a human.
+ * The trained-cb chatbot's database layer (0061): which conversations it
+ * owns, the run ledger that makes a redelivered job harmless and serialises
+ * a thread, and the takeover / resume hand-offs between the bot and a human.
  */
 describe('trained-cb chatbot rows', () => {
   let db: Database;
@@ -69,65 +69,32 @@ describe('trained-cb chatbot rows', () => {
 
   afterAll(async () => { await db.close(); });
 
-  /* -------------------------------------------------------------- switches */
+  /* ------------------------------------------------------------- accounts */
 
-  it('starts a new tenant with Marketing on and AI off, and new accounts off', async () => {
-    expect((await inDivision('marketing', getChatbotSettings)).enabled).toBe(true);
-    expect((await inDivision('ai', getChatbotSettings)).enabled).toBe(false);
+  it('lists a division\'s own DM accounts, never another division\'s', async () => {
     const listed = await inDivision('marketing', listChatbotChannels);
     expect(listed).toEqual([
-      { id: waWeb, kind: 'whatsapp_web', display_name: 'WA Web', status: 'connecting', chatbot_enabled: false },
+      { id: waWeb, kind: 'whatsapp_web', display_name: 'WA Web', status: 'connecting' },
     ]);
-  });
-
-  it('flips the division switch in its own division only, and audits it', async () => {
-    const saved = await inDivision('ai', (ctx) => setChatbotEnabled(ctx, { enabled: true, actorId: ownerId }));
-    expect(saved).toMatchObject({ enabled: true, updatedBy: ownerId });
-    expect((await inDivision('ai', getChatbotSettings)).enabled).toBe(true);
-    expect((await inDivision('marketing', getChatbotSettings)).enabled).toBe(true);
-
-    await inDivision('ai', (ctx) => setChatbotEnabled(ctx, { enabled: false, actorId: ownerId }));
-    expect((await inDivision('ai', getChatbotSettings)).enabled).toBe(false);
-
-    const audits = await withTenant(db, t.tenantId, (tx) => tx.query<{ meta: unknown }>(
-      `select meta from audit_events where action = 'chatbot.settings_changed' order by id`));
-    expect(audits.map((a) => metaOf<{ enabled: boolean }>(a.meta).enabled)).toEqual([true, false]);
-  });
-
-  it('switches a DM account on, but never a Meta channel or another division\'s account', async () => {
-    const on = await inDivision('marketing', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: waWeb, enabled: true, actorId: ownerId }));
-    expect(on).toMatchObject({ id: waWeb, kind: 'whatsapp_web', chatbot_enabled: true });
-
-    expect(await inDivision('marketing', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: t.channelId, enabled: true, actorId: ownerId }))).toBeNull();
-    expect(await inDivision('marketing', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: aiWaWeb, enabled: true, actorId: ownerId }))).toBeNull();
-
     const [ai] = await inDivision('ai', listChatbotChannels);
-    expect(ai).toMatchObject({ id: aiWaWeb, chatbot_enabled: false });
+    expect(ai).toMatchObject({ id: aiWaWeb });
   });
 
-  it('owns a conversation only when division, account and kind all agree', async () => {
+  it('owns a conversation on any DM bridge, in any division, never a Meta channel', async () => {
     const onWaWeb = await inbound(waWeb);
     const onMeta = await inbound(t.channelId);
-    await inDivision('ai', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: aiWaWeb, enabled: true, actorId: ownerId }));
     const onAi = await inbound(aiWaWeb, 'ai');
 
     const owned = await inDivision('marketing', (ctx) => chatbotOwnership(ctx, onWaWeb.conversationId));
     expect(owned).toMatchObject({
-      owned: true, divisionEnabled: true, channelEnabled: true, channelKind: 'whatsapp_web',
-      handling: 'bot', optOut: false, divisionId: t.divisions.marketing,
+      owned: true, channelKind: 'whatsapp_web', handling: 'bot', optOut: false, divisionId: t.divisions.marketing,
     });
     expect((await inDivision('marketing', (ctx) => chatbotOwnership(ctx, onMeta.conversationId)))?.owned).toBe(false);
-    // AI's account is switched on, AI's division is not.
-    expect(await inDivision('ai', (ctx) => chatbotOwnership(ctx, onAi.conversationId)))
-      .toMatchObject({ owned: false, divisionEnabled: false, channelEnabled: true });
+    expect((await inDivision('ai', (ctx) => chatbotOwnership(ctx, onAi.conversationId)))?.owned).toBe(true);
     // Tenant-wide callers read the conversation's own division, not a default.
     const tenantWide = await withTenant(db, t.tenantId, (tx) =>
       chatbotOwnership({ tx, tenantId: t.tenantId }, onAi.conversationId));
-    expect(tenantWide).toMatchObject({ owned: false, divisionId: t.divisions.ai });
+    expect(tenantWide).toMatchObject({ owned: true, divisionId: t.divisions.ai });
     // And across the division boundary the conversation does not exist.
     expect(await inDivision('marketing', (ctx) => chatbotOwnership(ctx, onAi.conversationId))).toBeNull();
 
@@ -448,6 +415,16 @@ describe('trained-cb chatbot rows', () => {
   /* ------------------------------------------------------------ isolation */
 
   it('keeps settings and runs inside their division and their tenant', async () => {
+    // Nothing seeds chatbot_settings any more — the division switch it once
+    // held is gone — so this row is written here, purely to exercise the RLS
+    // policy the table still carries.
+    await inDivision('ai', (ctx) => ctx.tx.query(
+      `insert into chatbot_settings (tenant_id, division_id, enabled) values ($1, $2, true)`,
+      [t.tenantId, t.divisions.ai]));
+    await inDivision('marketing', (ctx) => ctx.tx.query(
+      `insert into chatbot_settings (tenant_id, division_id, enabled) values ($1, $2, true)`,
+      [other.tenantId, other.divisions.marketing]), other);
+
     const aiSees = await inDivision('ai', async (ctx) => ({
       settings: await ctx.tx.query<{ division_id: string }>('select division_id from chatbot_settings'),
       runs: await ctx.tx.query<{ id: string }>('select id from chatbot_runs'),

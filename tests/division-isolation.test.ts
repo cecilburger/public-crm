@@ -381,24 +381,13 @@ describe('Marketing and AI are isolated at the API', () => {
     expect((await call('POST', `/v1/wa-bridge/channels/${channelId}/disconnect`)).statusCode).toBe(404);
   });
 
-  it('switches the chatbot per division, and only on that division\'s own accounts', async () => {
+  it('lists the chatbot\'s DM accounts per division, never another division\'s', async () => {
     const { channelId } = await inDivision('ai', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web AI bot' }));
     const chatbot = async (division?: Division) =>
-      (await call('GET', '/v1/chatbot', { division })).json() as { enabled: boolean; channels: { id: string }[] };
+      (await call('GET', '/v1/chatbot', { division })).json() as { channels: { id: string }[] };
 
-    expect((await call('PATCH', `/v1/channels/${channelId}/chatbot`, { payload: { enabled: true } })).statusCode).toBe(404);
     expect((await chatbot()).channels.map((c) => c.id)).not.toContain(channelId);
     expect((await chatbot('ai')).channels.map((c) => c.id)).toContain(channelId);
-    const [before] = await withTenant(db, t.tenantId, (tx) => tx.query<{ chatbot_enabled: boolean }>(
-      'select chatbot_enabled from channels where id = $1', [channelId]));
-    expect(before!.chatbot_enabled).toBe(false);
-
-    const own = await call('PATCH', `/v1/channels/${channelId}/chatbot`, { division: 'ai', payload: { enabled: true } });
-    expect(own.statusCode).toBe(200);
-
-    // The division switch follows the header too, and AI starts off.
-    expect((await chatbot('ai')).enabled).toBe(false);
-    expect((await chatbot()).enabled).toBe(true);
   });
 
   it('addresses each division\'s Facebook session separately, and never lends one Page to both', async () => {

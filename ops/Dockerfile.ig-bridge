@@ -1,0 +1,53 @@
+# apps/ig-bridge as a container.
+#
+# Puppeteer needs Chromium plus the OS shared libraries it links against —
+# apt's own `chromium` package on Debian pulls all of those in automatically,
+# far more reliably across Debian releases than enumerating the library list
+# by hand. Puppeteer's own postinstall download is skipped
+# (PUPPETEER_SKIP_DOWNLOAD) so it never fetches a second, redundant copy of
+# the browser; PUPPETEER_EXECUTABLE_PATH points every `puppeteer.launch()`
+# call in the app at the apt-installed binary instead — read automatically by
+# Puppeteer itself when no `executablePath` is passed in code, which this app
+# never does, so no source change was needed for this to work.
+#
+# The manual-login window (`openLoginWindow` in sessionManager.ts, behind
+# Pengaturan → Instagram → "Hubungkan") opens a REAL, non-headless browser a
+# human has to see and click through — that cannot run inside a normal
+# headless container, no flag here changes that. For that path, do the FIRST
+# login for a session on a machine with a real display (a laptop running
+# `npm run dev:ig-bridge` works fine) and copy the resulting
+# `.ig_bridge_auth/<sessionKey>/` directory onto this container's volume
+# afterwards. Password login and a pasted `sessionid` cookie — the console's
+# other two connect options — both work headless already and need none of
+# this.
+FROM node:24-slim AS base
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      chromium ca-certificates fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY apps/ig-bridge/package.json apps/ig-bridge/
+RUN npm ci --omit=dev
+
+FROM base AS runtime
+# Runs unprivileged. The auth directory is created (and owned) up front so
+# the profile Chromium writes into it survives a volume mount at that exact
+# path without a root step re-chowning it on every start.
+RUN groupadd -g 10001 igbridge && useradd -u 10001 -g igbridge -M igbridge \
+    && mkdir -p /app/apps/ig-bridge/.ig_bridge_auth \
+    && chown -R igbridge:igbridge /app
+COPY --from=deps --chown=igbridge:igbridge /app/node_modules ./node_modules
+COPY --chown=igbridge:igbridge apps/ig-bridge/src apps/ig-bridge/src
+COPY --chown=igbridge:igbridge apps/ig-bridge/package.json apps/ig-bridge/
+USER igbridge
+EXPOSE 8091
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
+  CMD node -e "fetch('http://127.0.0.1:8091/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "--experimental-strip-types", "apps/ig-bridge/src/main.ts"]

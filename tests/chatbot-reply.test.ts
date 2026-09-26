@@ -5,7 +5,7 @@ import { env, type Env } from '@kirana/core';
 import {
   withTenant, createWaBridgeChannel, ingestInboundMessage, queueOutboundMessage,
   ensureInstagramBridgeChannel, ensureMessengerBridgeChannel, ingestInboundMessengerMessage,
-  setChatbotEnabled, setChannelChatbotEnabled, setHandling, takeoverConversation, resumeBot,
+  setHandling, takeoverConversation, resumeBot,
   claimChatbotRun, finishChatbotRun, markBookingAttempted, tenantKeys, openField,
   type Ctx, type Database, type Handling,
 } from '@kirana/db';
@@ -81,8 +81,6 @@ describe('the trained-cb chatbot', () => {
   let t: TestTenant;
   let ownerId: string;
   let waWeb: string;
-  let waWebOff: string;
-  let aiWaWeb: string;
   let seq = 0;
   const dispatched: { queue: string; payload: unknown }[] = [];
 
@@ -148,13 +146,6 @@ describe('the trained-cb chatbot', () => {
     ownerId = await withTenant(db, t.tenantId, async (tx) =>
       (await tx.query<{ id: string }>('select id from users limit 1'))[0]!.id);
     waWeb = (await inDivision('marketing', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web' }))).channelId;
-    waWebOff = (await inDivision('marketing', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web (off)' }))).channelId;
-    aiWaWeb = (await inDivision('ai', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web AI' }))).channelId;
-    await inDivision('marketing', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: waWeb, enabled: true, actorId: ownerId }));
-    // AI's account is switched on; AI's division is not, which is how a new tenant starts.
-    await inDivision('ai', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: aiWaWeb, enabled: true, actorId: ownerId }));
   });
 
   afterAll(async () => { await db.close(); });
@@ -340,20 +331,6 @@ describe('the trained-cb chatbot', () => {
 
   /* ------------------------------------------------------- not the bot's */
 
-  it('does not ask the brain when the account or the division has the chatbot off', async () => {
-    const { brain, calls } = fakeBrain();
-
-    const offAccount = await inbound(waWebOff);
-    expect(await processChatbotReply(deps(brain), offAccount.job)).toMatchObject({ status: 'skipped', reason: 'disabled' });
-
-    const aiDivision = await inbound(aiWaWeb, { division: 'ai' });
-    expect(await processChatbotReply(deps(brain), aiDivision.job)).toMatchObject({ status: 'skipped', reason: 'disabled' });
-
-    expect(calls.step).toHaveLength(0);
-    expect(await runOf(offAccount.messageId)).toMatchObject({ status: 'skipped', skip_reason: 'disabled' });
-    expect(await outboundOf(offAccount.conversationId)).toHaveLength(0);
-  });
-
   it('stays quiet on a conversation a person is handling', async () => {
     const m = await inbound(waWeb);
     await inDivision('marketing', (ctx) => setHandling(ctx, { conversationId: m.conversationId, handling: 'human' }));
@@ -383,23 +360,6 @@ describe('the trained-cb chatbot', () => {
     expect(outcome.status).toBe('replied');
     expect(deferrals).toBe(0);
     expect(calls.step.map((c) => c.text)).toEqual(['halo kak']);
-  });
-
-  it('answers the first message after an account is switched on at once', async () => {
-    const channelId = (await inDivision('marketing', (ctx) =>
-      createWaBridgeChannel(ctx, { displayName: 'WA Web (switched on later)' }))).channelId;
-    const before = await inbound(channelId);
-    const { brain } = fakeBrain();
-    expect(await chatbotDispatch(deps(brain), { ...before.job, channelId })).toBe('skipped_disabled');
-    expect(await runOf(before.messageId)).toMatchObject({ status: 'skipped', skip_reason: 'disabled' });
-
-    await inDivision('marketing', (ctx) => setChannelChatbotEnabled(ctx, { channelId, enabled: true, actorId: ownerId }));
-    const after = await inbound(channelId, { phone: before.phone });
-    let deferrals = 0;
-    const outcome = await processChatbotReply(deps(brain), after.job, { onBusy: async () => { deferrals += 1; } });
-
-    expect(outcome.status).toBe('replied');
-    expect(deferrals).toBe(0);
   });
 
   it('lets a takeover that lands while the brain is thinking win', async () => {
@@ -831,8 +791,8 @@ describe('the trained-cb chatbot', () => {
     expect(after.slice(1).map((r) => r.status)).toEqual(['sent', 'sent']);
   });
 
-  it('keeps Autopilot off a bridge conversation whether or not the chatbot is on', async () => {
-    const m = await inbound(waWebOff);
+  it('keeps Autopilot off a bridge conversation — the chatbot answers it instead', async () => {
+    const m = await inbound(waWeb);
     const model = { draft: async () => { throw new Error('Autopilot must never draft for a bridge DM'); } };
 
     const outcome = await processAutopilotDraft(
@@ -858,8 +818,6 @@ describe('which inbound DMs reach the chatbot', () => {
   let e: Env;
   let ownerId: string;
   let waWeb: string;
-  let waWebOff: string;
-  let aiWaWeb: string;
   let igChannel: string;
   let fbChannel: string;
   let seq = 0;
@@ -928,14 +886,9 @@ describe('which inbound DMs reach the chatbot', () => {
     await app.ready();
 
     waWeb = (await inDivision('marketing', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web' }))).channelId;
-    waWebOff = (await inDivision('marketing', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web off' }))).channelId;
-    aiWaWeb = (await inDivision('ai', (ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web AI' }))).channelId;
     igChannel = (await inDivision('marketing', (ctx) => ensureInstagramBridgeChannel(ctx, { username: 'toko.cb' }))).channelId;
     fbChannel = (await inDivision('marketing', (ctx) =>
       ensureMessengerBridgeChannel(ctx, { pageId: '900000000000777', pageName: 'Toko CB', status: 'connected' }))).channelId;
-    for (const [division, channelId] of [['marketing', waWeb], ['marketing', igChannel], ['ai', aiWaWeb]] as const) {
-      await inDivision(division, (ctx) => setChannelChatbotEnabled(ctx, { channelId, enabled: true, actorId: ownerId }));
-    }
   });
 
   afterAll(async () => { await app.close(); await db.close(); });
@@ -956,8 +909,7 @@ describe('which inbound DMs reach the chatbot', () => {
     expect(await deliver('/v1/webhooks/wa-bridge', event, e.WA_BRIDGE_SECRET)).toEqual([]);
   });
 
-  it('queues nothing for an account with the chatbot off, the phone\'s own reply, or a human-held thread', async () => {
-    expect(await deliver('/v1/webhooks/wa-bridge', waEvent(waWebOff), e.WA_BRIDGE_SECRET)).toEqual([]);
+  it('queues nothing for the phone\'s own reply, or a human-held thread', async () => {
     expect(await deliver('/v1/webhooks/wa-bridge', waEvent(waWeb, { fromMe: true }), e.WA_BRIDGE_SECRET)).toEqual([]);
 
     const first = waEvent(waWeb);
@@ -966,10 +918,6 @@ describe('which inbound DMs reach the chatbot', () => {
     await inDivision('marketing', (ctx) => setHandling(ctx, { conversationId, handling: 'human' }));
     const followUp = waEvent(waWeb, { from: first.message.from });
     expect(chatbotJobs(await deliver('/v1/webhooks/wa-bridge', followUp, e.WA_BRIDGE_SECRET))).toEqual([]);
-  });
-
-  it('queues nothing in the AI division, which starts with the chatbot off', async () => {
-    expect(await deliver('/v1/webhooks/wa-bridge', waEvent(aiWaWeb), e.WA_BRIDGE_SECRET)).toEqual([]);
   });
 
   it('queues a chatbot job for an inbound Instagram DM, never for our own reply', async () => {
@@ -988,11 +936,7 @@ describe('which inbound DMs reach the chatbot', () => {
     expect(await deliver('/v1/webhooks/ig-bridge', message(1, 'outbound'), e.IG_BRIDGE_SECRET)).toEqual([]);
   });
 
-  it('answers Messenger only once the Page\'s channel is switched on', async () => {
-    expect(await deliver('/v1/webhooks/fb-bridge', fbEvent(), e.FB_BRIDGE_SECRET)).toEqual([]);
-
-    await inDivision('marketing', (ctx) =>
-      setChannelChatbotEnabled(ctx, { channelId: fbChannel, enabled: true, actorId: ownerId }));
+  it('answers Messenger, never our own outbound copy of a reply', async () => {
     const queued = await deliver('/v1/webhooks/fb-bridge', fbEvent(), e.FB_BRIDGE_SECRET);
     expect(queued.map((j) => j.queue)).toEqual([CHATBOT_REPLY_QUEUE]);
     expect(queued[0]!.payload).toMatchObject({ tenantId: t.tenantId, divisionId: t.divisions.marketing });
@@ -1029,11 +973,9 @@ describe('a bot reply on Messenger', () => {
     t = await makeTenant(db, 'cbmessenger');
     ownerId = await withTenant(db, t.tenantId, async (tx) =>
       (await tx.query<{ id: string }>('select id from users limit 1'))[0]!.id);
-    // The AI division's own Page, with the chatbot switched on for both.
-    await inAi((ctx) => setChatbotEnabled(ctx, { enabled: true, actorId: ownerId }));
+    // The AI division's own Page.
     const { channelId } = await inAi((ctx) =>
       ensureMessengerBridgeChannel(ctx, { pageId: '900000000000888', pageName: 'Toko AI', status: 'connected' }));
-    await inAi((ctx) => setChannelChatbotEnabled(ctx, { channelId, enabled: true, actorId: ownerId }));
     ({ conversationId, messageId } = await inAi((ctx) => ingestInboundMessengerMessage(ctx, {
       channelId, fbUserId: '100000000000888', threadId: '100000000000888', body: 'halo kak',
       providerMessageId: 'fb_dm:test:1', displayName: 'Budi',
