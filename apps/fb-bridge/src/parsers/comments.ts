@@ -6,6 +6,7 @@ import {
   changeSignature, firstHrefMatch, isTimestampish, links, parseHtml, queryAll, queryFirst, textOf, textRuns,
   timestampFrom, type El,
 } from './dom.ts';
+import { postDetailsOf, type PostDetails } from './postDetails.ts';
 
 export interface ParsedComment {
   /** Facebook's own comment id. Required — see `droppedNoId`. */
@@ -70,6 +71,12 @@ export interface ParsedComments {
    * that rose is a new comment or reply on that post.
    */
   commentCounts: Record<string, number>;
+  /**
+   * What each post is — its caption and its age — for the posts where either
+   * could be read. The CRM names a comment group after its post with these
+   * (`postDetails.ts`); the post id stays the identity.
+   */
+  postDetails: Record<string, PostDetails>;
 }
 
 /** The summary under a post: "3 comments", "1 comment", "14 komentar", "1,2 rb komentar", "2.4K comments". */
@@ -87,10 +94,15 @@ const COMMENT_COUNT_RE = /^([\d.,]+)\s*(rb|k|jt|m)?\s*(?:comments?|komentar)$/i;
  */
 export function parseFacebookComments(
   html: string,
-  opts: { defaultPostId?: string | null; pageId?: string | null; pageName?: string | null } = {},
+  opts: {
+    defaultPostId?: string | null; pageId?: string | null; pageName?: string | null;
+    /** What a post's relative age ("2 days ago") counts back from. */
+    now?: Date;
+  } = {},
 ): ParsedComments {
   const root = parseHtml(html);
   const feed = queryFirst(root, COMMENTS.feed) ?? root;
+  const now = opts.now ?? new Date();
 
   // Comments are found directly, not as descendants of a post scope. A comment
   // is itself a `div[role="article"]` — confirmed live — so a first version
@@ -101,6 +113,7 @@ export function parseFacebookComments(
   const nodes = queryAll(feed, COMMENTS.comment);
   const postIds: string[] = [];
   const commentCounts: Record<string, number> = {};
+  const postDetails: Record<string, PostDetails> = {};
   let postArticles = 0;
   let postArticlesWithoutId = 0;
   for (const post of queryAll(feed, COMMENTS.post)) {
@@ -112,6 +125,10 @@ export function parseFacebookComments(
     if (!postIds.includes(id)) postIds.push(id);
     const count = commentCountOf(post);
     if (count !== null && commentCounts[id] === undefined) commentCounts[id] = count;
+    // An article that merely CONTAINS the post's link (a wrapper around the
+    // post) has neither of its own, and must not stand in for the post.
+    const details = postDetails[id] === undefined ? postDetailsOf(post, now) : null;
+    if (details && (details.text !== null || details.createdAt !== null)) postDetails[id] = details;
   }
   const comments: ParsedComment[] = [];
   let droppedNoId = 0;
@@ -144,7 +161,7 @@ export function parseFacebookComments(
   }
   return {
     comments, droppedNoId, droppedNoPost, droppedPageOwn, matchedComments, postIds, postArticles, postArticlesWithoutId,
-    commentCounts,
+    commentCounts, postDetails,
   };
 }
 

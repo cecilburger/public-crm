@@ -3,6 +3,7 @@ import { tenantKeys, sealField, openField, fieldIndex, type TenantKeys } from '.
 import { recordConversationActivity } from './metering.ts';
 import { audit } from './audit.ts';
 import { divisionSql } from './divisions.ts';
+import { carryFacebookPostDetails } from './facebookPosts.ts';
 
 /**
  * Everything the Facebook side of the CRM writes, in one module.
@@ -588,6 +589,8 @@ export async function recordFacebookComment(
       returning id`,
     [ctx.tenantId, row.page_id, row.post_id, args.postId],
   );
+  // The post's caption and age describe the post, not the slug: they follow it.
+  if (moved.length > 0) await carryFacebookPostDetails(ctx, { fromPostId: row.post_id, toPostId: args.postId });
   return moved.some((m) => m.id === row.id)
     ? { id: row.id, duplicate: true, previousPostId: row.post_id, rowsMoved: moved.length }
     : { id: row.id, duplicate: true };
@@ -817,6 +820,14 @@ export interface FacebookCommentRow {
   dmAt: Date | null;
   dmError: string | null;
   attempts: number;
+  /**
+   * The caption of the post this comment is on, and when that post went up —
+   * what the inbox names a comment group after (`facebook_posts`, 0063). Null
+   * until the bridge has described the post, and for every comment stored
+   * before it could: the console falls back to "Postingan Facebook".
+   */
+  postText: string | null;
+  postCreatedAt: Date | null;
 }
 
 /** A comment row as stored, before its sealed columns are opened. */
@@ -827,11 +838,18 @@ interface StoredCommentRow {
   commented_at: Date | null; created_at: Date; status: CommentStatus;
   public_reply_at: Date | null; public_reply_error: string | null;
   dm_at: Date | null; dm_error: string | null; attempts: number;
+  post_text: string | null; post_created_at: Date | null;
 }
 
-const COMMENT_COLUMNS = `id, division_id, page_id, page_name, post_id, comment_id, parent_comment_id,
-            author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
-            status, public_reply_at, public_reply_error, dm_at, dm_error, attempts`;
+const COMMENT_COLUMNS = `c.id, c.division_id, c.page_id, c.page_name, c.post_id, c.comment_id, c.parent_comment_id,
+            c.author_external_id_enc, c.author_name_enc, c.body_enc, c.commented_at, c.created_at,
+            c.status, c.public_reply_at, c.public_reply_error, c.dm_at, c.dm_error, c.attempts,
+            p.post_text, p.post_created_at`;
+
+/** Each comment beside its post's details, when the bridge has described that post — in the comment's own division. */
+const COMMENT_FROM = `facebook_comments c
+       left join facebook_posts p
+         on p.tenant_id = c.tenant_id and p.division_id = c.division_id and p.post_id = c.post_id`;
 
 function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow): FacebookCommentRow {
   return {
@@ -844,6 +862,7 @@ function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow)
     status: r.status,
     publicReplyAt: r.public_reply_at, publicReplyError: r.public_reply_error,
     dmAt: r.dm_at, dmError: r.dm_error, attempts: r.attempts,
+    postText: r.post_text, postCreatedAt: r.post_created_at,
   };
 }
 
@@ -856,9 +875,9 @@ export async function listFacebookComments(
 ): Promise<FacebookCommentRow[]> {
   const rows = await ctx.tx.query<StoredCommentRow>(
     `select ${COMMENT_COLUMNS}
-       from facebook_comments
-      where tenant_id = $1 and ($3::text is null or post_id = $3)
-      order by coalesce(commented_at, created_at) desc
+       from ${COMMENT_FROM}
+      where c.tenant_id = $1 and ($3::text is null or c.post_id = $3)
+      order by coalesce(c.commented_at, c.created_at) desc
       limit $2`,
     [ctx.tenantId, Math.min(args.limit ?? 50, 200), args.postId ?? null],
   );
@@ -880,7 +899,7 @@ export async function getFacebookComment(ctx: Ctx, args: { id: string }): Promis
   // the queue would retry eight times to the same answer.
   if (!/^[0-9a-f-]{36}$/i.test(args.id)) return null;
   const rows = await ctx.tx.query<StoredCommentRow>(
-    `select ${COMMENT_COLUMNS} from facebook_comments where tenant_id = $1 and id = $2`,
+    `select ${COMMENT_COLUMNS} from ${COMMENT_FROM} where c.tenant_id = $1 and c.id = $2`,
     [ctx.tenantId, args.id],
   );
   if (!rows[0]) return null;

@@ -8,6 +8,9 @@ import { readPostSurfaceHtml } from './pageHtml.ts';
 import { CheckpointRequiredError, SessionExpiredError, type PageMarker, type SessionManager } from './sessionManager.ts';
 import { PulseTabs, changedPosts, keepRenderingInBackground } from './commentPulse.ts';
 import type { FbBridgeEvent } from './events.ts';
+import type { PostDetails, PostDetailsUpdate } from './parsers/postDetails.ts';
+
+export type { PostDetailsUpdate } from './parsers/postDetails.ts';
 
 /**
  * How often every recent post is re-read in full, whatever the pulse saw — the
@@ -66,6 +69,18 @@ export type KnownCommentIds = (
 /** Resolves true only once the CRM has accepted the event. */
 export type EmitEvent = (ev: FbBridgeEvent) => Promise<boolean> | boolean | void;
 
+/** Hands the CRM what each post is; resolves true once it has taken them. */
+export type RecordPostDetails = (sessionKey: string, pageId: string, posts: PostDetailsUpdate[]) => Promise<boolean>;
+
+/** At most this many posts in one hand-over — the handful a timeline reading renders, and the CRM's own bound. */
+const MAX_POST_DETAILS = 20;
+/**
+ * How much earlier a post's age must read before it is worth sending again.
+ * A relative age re-read a minute later lands within seconds of the last one;
+ * only a genuinely finer reading moves it back by more.
+ */
+const AGE_SLACK_MS = 5 * 60_000;
+
 export interface SweepSummary {
   posts: number;
   read: number;
@@ -75,6 +90,7 @@ export interface SweepSummary {
 }
 
 const noneKnown: KnownCommentIds = async () => new Set();
+const recordNothing: RecordPostDetails = async () => true;
 
 /**
  * Pulls inbound comments off a tenant's Facebook Page.
@@ -104,12 +120,15 @@ export class CommentWatcher {
   private pulseTabs: PulseTabs;
   /** Each recent post's comment count at the last reading, per session — what a pulse compares against. */
   private postCounts = new Map<string, Record<string, number>>();
+  /** What the CRM last accepted about each post, per session — so a quiet minute sends nothing. */
+  private postsSent = new Map<string, ReadonlyMap<string, { text: string | null; createdAt: number | null }>>();
 
   constructor(
     private sessions: SessionManager,
     private onEvent: EmitEvent,
     private log: Logger,
     private knownCommentIds: KnownCommentIds = noneKnown,
+    private recordPostDetails: RecordPostDetails = recordNothing,
   ) {
     this.pulseTabs = new PulseTabs(sessions, log);
   }
@@ -187,8 +206,12 @@ export class CommentWatcher {
 
       const recent = timeline.postIds.slice(0, POSTS_PER_SWEEP);
       const toRead = pulse ? changedPosts(this.postCounts.get(sessionKey), timeline.commentCounts, recent) : recent;
+      // What each post is, from the readings this sweep takes anyway: the
+      // timeline first, then any post opened below (its caption uncut).
+      let details: ReadonlyMap<string, PostDetails> = new Map(Object.entries(timeline.postDetails));
       if (pulse && toRead.length === 0) {
         this.rememberCounts(sessionKey, timeline.commentCounts, recent, new Set());
+        await this.sendPostDetails(sessionKey, marker, details);
         return { read: 0, known: 0, fresh: 0, rejected: 0, posts: timeline.postIds.length };
       }
       if (pulse) {
@@ -235,6 +258,8 @@ export class CommentWatcher {
         }
         await snapshot(sessionKey, `post-${index}`, postHtml);
         const parsed = parseFacebookComments(postHtml, { defaultPostId: postId, ...own });
+        const opened = parsed.postDetails[postId];
+        if (opened) details = new Map([...details, [postId, mergeDetails(details.get(postId), opened)]]);
         this.log.info(
           { event: 'fb_comments_rendered', ...ids, postId, commentNodes: parsed.matchedComments },
           'fb_comments_rendered',
@@ -256,6 +281,7 @@ export class CommentWatcher {
       }
 
       const summary = await this.emitNew(sessionKey, marker, [...found.values()]);
+      await this.sendPostDetails(sessionKey, marker, details);
       // A comment the CRM refused keeps the old counts, so the next pulse opens
       // that post again rather than waiting for the full sweep.
       if (summary.rejected === 0) this.rememberCounts(sessionKey, timeline.commentCounts, recent, unreadable);
@@ -280,6 +306,40 @@ export class CommentWatcher {
       if (!pulse) await page.close().catch(() => {});
       this.running.delete(sessionKey);
     }
+  }
+
+  /**
+   * Hands the CRM what each post is, so the inbox can name a comment group
+   * after its post instead of its slug — only what the CRM does not already
+   * have from an earlier minute: a new post, an edited caption, or an age that
+   * reads meaningfully earlier than before. A post the CRM did not take is
+   * offered again next time.
+   *
+   * Never allowed to fail the sweep: a post without a caption in the inbox is
+   * a label, and a comment that never reaches the inbox is a customer ignored.
+   */
+  private async sendPostDetails(
+    sessionKey: string, marker: PageMarker, details: ReadonlyMap<string, PostDetails>,
+  ): Promise<void> {
+    const sent = this.postsSent.get(sessionKey) ?? new Map();
+    const fresh: PostDetailsUpdate[] = [...details.entries()]
+      .filter(([postId, post]) => isNews(sent.get(postId), post))
+      .map(([postId, post]) => ({ postId, ...post }))
+      .slice(0, MAX_POST_DETAILS);
+    if (fresh.length === 0) return;
+
+    let accepted = false;
+    try {
+      accepted = await this.recordPostDetails(sessionKey, marker.pageId, fresh);
+    } catch (err) {
+      this.log.warn({ err, sessionKey, postIds: fresh.map((p) => p.postId) }, 'fb-bridge: could not hand post details to the CRM');
+      return;
+    }
+    if (!accepted) return;
+    this.postsSent.set(sessionKey, new Map([
+      ...sent,
+      ...fresh.map((p) => [p.postId, { text: p.text, createdAt: p.createdAt ? Date.parse(p.createdAt) : null }] as const),
+    ]));
   }
 
   /**
@@ -440,6 +500,30 @@ export class CommentWatcher {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Two readings of one post, as one: the later caption when it has one (a
+ * post's own permalink shows its caption whole; the timeline cuts it), and
+ * the earlier age — a relative age only gets coarser as a post gets older.
+ */
+function mergeDetails(earlier: PostDetails | undefined, later: PostDetails): PostDetails {
+  const ages = [earlier?.createdAt, later.createdAt].filter((at): at is string => Boolean(at)).sort();
+  return { text: later.text ?? earlier?.text ?? null, createdAt: ages[0] ?? null };
+}
+
+/**
+ * Whether a reading tells the CRM anything the last accepted one did not. A
+ * caption that is only the start of the one already sent is the timeline's
+ * cut of it, not an edit — the CRM keeps the whole one either way.
+ */
+function isNews(
+  previous: { text: string | null; createdAt: number | null } | undefined, post: PostDetails,
+): boolean {
+  if (!previous) return true;
+  if (post.text !== null && !(previous.text ?? '').startsWith(post.text)) return true;
+  if (post.createdAt === null) return false;
+  return previous.createdAt === null || Date.parse(post.createdAt) < previous.createdAt - AGE_SLACK_MS;
+}
 
 
 /**

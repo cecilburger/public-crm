@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
+import { z } from 'zod';
 import { verifyWebhookSignature, ipAllowed, parseAllowList } from '@kirana/core';
 import {
   withoutTenant, withTenant, findMessengerBridgeChannel, knownMessengerMessageIds, bridgeSessionHome,
-  knownFacebookCommentIds, storedFacebookCommentPosts,
+  knownFacebookCommentIds, storedFacebookCommentPosts, recordFacebookPostDetails,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 import { webhookEvents } from '../metrics.ts';
@@ -399,6 +400,45 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     return reply.send({ known, knownComments });
   });
 
+  /**
+   * What each post on the Page is — its caption and its age — as the bridge
+   * read them off the timeline it already re-reads every minute. The inbox
+   * names a comment group after its post with these instead of the `pfbid…`
+   * slug no agent can read.
+   *
+   * Direct rather than spooled, like `/known`: this is a description, not an
+   * event. A dropped one costs nothing — the bridge offers a post again until
+   * the CRM has taken it — and there is no work for the worker to do with it.
+   * Written in the division the session key names, like every bridge write.
+   */
+  app.post('/v1/webhooks/fb-bridge/posts', async (req, reply) => {
+    if (req.headers.authorization !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
+      req.log.warn({ ip: req.ip }, 'fb-bridge post details rejected: bad secret');
+      return reply.status(401).send();
+    }
+    const parsed = FB_POST_DETAILS_BODY.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send();
+    const body = parsed.data;
+
+    const home = await bridgeSessionHome(ctx.control, body.sessionKey ?? body.tenantId);
+    if (!home || home.tenantId !== body.tenantId) return reply.status(400).send();
+
+    const posts = body.posts.map((p) => ({
+      postId: p.postId, text: p.text, createdAt: p.createdAt ? new Date(p.createdAt) : null,
+    }));
+    const stored = await withTenant(ctx.db, home.tenantId, (tx) => recordFacebookPostDetails(
+      { tx, tenantId: home.tenantId, kek: ctx.kek, divisionId: home.divisionId }, { pageId: body.pageId, posts },
+    ), { divisionId: home.divisionId });
+
+    // Ids and counts only: a caption is the Page's own text, but it has no
+    // business in a log line.
+    req.log.info({
+      event: 'fb_post_details_recorded', tenantId: home.tenantId, divisionId: home.divisionId,
+      pageId: body.pageId, postIds: posts.map((p) => p.postId), stored,
+    }, 'fb_post_details_recorded');
+    return reply.send({ stored });
+  });
+
   app.post('/v1/webhooks/fb-bridge', async (req, reply) => {
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${ctx.env.FB_BRIDGE_SECRET}`) {
@@ -536,6 +576,25 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppCtx): void {
     return reply.status(200).send({ received: true });
   });
 }
+
+/**
+ * One reading of a Page's posts, as `/v1/webhooks/fb-bridge/posts` accepts it.
+ *
+ * Bounded everywhere a bridge that half-broke could send too much: a reading
+ * covers the handful of posts the timeline renders, a caption is capped well
+ * past anything Facebook shows, and a post id must have the shape the bridge
+ * files comments under (`POST_ID_RE`: a `pfbid…` slug or digits).
+ */
+const FB_POST_DETAILS_BODY = z.object({
+  tenantId: z.string().uuid(),
+  sessionKey: z.string().min(1).max(120).optional(),
+  pageId: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+  posts: z.array(z.object({
+    postId: z.string().max(200).regex(/^(?:pfbid[A-Za-z0-9]+|\d{6,})$/),
+    text: z.string().max(5_000).nullable(),
+    createdAt: z.string().datetime({ offset: true }).nullable(),
+  })).max(20),
+});
 
 /**
  * The spool key for one `fb-bridge` event.

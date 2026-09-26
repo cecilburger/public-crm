@@ -32,6 +32,9 @@ export interface CommentLike {
 export interface GroupableComment extends CommentLike {
   postId: string;
   status: string;
+  /** The post's caption and age, when the bridge has described it — absent on rows from before it could. */
+  postText?: string | null;
+  postCreatedAt?: string | null;
 }
 
 /** What the channel filter offers. Deliberately coarser than `channel_kind`:
@@ -194,6 +197,26 @@ export interface CommentPostGroup<K extends GroupableComment = GroupableComment>
   latestAt: string | null;
   /** True when any comment on this post is waiting on a person. */
   needsReply: boolean;
+  /** What the post is — what the row is named by (`lib/facebookPost.ts`). The id above stays its identity. */
+  post: CommentPost;
+}
+
+/** A post's caption and age, as its comments carry them. */
+export interface CommentPost {
+  text: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * What a post is, from whichever of its comments says: the caption any of
+ * them carries, and the earliest age. Every comment on a post reads the same
+ * details from the CRM; the rule only matters for a mix of rows read at
+ * different moments, and an age only gets coarser as a post gets older.
+ */
+export function postOfComments(comments: readonly GroupableComment[]): CommentPost {
+  const text = comments.find((c) => c.postText?.trim())?.postText ?? null;
+  const createdAt = comments.map((c) => c.postCreatedAt).filter((at): at is string => Boolean(at)).sort()[0] ?? null;
+  return { text, createdAt };
 }
 
 const COMMENT_PENDING_STATUSES = new Set(['new', 'public_reply_pending', 'dm_pending']);
@@ -220,6 +243,7 @@ export function groupCommentsByPost<K extends GroupableComment>(comments: K[]): 
     comments: [...list].sort((a, b) => at(a).localeCompare(at(b))),
     latestAt: list.reduce<string | null>((max, c) => (!max || at(c) > max ? at(c) : max), null),
     needsReply: list.some((c) => COMMENT_PENDING_STATUSES.has(c.status)),
+    post: postOfComments(list),
   }));
 
   return groups.sort((a, b) => {

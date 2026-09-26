@@ -27,4 +27,5 @@ export * from './dashboard.ts';
 export * from './agentPerformance.ts';
 export * from './igComments.ts';
 export * from './facebookBridge.ts';
+export * from './facebookPosts.ts';
 export * from './chatbot.ts';

@@ -1,5 +1,6 @@
 import type { FbBridgeEvent } from './events.ts';
 import type { Logger } from './messengerWatcher.ts';
+import type { PostDetailsUpdate } from './parsers/postDetails.ts';
 
 export interface CrmClientDeps {
   apiUrl: string;
@@ -15,6 +16,7 @@ export interface CrmClient {
   postEvent(ev: FbBridgeEvent): Promise<boolean>;
   knownIds(sessionKey: string, externalIds: string[]): Promise<Set<string>>;
   knownCommentIds(sessionKey: string, commentIds: string[], postByComment?: Record<string, string>): Promise<Set<string>>;
+  recordPostDetails(sessionKey: string, pageId: string, posts: PostDetailsUpdate[]): Promise<boolean>;
 }
 
 /**
@@ -123,5 +125,30 @@ export function createCrmClient(deps: CrmClientDeps): CrmClient {
     return new Set(body?.knownComments ?? []);
   }
 
-  return { postEvent, knownIds, knownCommentIds };
+  /**
+   * What each post on the Page is — its caption and its age — for the inbox to
+   * name a comment group by. Same channel and secret as everything else here.
+   * True once the CRM took them; anything else is false, and the watcher
+   * offers those posts again on its next pass.
+   */
+  async function recordPostDetails(sessionKey: string, pageId: string, posts: PostDetailsUpdate[]): Promise<boolean> {
+    if (posts.length === 0) return true;
+    try {
+      const res = await http(`${deps.apiUrl}/v1/webhooks/fb-bridge/posts`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ tenantId: await deps.tenantOf(sessionKey), sessionKey, pageId, posts }),
+      });
+      if (!res.ok) {
+        deps.log.warn({ status: res.status, sessionKey, posts: posts.length }, 'fb-bridge: kirana api refused post details');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      deps.log.warn({ err, sessionKey }, 'fb-bridge: could not reach kirana api for post details');
+      return false;
+    }
+  }
+
+  return { postEvent, knownIds, knownCommentIds, recordPostDetails };
 }

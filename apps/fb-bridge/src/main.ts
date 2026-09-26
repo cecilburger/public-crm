@@ -38,7 +38,9 @@ async function tenantOf(sessionKey: string): Promise<string> {
 const crm = createCrmClient({ apiUrl: KIRANA_API_URL, secret: FB_BRIDGE_SECRET, tenantOf, log: app.log });
 
 const messenger = new MessengerWatcher(sessions, (ev) => void crm.postEvent(ev), app.log, crm.knownIds);
-const comments = new CommentWatcher(sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds);
+const comments = new CommentWatcher(
+  sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds, crm.recordPostDetails,
+);
 
 // Both watchers' own first pass resumes every tenant with a persisted profile.
 // `tsx watch` restarts on every code change and in production a redeploy or a

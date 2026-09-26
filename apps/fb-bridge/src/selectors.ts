@@ -308,6 +308,14 @@ export const COMMENTS = {
   postSurface: ['div[role="dialog"][aria-modal="true"]', 'div[role="main"]', 'div[role="feed"]'],
   /** One post within that feed. */
   post: ['div[role="article"]', 'div[data-pagelet^="FeedUnit"]'],
+  /**
+   * A post's own caption, inside its article. Confirmed live 2026-09-26 on
+   * the Page timeline and on a post's permalink dialog alike; the preview
+   * node is the one inside it, kept as the fallback. A comment carries a
+   * `data-ad-preview` node too, which is why the parser only takes one whose
+   * nearest article is the post itself.
+   */
+  postMessage: ['[data-ad-rendering-role="story_message"]', '[data-ad-preview="message"]'],
   /** One comment within a post. Facebook labels these in the accessibility
    * tree as "Comment by <name>", which is also where the author name comes
    * from when no profile link is rendered. */
