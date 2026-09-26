@@ -14,10 +14,15 @@
 #   - Node 22 unpacked into /opt/mcnasia-crm/node — the system Node, and
 #     whatever else runs on the box, is left alone
 #   - `development` from GitHub checked out into /opt/mcnasia-crm/app
-#   - two systemd services: the API with its Postgres (127.0.0.1:18080) and
-#     the console (127.0.0.1:13000), both local-only
+#   - four systemd services, all local-only: the API with its Postgres
+#     (127.0.0.1:18080), the console (127.0.0.1:13000), the WhatsApp Web
+#     bridge (127.0.0.1:18090, headless Chrome via whatsapp-web.js — the QR
+#     pairing in "Channel WhatsApp") and the BD brain (Python, apps/bd-brain,
+#     on the port in BD_BRAIN_URL)
 #   - accounts from CRM_USERS set up with CRM_PASSWORD; every other account
-#     in the workspace disabled (the demo password is public)
+#     in the workspace disabled (the demo password is public). CRM_PASSWORD is
+#     only required on the first deploy — left unset on a redeploy, the
+#     accounts and their passwords are left exactly as they are
 #   - one `include` line added to the site's nginx server block, pointing at
 #     /etc/nginx/snippets/mcnasia-crm.conf. The original config is backed up
 #     to /root/nginx-backups/, `nginx -t` must pass, and a failing test puts
@@ -35,8 +40,8 @@ CRM_USERS=${CRM_USERS:-cecil:owner:Cecil,fattah:admin:Fattah}
 CRM_LOGIN_DOMAIN=${CRM_LOGIN_DOMAIN:-mcnasia.biz}
 CRM_WORKSPACE=${CRM_WORKSPACE:-toko-demo}
 CRM_PASSWORD=${CRM_PASSWORD:-}
-if [[ $MODE == deploy && ${#CRM_PASSWORD} -lt 8 ]]; then
-  echo "Set CRM_PASSWORD (8+ characters) for the accounts." >&2; exit 2
+if [[ $MODE == deploy && -n $CRM_PASSWORD && ${#CRM_PASSWORD} -lt 8 ]]; then
+  echo "CRM_PASSWORD must be 8+ characters (or unset, to keep the accounts as they are)." >&2; exit 2
 fi
 
 ssh_opts=(-o ConnectTimeout=15)
@@ -48,7 +53,7 @@ ssh_opts=(-o ConnectTimeout=15)
   cat <<'REMOTE'
 set -euo pipefail
 ROOT=/opt/mcnasia-crm; APP=$ROOT/app; NODE_DIR=$ROOT/node; APP_USER=mcncrm
-API_PORT=18080; WEB_PORT=13000; PG_PORT=15433; MOUNT=/crm
+API_PORT=18080; WEB_PORT=13000; PG_PORT=15433; WA_PORT=18090; MOUNT=/crm
 REPO=https://github.com/cecilburger/public-crm.git; BRANCH=development
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -91,6 +96,21 @@ fi
 command -v git >/dev/null && command -v curl >/dev/null && command -v xz >/dev/null \
   || die "install git, curl and xz-utils first"
 files=$(site_files); [[ -n $files ]] || die "no nginx server block names $SITE_HOST"
+[[ -n $CRM_PASSWORD || -d $APP/.git ]] || die "first deploy: set CRM_PASSWORD (8+ characters) for the accounts"
+
+say "system packages (headless Chrome for WhatsApp Web, Python venv for the BD brain)"
+# Puppeteer downloads Chrome itself, but not the shared libraries it links
+# against — without these every launch dies before a QR is ever produced.
+pkgs=(libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0 libxcomposite1
+      libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 fonts-liberation
+      python3-venv)
+missing=(); for p in "${pkgs[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p"); done
+if (( ${#missing[@]} )); then
+  echo "installing: ${missing[*]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" >/dev/null
+else
+  echo "all present"
+fi
 
 say "system user and directories"
 id $APP_USER >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/$APP_USER --shell /usr/sbin/nologin $APP_USER
@@ -117,6 +137,16 @@ as_app git -C $APP log -1 --format='%h %an — %s'
 
 say "dependencies"
 ( cd $APP && as_app npm ci --no-audit --no-fund --loglevel=error )
+# The Chrome whatsapp-web.js's Puppeteer is pinned to, into the service
+# user's own cache. Normally fetched by `npm ci`'s postinstall; asked for
+# explicitly so a skipped or half-finished download cannot go unnoticed.
+( cd $APP && as_app node_modules/.bin/puppeteer browsers install chrome | tail -1 )
+
+say "BD brain (Python venv)"
+if [[ ! -x $APP/apps/bd-brain/.venv/bin/python ]]; then
+  as_app python3 -m venv $APP/apps/bd-brain/.venv
+fi
+as_app $APP/apps/bd-brain/.venv/bin/pip install -q --disable-pip-version-check -r $APP/apps/bd-brain/requirements.txt
 
 if [[ ! -f $APP/.env ]]; then
   say "configuration (first deploy: fresh encryption key)"
@@ -141,6 +171,7 @@ WorkingDirectory=$APP
 Environment=PATH=$NODE_DIR/bin:/usr/bin:/bin
 Environment=PORT=$API_PORT
 Environment=DEV_STACK_PG_PORT=$PG_PORT
+Environment=WA_BRIDGE_URL=http://127.0.0.1:$WA_PORT
 ExecStart=$APP/node_modules/.bin/tsx --env-file=.env tools/dev-stack.ts
 Restart=always
 RestartSec=5
@@ -165,21 +196,62 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
+cat > /etc/systemd/system/mcnasia-crm-wa.service <<UNIT
+[Unit]
+Description=MCNASIA CRM WhatsApp Web bridge (whatsapp-web.js)
+After=network.target mcnasia-crm-api.service
+[Service]
+User=$APP_USER
+WorkingDirectory=$APP
+Environment=PATH=$NODE_DIR/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/$APP_USER
+Environment=PORT=$WA_PORT
+Environment=KIRANA_API_URL=http://127.0.0.1:$API_PORT
+ExecStart=$APP/node_modules/.bin/tsx --env-file=.env apps/wa-bridge/src/main.ts
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/mcnasia-crm-brain.service <<UNIT
+[Unit]
+Description=MCNASIA CRM BD brain (apps/bd-brain)
+After=network.target
+[Service]
+User=$APP_USER
+WorkingDirectory=$APP
+Environment=PATH=$NODE_DIR/bin:/usr/bin:/bin
+Environment=BD_BRAIN_PYTHON=apps/bd-brain/.venv/bin/python
+ExecStart=$APP/node_modules/.bin/tsx --env-file=.env tools/bd-brain.ts
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
 systemctl daemon-reload
-systemctl enable -q mcnasia-crm-api mcnasia-crm-web
+systemctl enable -q mcnasia-crm-api mcnasia-crm-web mcnasia-crm-wa mcnasia-crm-brain
+systemctl restart mcnasia-crm-brain
 systemctl restart mcnasia-crm-api
 for i in $(seq 1 180); do curl -fs http://127.0.0.1:$API_PORT/healthz >/dev/null && break; sleep 1; done
 curl -fs http://127.0.0.1:$API_PORT/healthz >/dev/null || { journalctl -u mcnasia-crm-api -n 40 --no-pager; die "API did not come up"; }
 echo "API up on 127.0.0.1:$API_PORT"
+systemctl restart mcnasia-crm-wa
+for i in $(seq 1 30); do ss -ltnH "sport = :$WA_PORT" | grep -q . && break; sleep 1; done
+ss -ltnH "sport = :$WA_PORT" | grep -q . || { journalctl -u mcnasia-crm-wa -n 40 --no-pager; die "wa-bridge did not come up"; }
+echo "wa-bridge up on 127.0.0.1:$WA_PORT"
+if systemctl is-active -q mcnasia-crm-brain; then echo "BD brain running"; else
+  journalctl -u mcnasia-crm-brain -n 20 --no-pager; echo "WARNING: BD brain is not running (see log above)"; fi
 systemctl restart mcnasia-crm-web
 for i in $(seq 1 60); do curl -fs -o /dev/null http://127.0.0.1:$WEB_PORT$MOUNT/masuk && break; sleep 1; done
 curl -fs -o /dev/null http://127.0.0.1:$WEB_PORT$MOUNT/masuk || { journalctl -u mcnasia-crm-web -n 40 --no-pager; die "console did not come up"; }
 echo "console up on 127.0.0.1:$WEB_PORT$MOUNT"
 
 say "accounts"
+if [[ -z $CRM_PASSWORD ]]; then echo "CRM_PASSWORD unset — accounts left as they are"; else
 ( cd $APP && as_app env DEV_STACK_PG_PORT=$PG_PORT CRM_WORKSPACE="$CRM_WORKSPACE" CRM_LOGIN_DOMAIN="$CRM_LOGIN_DOMAIN" \
     CRM_USERS="$CRM_USERS" CRM_PASSWORD="$CRM_PASSWORD" CRM_DISABLE_OTHERS=1 \
     node_modules/.bin/tsx --env-file=.env tools/set-users.ts )
+fi
 
 say "nginx"
 cat > /etc/nginx/snippets/mcnasia-crm.conf <<NGINX

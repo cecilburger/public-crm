@@ -28,7 +28,6 @@ import {
   ensureConversation,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
-import QRCode from 'qrcode';
 import { buildApp, type Dispatch } from '../apps/api/src/app.ts';
 import { createRealtimeHub } from '../apps/api/src/realtime.ts';
 import { processInboundWebhook } from '../apps/worker/src/processors/inboundNormalise.ts';
@@ -192,14 +191,13 @@ const min = 60_000;
 const hour = 60 * min;
 
 // The wa-bridge numbers behind "Status Nomor" — a spread of session states
-// (a couple actually live, one mid-pairing, one that errored out, one that
+// (a couple actually live, one never paired, one that errored out, one that
 // dropped) so the monitoring table isn't just a wall of green dots.
 //
-// The "mid-pairing" one needs a real `qr_data` image, not just the
-// `qr_pending` status — the console only shows the "Lihat QR" button when
-// both are set (same as a real pending session mid-pairing would have),
-// so a QR-less pending row is invisible in the UI, not just unstyled.
-const demoQrDataUrl = await QRCode.toDataURL('https://wa.me/qr/demo-pairing-toko-demo');
+// None of them carries a QR. A seeded code was a picture of a made-up URL:
+// it looked exactly like a real pairing code in "Lihat QR", people scanned
+// it, and WhatsApp rejected it. Every QR the console shows comes from
+// `apps/wa-bridge` (whatsapp-web.js) — "Hubungkan nomor" or "Sambung ulang".
 
 const waBridgeSpecs: {
   displayName: string; phone?: string; sessionStatus: string; channelStatus: string;
@@ -212,7 +210,7 @@ const waBridgeSpecs: {
   { displayName: 'WA Toko — Reseller',      phone: '+6281199000002', sessionStatus: 'ready',        channelStatus: 'connected',  lastSeenAgo: 40 * min, maxPerDay: 100,
     chat: { meeting: 1, minat: 8, balas: 42, belum: 210, tolak: 6, bot: 54 } },
   // Never finished pairing — no chats to have a funnel over yet.
-  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'qr_pending',   channelStatus: 'connecting', maxPerDay: 50, qrData: demoQrDataUrl,
+  { displayName: 'WA Toko — Nomor Cadangan', sessionStatus: 'disconnected', channelStatus: 'connecting', maxPerDay: 50,
     chat: { meeting: 0, minat: 0, balas: 0, belum: 0, tolak: 0, bot: 0 } },
   { displayName: 'WA Toko — Admin Lama',    phone: '+6281199000004', sessionStatus: 'error',        channelStatus: 'error',      lastSeenAgo: 3 * 24 * hour, lastError: 'Sesi keluar otomatis — perangkat tertaut dicabut dari HP', maxPerDay: 80,
     chat: { meeting: 0, minat: 2, balas: 10, belum: 305, tolak: 40, bot: 0 } },
