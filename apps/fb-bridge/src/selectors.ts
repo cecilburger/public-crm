@@ -584,14 +584,9 @@ export const COMMENT_ACTIONS = {
     ...within('[role="button"][aria-label="Kirim pesan"]'),
   ],
   waitMs: 10_000,
-  // The private-DM confirmation window. Left at 20s: proven live to be enough
-  // for a Messenger thread, which is a persistent conversation Facebook keeps
-  // warm — unlike a fresh public reply, it has never been observed arriving
-  // late here.
-  confirmMs: 20_000,
-  // The PUBLIC reply confirmation window — deliberately separate from
-  // `confirmMs` above rather than one shared number raised for both. Confirmed
-  // live: a reply on a genuinely fresh post can take longer than 20s for
+  // The PUBLIC reply confirmation window. (The private reply confirms on
+  // fresh reads of the conversation, on its own schedule in sessionManager.)
+  // Confirmed live: a reply on a genuinely fresh post can take longer than 20s for
   // Facebook's own backend to publish and render, well after the click, the
   // type and the Enter all succeeded — which once left the CRM holding a
   // terminal 'failed' status for a reply that Facebook had, in fact, already

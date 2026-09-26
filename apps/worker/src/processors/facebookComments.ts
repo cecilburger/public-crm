@@ -41,7 +41,7 @@ export const COMMENT_SWEEP_QUEUE = 'facebook.comment.sweep';
  * and so does an in-memory stub. */
 export interface CommentBridge {
   replyToComment(args: CommentTarget): Promise<void>;
-  privateReplyToComment(args: CommentTarget): Promise<{ threadId: string }>;
+  privateReplyToComment(args: CommentTarget): Promise<{ threadId: string; messageId?: string | null }>;
 }
 
 export interface CommentEnv {
@@ -127,7 +127,24 @@ const REASONS: Record<string, string> = {
     'Pesan sudah diketik tapi tidak terkonfirmasi terkirim — periksa kotak masuk Facebook sebelum mengirim ulang',
   malformed_response:
     'Bridge menjawab sukses tanpa id percakapan — pesan mungkin sudah terkirim, periksa kotak masuk Facebook',
+  // The private reply's own stages. Every one but the last means the send was
+  // never pressed; the last means it was pressed once and not yet seen.
+  private_surface_not_found:
+    'Kotak pesan pribadi Facebook tidak terbuka untuk komentar ini — belum ada yang dikirim, aman dicoba lagi',
+  private_composer_not_found:
+    'Kotak pesan pribadi tidak terbukti milik pengomentar ini — belum ada yang dikirim, aman dicoba lagi',
+  private_composer_closed:
+    'Kotak pesan pribadi tertutup atau berubah sebelum dikirim — belum ada yang dikirim, aman dicoba lagi',
+  private_type_failed:
+    'Teks tidak masuk utuh ke kotak pesan pribadi — belum ada yang dikirim, aman dicoba lagi',
+  private_send_not_attempted:
+    'Pesan pribadi belum dikirim (Facebook belum siap menerimanya) — aman dicoba lagi',
+  private_send_unconfirmed:
+    'Pesan pribadi sudah dikirim sekali tapi belum terlihat di Messenger — mungkin sudah terkirim, cek percakapan Messenger pengomentar sebelum mengirim ulang',
 };
+
+/** Pressed once, not seen: the one failure that must never be sent again on its own. */
+const MAYBE_DELIVERED = new Set(['private_send_unconfirmed']);
 
 export function readableReason(err: unknown): string {
   const e = err as FbBridgeError | null;
@@ -284,14 +301,21 @@ export async function processCommentDm(deps: CommentDeps, job: CommentActionJob)
     return skipped(job, 'private message', describe(claim));
   }
   const { comment, channelId, sessionKey } = claim;
+  const dmIds = {
+    tenantId: job.tenantId, divisionId: comment.divisionId, pageId: comment.pageId, postId: comment.postId,
+    commentId: comment.commentId, rowId: comment.id, attempt: comment.attempts + 1,
+  };
+  logDm('fb_comment_dm_claimed', dmIds);
 
   let threadId: string;
+  let messageId: string | null = null;
   try {
-    ({ threadId } = await deps.fbBridge.privateReplyToComment({
+    logDm('fb_comment_dm_request', dmIds);
+    ({ threadId, messageId = null } = await deps.fbBridge.privateReplyToComment({
       sessionKey, postId: comment.postId, commentId: comment.commentId, text,
     }));
   } catch (err) {
-    return await failDm(deps, job, err);
+    return await failDm(deps, job, err, dmIds);
   }
 
   // Delivered. What follows is history, in one transaction with the state
@@ -310,13 +334,21 @@ export async function processCommentDm(deps: CommentDeps, job: CommentActionJob)
     const ctx = { tx, tenantId: job.tenantId, kek: deps.kek, divisionId: comment.divisionId };
     await recordMessengerAgentReply(ctx, {
       channelId, fbUserId: threadId, threadId, body: text,
-      providerMessageId: commentDmMessageKey(sessionKey, comment.commentId),
+      // Filed under Facebook's own message id when the bridge read it — the
+      // exact key the inbox watcher uses — so its later reading of the same
+      // bubble is recognised instead of recorded a second time.
+      providerMessageId: messageId ? `fb_dm:${sessionKey}:${messageId}` : commentDmMessageKey(sessionKey, comment.commentId),
       displayName: comment.authorName,
     });
     await markCommentDmSent(ctx, { id: comment.id });
   }, { divisionId: comment.divisionId });
-  console.log(`[fb-comments] private message sent for comment ${comment.commentId}: thread ${threadId}`);
+  logDm('fb_comment_dm_marked_sent', { ...dmIds, threadId, messageId });
   return { status: 'sent' };
+}
+
+/** One structured line per boundary of a private reply — ids and state only, never the text. */
+function logDm(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ event, at: new Date().toISOString(), ...fields }));
 }
 
 /**
@@ -330,13 +362,20 @@ export async function processCommentDm(deps: CommentDeps, job: CommentActionJob)
  * probably arrived. The transient rethrow surfaces the bridge error to the
  * queue; the retry it causes is refused at the claim and sends nothing.
  */
-async function failDm(deps: CommentDeps, job: CommentActionJob, err: unknown): Promise<CommentActionOutcome> {
+async function failDm(
+  deps: CommentDeps, job: CommentActionJob, err: unknown, ids: Record<string, unknown>,
+): Promise<CommentActionOutcome> {
   const reason = readableReason(err);
   await withTenant(deps.db, job.tenantId, (tx) =>
     markCommentDmFailed({ tx, tenantId: job.tenantId, kek: deps.kek }, { id: job.commentId, reason }));
+  const code = (err as FbBridgeError | null)?.code ?? null;
+  logDm('fb_comment_dm_marked_failed', {
+    ...ids, code, status: (err as FbBridgeError | null)?.status ?? null, maybeDelivered: code !== null && MAYBE_DELIVERED.has(code),
+  });
   console.error(`[fb-comments] private message failed for comment ${job.commentId}: ${(err as Error).message}`);
-  if (!isPermanent(err)) throw err;
-  return { status: 'failed', reason };
+  // Possibly delivered: finished here, never handed back to the queue.
+  if (isPermanent(err) || (code !== null && MAYBE_DELIVERED.has(code))) return { status: 'failed', reason };
+  throw err;
 }
 
 /* -------------------------------------------------------------- sweep */
