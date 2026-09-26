@@ -8,6 +8,8 @@ import { DraftCard } from '@/components/DraftCard';
 import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 import { ScrollToLatest } from '@/components/ScrollToLatest';
+import { BotControls } from '@/components/BotControls';
+import { senderLabelKey, isMachineWritten, isUndelivered, replyWindowOpen } from '@/lib/chatbot';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +40,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   const openValue = contactDeals.filter((d) => d.status === 'open')
     .reduce((sum, d) => sum + Number(d.amount_idr), 0);
   const mine = conversation.assignee_id === me.user.id;
+  const windowOpen = replyWindowOpen(conversation);
 
   return (
     <div style={{ display: 'flex', minHeight: 0 }}>
@@ -48,11 +51,16 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
             {contact.displayName ? <span className="mono dim">{contact.phone ?? '—'}</span> : null}
           </div>
 
-          {conversation.serviceWindowOpen
+          {windowOpen
             ? <span className="chip good">{t.chats.canReplyFreely}</span>
             : <span className="chip warn">{t.chats.templateOnly}</span>}
 
           <span className="spacer" style={{ marginLeft: 'auto' }} />
+
+          {conversation.chatbot_owned ? (
+            <BotControls conversationId={conversation.id} handling={conversation.handling}
+                         optOut={conversation.opt_out} escalationReason={conversation.last_escalation_reason} />
+          ) : null}
 
           {/* One obvious button for the common case, the full picker for the rest. */}
           {!mine ? (
@@ -92,9 +100,10 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         <div className="thread-body">
           {messages.length === 0 ? <p className="empty">{t.chats.noMessages}</p> : null}
           {messages.map((m) => (
-            <div key={m.id} className={`msg ${m.direction === 'outbound' ? 'out' : ''} ${m.senderType === 'autopilot' ? 'ai' : ''}`}>
+            <div key={m.id} className={`msg ${m.direction === 'outbound' ? 'out' : ''} ${isMachineWritten(m) ? 'ai' : ''}`}>
               <div className="meta">
-                {t.chats.sender[m.senderType] ?? m.senderType} · {clock(m.at)}
+                {t.chats.sender[senderLabelKey(m)] ?? m.senderType} · {clock(m.at)}
+                {isUndelivered(m) ? <> · <span style={{ color: 'var(--danger)' }}>{t.chats.undelivered}</span></> : null}
               </div>
               <div className="bubble">{m.body ?? <em className="dim">{t.chats.redacted}</em>}</div>
             </div>
@@ -104,12 +113,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
         {draft ? <DraftCard conversationId={conversation.id} draft={draft} /> : null}
 
-        {/* Facebook is inbound only for now, so the reply box is replaced by a
-            sentence saying so. Every other channel passes nothing here and
-            keeps the composer it has always had. */}
-        <Composer conversationId={conversation.id} windowOpen={conversation.serviceWindowOpen}
-                  disabledReason={conversation.channel_kind === 'messenger_bridge'
-                    ? t.facebookBridge.replyUnavailable : undefined}
+        <Composer conversationId={conversation.id} windowOpen={windowOpen}
                   customerName={contact.displayName ?? contact.phone ?? '—'} quickReplies={quickReplies} />
       </div>
 

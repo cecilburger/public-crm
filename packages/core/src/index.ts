@@ -2,6 +2,7 @@ export * from './errors.ts';
 export * from './crypto.ts';
 export * from './pricing.ts';
 export * from './permissions.ts';
+export * from './divisions.ts';
 export * from './metering.ts';
 export * from './waba.ts';
 export * from './autopilot.ts';

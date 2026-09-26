@@ -4,11 +4,11 @@ import cors from '@fastify/cors';
 import { randomUUID } from 'node:crypto';
 import {
   AppError, unauthenticated, forbidden, actorCan, checkLimit, MemoryRateLimitStore, tenantKey, ipKey,
-  LogAlertSink,
+  LogAlertSink, DEFAULT_DIVISION, DIVISION_HEADER, isDivisionKey,
   type Actor, type Permission, type Role, type Env, type RateLimitStore,
   type AlertSink, type SecurityEventKind,
 } from '@kirana/core';
-import { withTenant, recordSecurityEvent, type Database, type Sql } from '@kirana/db';
+import { withTenant, recordSecurityEvent, resolveDivision, type Database, type Sql } from '@kirana/db';
 import { verifyAccessToken, familyRevoked } from './tokens.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerConversationRoutes } from './routes/conversations.ts';
@@ -41,6 +41,7 @@ import { registerEmailSettingsRoutes } from './routes/emailSettings.ts';
 import { registerInstagramBridgeRoutes } from './routes/instagramBridge.ts';
 import { registerInstagramMetaRoutes } from './routes/instagramMeta.ts';
 import { registerFacebookBridgeRoutes } from './routes/facebookBridge.ts';
+import { registerChatbotRoutes } from './routes/chatbot.ts';
 import { registry, httpRequests, httpDuration, routeLabel } from './metrics.ts';
 import { createRealtimeHub, type RealtimeHub } from './realtime.ts';
 
@@ -89,6 +90,9 @@ declare module 'fastify' {
     rawBody?: Buffer;
   }
 }
+
+const headerValue = (value: string | string[] | undefined): string =>
+  (Array.isArray(value) ? value[0] : value)?.trim() ?? '';
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({
@@ -148,6 +152,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       void ctx.raise(req.actor.tenantId, 'cross_tenant_denied', {
         path: req.url, method: req.method, actorId: req.actor.userId,
       });
+    }
+
+    // An id from the other Marketing/AI division — a brand, contact or deal the
+    // client named but this division cannot see. The composite foreign keys
+    // (0059) refuse the row; from where the request stands, that record does
+    // not exist, so it is answered exactly as a missing one would be.
+    if (/violates foreign key constraint "\w+_division_fk"/.test((err as Error).message ?? '')) {
+      req.log.warn({ path: req.url, actorId: req.actor?.userId }, 'cross-division reference refused');
+      return reply.status(404).type('application/problem+json')
+        .send(new AppError('not_found', 'Not found').toProblem(req.url));
     }
 
     req.log.error({ err }, 'unhandled error');
@@ -214,14 +228,33 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // like that sails through every RLS-scoped read as an empty result right
     // up until the first write, which fails as a raw foreign-key violation
     // instead of the plain "sign in again" this should have been.
-    const { tenantExists, dead } = await withTenant(deps.db, claims.tid, async (tx) => {
+    // The Marketing/AI division is chosen per request by a header carrying
+    // its *key*, never an id: the key is resolved under the token's own
+    // tenant in the same round trip that checks the tenant still exists, so
+    // no client can name a division it does not own, and a request that
+    // names none acts in Marketing — which is where everything lived before
+    // divisions existed.
+    const wantedDivision = headerValue(req.headers[DIVISION_HEADER]) || DEFAULT_DIVISION;
+    if (!isDivisionKey(wantedDivision)) {
+      throw new AppError('validation_failed', `Unknown division "${wantedDivision}"`);
+    }
+
+    const { tenantExists, dead, division } = await withTenant(deps.db, claims.tid, async (tx) => {
       const rows = await tx.query<{ id: string }>('select id from tenants where id = $1', [claims.tid]);
-      return { tenantExists: !!rows[0], dead: await familyRevoked(tx, claims.tid, claims.fam) };
+      return {
+        tenantExists: !!rows[0],
+        dead: await familyRevoked(tx, claims.tid, claims.fam),
+        division: await resolveDivision(tx, claims.tid, wantedDivision),
+      };
     });
     if (!tenantExists) throw unauthenticated('Session no longer valid');
     if (dead) throw unauthenticated('Session revoked');
+    if (!division) throw new AppError('validation_failed', `Unknown division "${wantedDivision}"`);
 
-    req.actor = { userId: claims.sub, tenantId: claims.tid, role: claims.role as Role };
+    req.actor = {
+      userId: claims.sub, tenantId: claims.tid, role: claims.role as Role,
+      divisionId: division.id, divisionKey: division.key,
+    };
   });
 
   // Registered after the auth hook so the tenant is known: per workspace once
@@ -257,9 +290,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return actor;
   };
 
+  // Every route transaction carries the request's division, so the
+  // `division_isolation` policies fail closed for user-facing reads and
+  // writes — tests/architecture.test.ts keeps routes on this path.
   const asTenant = <T>(req: FastifyRequest, fn: (tx: Sql, actor: Actor) => Promise<T>): Promise<T> => {
     const actor = requireActor(req);
-    return withTenant(deps.db, actor.tenantId, (tx) => fn(tx, actor));
+    return withTenant(deps.db, actor.tenantId, (tx) => fn(tx, actor), { divisionId: actor.divisionId });
   };
 
   const ctx: AppCtx = { ...deps, rateLimits: store, raise, alertSink: alerts, requireActor, guard, asTenant };
@@ -303,7 +339,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
     reply.raw.write(':ok\n\n');
 
-    const send = (event: { type: string; conversationId: string }) => {
+    // A console showing Marketing is not woken for an AI conversation. Events
+    // that name no division (a worker from before divisions) still reach
+    // everyone, exactly as before.
+    const send = (event: { type: string; conversationId: string; divisionId?: string }) => {
+      if (event.divisionId && event.divisionId !== actor.divisionId) return;
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
     const unsubscribe = realtime.subscribe(actor.tenantId, send);
@@ -363,6 +403,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerInstagramBridgeRoutes(app, ctx);
   registerInstagramMetaRoutes(app, ctx);
   registerFacebookBridgeRoutes(app, ctx);
+  registerChatbotRoutes(app, ctx);
 
   return app;
 }

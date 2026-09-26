@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  channelOfConversation, inboxHref, instagramCommentItems, toInboxItems,
+  channelOfConversation, groupCommentsByPost, inboxHref, instagramCommentItems, toInboxItems,
   shouldShowCommentsUnavailable, shouldShowInstagramNotReady,
   canReplyPublic, canSendDm,
   type CommentLike, type ConversationLike,
@@ -125,15 +125,30 @@ describe('Instagram comments on this branch', () => {
 });
 
 describe('where an inbox item opens', () => {
-  it('keeps comments in their own URL space', () => {
-    // Both ids are UUIDs. Sharing a route would turn one mistyped id into a
-    // confusing 404 or, worse, somebody else's thread.
-    const items = toInboxItems([conversation({ id: 'aaa' })], [comment({ id: 'bbb' })]);
+  it('keeps comments in their own URL space, keyed by their POST rather than the comment row', () => {
+    // A post id is never a UUID either way, so sharing a route with the
+    // conversation id above cannot turn one mistyped id into someone else's
+    // thread. Keyed by post, not by the comment's own row id, because Meta
+    // Business Suite's own "Facebook comments" layout opens the whole post's
+    // thread from any comment on it — clicking two different comments left on
+    // the same post lands on the same page.
+    const items = toInboxItems(
+      [conversation({ id: 'aaa' })], [comment({ id: 'bbb', postId: 'post-1' })],
+    );
     const conv = items.find((i) => i.kind === 'conversation')!;
     const com = items.find((i) => i.kind === 'comment')!;
 
     expect(inboxHref(conv)).toBe('/obrolan/aaa');
-    expect(inboxHref(com)).toBe('/obrolan/komentar/bbb');
+    expect(inboxHref(com)).toBe('/obrolan/komentar/post-1');
+  });
+
+  it('sends two comments on the same post to the same page', () => {
+    const items = toInboxItems([], [
+      comment({ id: 'k1', postId: 'post-1' }),
+      comment({ id: 'k2', postId: 'post-1' }),
+    ]);
+
+    expect(items.map((i) => inboxHref(i))).toEqual(['/obrolan/komentar/post-1', '/obrolan/komentar/post-1']);
   });
 
   it('honours the base path, so a per-channel inbox still works', () => {
@@ -264,12 +279,61 @@ describe('which comment actions an agent may start', () => {
     // The actions exist now. The copy key is kept as a fallback, but if it
     // reappears in either component an agent is being told a live button is
     // dead — the exact confusion the placeholder was written to prevent.
-    const thread = await readFile(join(ROOT, 'apps/console/components/CommentThread.tsx'), 'utf8');
+    const thread = await readFile(join(ROOT, 'apps/console/components/CommentPostThread.tsx'), 'utf8');
     const actions = await readFile(join(ROOT, 'apps/console/components/CommentActions.tsx'), 'utf8');
 
     expect(thread).not.toMatch(/actionsDisabled/);
     expect(actions).not.toMatch(/actionsDisabled/);
     expect(actions).toMatch(/canReplyPublic\(/);
     expect(actions).toMatch(/canSendDm\(/);
+  });
+});
+
+describe('grouping comments by the post they were left on', () => {
+  it('files two comments on the same post together, sorted oldest first inside the group', () => {
+    const older = comment({ id: 'k1', postId: 'post-1', authorName: 'Gabe', commentedAt: '2026-09-22T10:00:00.000Z' });
+    const newer = comment({ id: 'k2', postId: 'post-1', authorName: 'Rudi', commentedAt: '2026-09-22T11:00:00.000Z' });
+
+    const [group] = groupCommentsByPost([newer, older]);
+
+    expect(group!.postId).toBe('post-1');
+    expect(group!.comments.map((c) => c.id)).toEqual(['k1', 'k2']);
+    expect(group!.latestAt).toBe('2026-09-22T11:00:00.000Z');
+  });
+
+  it('keeps two posts separate, newest activity first', () => {
+    const groups = groupCommentsByPost([
+      comment({ id: 'k1', postId: 'post-old', commentedAt: '2026-09-20T00:00:00.000Z' }),
+      comment({ id: 'k2', postId: 'post-new', commentedAt: '2026-09-22T00:00:00.000Z' }),
+    ]);
+
+    expect(groups.map((g) => g.postId)).toEqual(['post-new', 'post-old']);
+  });
+
+  it('marks a post as needing a reply when any comment on it is still pending', () => {
+    const groups = groupCommentsByPost([
+      comment({ id: 'k1', postId: 'post-1', status: 'dm_sent' }),
+      comment({ id: 'k2', postId: 'post-1', status: 'new' }),
+    ]);
+
+    expect(groups[0]!.needsReply).toBe(true);
+  });
+
+  it('does not flag a post where every comment is already answered', () => {
+    const groups = groupCommentsByPost([
+      comment({ id: 'k1', postId: 'post-1', status: 'dm_sent' }),
+      comment({ id: 'k2', postId: 'post-1', status: 'public_replied' }),
+    ]);
+
+    expect(groups[0]!.needsReply).toBe(false);
+  });
+
+  it('sinks a post with no timestamped comment to the bottom rather than the top', () => {
+    const groups = groupCommentsByPost([
+      comment({ id: 'k1', postId: 'post-undated', commentedAt: null, createdAt: '' as unknown as string }),
+      comment({ id: 'k2', postId: 'post-dated', commentedAt: '2026-09-22T00:00:00.000Z' }),
+    ]);
+
+    expect(groups.map((g) => g.postId)).toEqual(['post-dated', 'post-undated']);
   });
 });

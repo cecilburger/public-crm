@@ -1,7 +1,8 @@
-import { ensureConversation, type Ctx, type InboundResult } from './repo.ts';
+import { ensureConversation, isOwnEcho, type Ctx, type InboundResult } from './repo.ts';
 import { tenantKeys, sealField, openField, fieldIndex, type TenantKeys } from './keys.ts';
 import { recordConversationActivity } from './metering.ts';
 import { audit } from './audit.ts';
+import { divisionSql } from './divisions.ts';
 
 /**
  * Everything the Facebook side of the CRM writes, in one module.
@@ -39,7 +40,14 @@ export interface FbBridgeConnection {
   lastError: string | null;
   lastSeenAt: Date | null;
   updatedAt: Date | null;
+  /**
+   * What `apps/fb-bridge` files this division's Chromium profile under. Null
+   * only while no row exists yet — the bridge is never addressed before one
+   * does (see `setFbBridgeConnection`).
+   */
+  sessionKey: string | null;
 }
+
 
 /**
  * A mirror of whatever `apps/fb-bridge` last reported, never a queue of its
@@ -52,22 +60,24 @@ export async function getFbBridgeConnection(ctx: Ctx): Promise<FbBridgeConnectio
   const rows = await ctx.tx.query<{
     page_id: string | null; page_name: string | null; asset_id: string | null;
     status: FbBridgeConnection['status'];
-    last_error: string | null; last_seen_at: Date | null; updated_at: Date;
+    last_error: string | null; last_seen_at: Date | null; updated_at: Date; session_key: string;
   }>(
-    `select page_id, page_name, asset_id, status, last_error, last_seen_at, updated_at
-       from fb_bridge_connections where tenant_id = $1`,
-    [ctx.tenantId],
+    `select page_id, page_name, asset_id, status, last_error, last_seen_at, updated_at, session_key
+       from fb_bridge_connections
+      where tenant_id = $1 and division_id = ${divisionSql(2)}`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
   const row = rows[0];
   if (!row) {
     return {
       status: 'disconnected', pageId: null, pageName: null, assetId: null,
-      lastError: null, lastSeenAt: null, updatedAt: null,
+      lastError: null, lastSeenAt: null, updatedAt: null, sessionKey: null,
     };
   }
   return {
     status: row.status, pageId: row.page_id, pageName: row.page_name, assetId: row.asset_id,
     lastError: row.last_error, lastSeenAt: row.last_seen_at, updatedAt: row.updated_at,
+    sessionKey: row.session_key,
   };
 }
 
@@ -84,22 +94,27 @@ export async function setFbBridgeConnection(
     assetId?: string | null;
     lastError?: string | null; lastSeenAt?: Date | null; actorId: string | null;
   },
-): Promise<void> {
-  await ctx.tx.query(
+): Promise<{ sessionKey: string }> {
+  // Returns the key the bridge must be addressed by for this division: the
+  // first call for a division mints the row, and with it the key.
+  const division = divisionSql(12);
+  const rows = await ctx.tx.query<{ session_key: string }>(
     `insert into fb_bridge_connections
-       (tenant_id, page_id, page_name, asset_id, status, last_error, last_seen_at, updated_by)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)
-     on conflict (tenant_id) do update set
+       (tenant_id, division_id, session_key, page_id, page_name, asset_id, status, last_error, last_seen_at, updated_by)
+     values ($1, ${division}, app_bridge_session_key(${division}), $2, $3, $4, $5, $6, $7, $8)
+     on conflict (tenant_id, division_id) do update set
        page_id = case when $9 then excluded.page_id else fb_bridge_connections.page_id end,
        page_name = case when $10 then excluded.page_name else fb_bridge_connections.page_name end,
        asset_id = case when $11 then excluded.asset_id else fb_bridge_connections.asset_id end,
        status = excluded.status, last_error = excluded.last_error,
        last_seen_at = coalesce(excluded.last_seen_at, fb_bridge_connections.last_seen_at),
-       updated_by = $8, updated_at = now()`,
+       updated_by = $8, updated_at = now()
+     returning session_key`,
     [
       ctx.tenantId, args.pageId ?? null, args.pageName ?? null, args.assetId ?? null, args.status,
       args.lastError ?? null, args.lastSeenAt ?? null, args.actorId,
       args.pageId !== undefined, args.pageName !== undefined, args.assetId !== undefined,
+      ctx.divisionId ?? null,
     ],
   );
 
@@ -107,6 +122,7 @@ export async function setFbBridgeConnection(
     actorType: args.actorId ? 'user' : 'system', actorId: args.actorId, action: 'fb_bridge.status_changed',
     resourceType: 'tenant', resourceId: ctx.tenantId, meta: { status: args.status },
   });
+  return { sessionKey: rows[0]!.session_key };
 }
 
 export async function clearFbBridgeConnection(ctx: Ctx, args: { actorId: string | null }): Promise<void> {
@@ -114,16 +130,17 @@ export async function clearFbBridgeConnection(ctx: Ctx, args: { actorId: string 
     `update fb_bridge_connections
         set status = 'disconnected', page_id = null, page_name = null, last_error = null,
             updated_by = $2, updated_at = now()
-      where tenant_id = $1`,
-    [ctx.tenantId, args.actorId],
+      where tenant_id = $1 and division_id = ${divisionSql(3)}`,
+    [ctx.tenantId, args.actorId, ctx.divisionId ?? null],
   );
   await audit(ctx.tx, ctx.tenantId, {
     actorType: args.actorId ? 'user' : 'system', actorId: args.actorId, action: 'fb_bridge.disconnected',
     resourceType: 'tenant', resourceId: ctx.tenantId,
   });
   await ctx.tx.query(
-    `update channels set status = 'disabled' where tenant_id = $1 and kind = 'messenger_bridge'`,
-    [ctx.tenantId],
+    `update channels set status = 'disabled'
+      where tenant_id = $1 and kind = 'messenger_bridge' and division_id = ${divisionSql(2)}`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
 }
 
@@ -154,14 +171,20 @@ export async function ensureMessengerBridgeChannel(
 }
 
 /**
- * Whichever `messenger_bridge` channel this tenant has, or null — the ingest
- * path refuses to invent one, so a message arriving before anyone connected a
- * Page fails loudly instead of creating a channel nobody configured.
+ * Whichever `messenger_bridge` channel this division has, or null — the
+ * ingest path refuses to invent one, so a message arriving before anyone
+ * connected a Page fails loudly instead of creating a channel nobody
+ * configured. Oldest live one first, so a reconnect that left a disabled row
+ * behind does not hide the working channel.
  */
 export async function findMessengerBridgeChannel(ctx: Ctx): Promise<{ channelId: string } | null> {
   const rows = await ctx.tx.query<{ id: string }>(
-    `select id from channels where tenant_id = $1 and kind = 'messenger_bridge' order by created_at limit 1`,
-    [ctx.tenantId],
+    `select id from channels
+      where tenant_id = $1 and kind = 'messenger_bridge'
+        and division_id = ${divisionSql(2)}
+      order by (status = 'disabled'), created_at
+      limit 1`,
+    [ctx.tenantId, ctx.divisionId ?? null],
   );
   return rows[0] ? { channelId: rows[0].id } : null;
 }
@@ -189,7 +212,7 @@ export async function upsertContactByFbUserId(
   const rows = await ctx.tx.query<{ id: string; created: boolean }>(
     `insert into contacts (tenant_id, display_name, fb_user_id_enc, fb_user_id_bidx, first_seen_at, last_seen_at)
      values ($1, $2, $3, $4, $5, $5)
-     on conflict (tenant_id, fb_user_id_bidx) where fb_user_id_bidx is not null
+     on conflict (tenant_id, division_id, fb_user_id_bidx) where fb_user_id_bidx is not null
      do update set last_seen_at = excluded.last_seen_at,
                    display_name = coalesce(contacts.display_name, excluded.display_name)
      returning id, (xmax = 0) as created`,
@@ -368,6 +391,66 @@ export async function recordMessengerAgentReply(
   return { messageId: inserted[0]!.id, conversationId: conversation.id, contactId: contact.id, duplicate: false };
 }
 
+/** How far back a reply the CRM sent can still be recognised in the Page's history. */
+const MESSENGER_ECHO_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * A message the CRM itself sent — an agent's reply or the bot's — read back
+ * off the Page while reconciling a thread.
+ *
+ * Such a message was stored without a provider id: Business Suite reveals a
+ * message's id only by clicking it, so the send cannot learn it. Left to
+ * `recordMessengerAgentReply`, which knows messages only by that id, the
+ * reconcile's copy became a second message in the thread. This finds the row
+ * the CRM sent, by its words over a day's window, and gives it the id instead —
+ * which also makes the next reconcile stop there. A reply the bridge could not
+ * confirm, found here, did go out, so it is marked sent.
+ *
+ * Null when nothing matches: the message was said on Facebook itself, and is
+ * history for `recordMessengerAgentReply` to import.
+ */
+export async function claimMessengerEcho(
+  ctx: Ctx,
+  args: { channelId: string; fbUserId: string; body: string; providerMessageId: string; now?: Date },
+): Promise<{ messageId: string; conversationId: string; contactId: string; duplicate: true } | null> {
+  const known = await ctx.tx.query<{ id: string }>(
+    `select id from messages where tenant_id = $1 and channel_id = $2 and provider_message_id = $3`,
+    [ctx.tenantId, args.channelId, args.providerMessageId],
+  );
+  if (known[0]) return null;
+
+  const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
+  const since = new Date((args.now ?? new Date()).getTime() - MESSENGER_ECHO_WINDOW_MS);
+  const candidates = await ctx.tx.query<{ id: string; conversation_id: string; contact_id: string; body_enc: string | null }>(
+    `select m.id, m.conversation_id, c.contact_id, m.body_enc
+       from messages m
+       join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
+       join contacts ct on ct.id = c.contact_id and ct.tenant_id = c.tenant_id
+      where m.tenant_id = $1 and m.channel_id = $2 and ct.fb_user_id_bidx = $3
+        and m.direction = 'outbound' and m.provider_message_id is null and m.created_at > $4
+        -- Not a bot reply a takeover cancelled: it never reached the bridge.
+        -- Null-safe on purpose: most failures store their error as a JSON
+        -- string, which has no 'reason' key to read.
+        and (m.status <> 'failed' or m.error->>'reason' is distinct from 'bot_cancelled_by_takeover')
+      order by m.created_at, m.id
+      limit 50`,
+    [ctx.tenantId, args.channelId, fieldIndex(keys.indexKey, args.fbUserId.trim()), since],
+  );
+  const match = candidates.find((r) =>
+    r.body_enc !== null && isOwnEcho(openField(keys, ctx.tenantId, r.body_enc), args.body));
+  if (!match) return null;
+
+  await ctx.tx.query(
+    `update messages
+        set provider_message_id = $3,
+            status = case when status = 'failed' then 'sent' else status end,
+            error = case when status = 'failed' then null else error end
+      where tenant_id = $1 and id = $2`,
+    [ctx.tenantId, match.id, args.providerMessageId],
+  );
+  return { messageId: match.id, conversationId: match.conversation_id, contactId: match.contact_id, duplicate: true };
+}
+
 /**
  * Which of these provider message ids the CRM already holds for a thread.
  *
@@ -386,6 +469,25 @@ export async function knownMessengerMessageIds(
     [ctx.tenantId, args.channelId, args.providerMessageIds],
   );
   return new Set(rows.map((r) => r.provider_message_id));
+}
+
+/**
+ * Which of these Facebook comment ids the CRM already stores.
+ *
+ * The comment sweep's only memory of what it has delivered: it offers every
+ * comment not named here and nothing else, so a comment is ingested once, a
+ * restart re-sends nothing, and a CRM rebuilt from scratch gets every comment
+ * still on the Page — which a file of "seen" ids on the bridge could not do.
+ */
+export async function knownFacebookCommentIds(
+  ctx: Ctx, args: { commentIds: string[] },
+): Promise<Set<string>> {
+  if (args.commentIds.length === 0) return new Set();
+  const rows = await ctx.tx.query<{ comment_id: string }>(
+    `select comment_id from facebook_comments where tenant_id = $1 and comment_id = any($2::text[])`,
+    [ctx.tenantId, args.commentIds],
+  );
+  return new Set(rows.map((r) => r.comment_id));
 }
 
 /* --------------------------------------------------------------- comments */
@@ -414,6 +516,8 @@ export async function recordFacebookComment(
   ctx: Ctx,
   args: {
     pageId: string; pageName?: string | null; postId: string; commentId: string;
+    /** The comment this one answers, when it is a reply. */
+    parentCommentId?: string | null;
     authorExternalId?: string | null; authorName?: string | null; body: string;
     commentedAt?: Date | null;
   },
@@ -423,13 +527,14 @@ export async function recordFacebookComment(
 
   const inserted = await ctx.tx.query<{ id: string }>(
     `insert into facebook_comments
-       (tenant_id, page_id, page_name, post_id, comment_id,
+       (tenant_id, page_id, page_name, post_id, comment_id, parent_comment_id,
         author_external_id_enc, author_external_id_bidx, author_name_enc, body_enc, commented_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      on conflict (tenant_id, comment_id) do nothing
      returning id`,
     [
       ctx.tenantId, args.pageId, args.pageName ?? null, args.postId, args.commentId,
+      args.parentCommentId?.trim() || null,
       authorId ? sealField(keys, ctx.tenantId, authorId) : null,
       authorId ? fieldIndex(keys.indexKey, authorId) : null,
       args.authorName ? sealField(keys, ctx.tenantId, args.authorName) : null,
@@ -453,6 +558,8 @@ export type CommentStatus =
 
 export interface PendingComment {
   id: string;
+  /** The division whose Page this was left on — which bridge session answers it. */
+  divisionId: string;
   commentId: string;
   postId: string;
   pageId: string;
@@ -487,11 +594,11 @@ export async function listPendingComments(
   const cooldownCutoff = new Date(now.getTime() - (args.cooldownMs ?? 0));
 
   const rows = await ctx.tx.query<{
-    id: string; comment_id: string; post_id: string; page_id: string;
+    id: string; division_id: string; comment_id: string; post_id: string; page_id: string;
     author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
     status: CommentStatus; attempts: number;
   }>(
-    `select id, comment_id, post_id, page_id,
+    `select id, division_id, comment_id, post_id, page_id,
             author_external_id_enc, author_name_enc, body_enc, status, attempts
        from facebook_comments
       where tenant_id = $1
@@ -506,7 +613,7 @@ export async function listPendingComments(
 
   const keys = await tenantKeys(ctx.tx, ctx.kek, ctx.tenantId);
   return rows.map((r) => ({
-    id: r.id, commentId: r.comment_id, postId: r.post_id, pageId: r.page_id,
+    id: r.id, divisionId: r.division_id, commentId: r.comment_id, postId: r.post_id, pageId: r.page_id,
     authorExternalId: r.author_external_id_enc ? openField(keys, ctx.tenantId, r.author_external_id_enc) : null,
     authorName: r.author_name_enc ? openField(keys, ctx.tenantId, r.author_name_enc) : null,
     body: r.body_enc ? openField(keys, ctx.tenantId, r.body_enc) : '',
@@ -646,10 +753,14 @@ export async function markCommentDmFailed(
 
 export interface FacebookCommentRow {
   id: string;
+  /** The division whose Page this was left on — which bridge session answers it. */
+  divisionId: string;
   pageId: string;
   pageName: string | null;
   postId: string;
   commentId: string;
+  /** The comment this one answers, when it is a reply; null for a top-level comment. */
+  parentCommentId: string | null;
   authorExternalId: string | null;
   authorName: string | null;
   body: string;
@@ -668,20 +779,22 @@ export interface FacebookCommentRow {
 
 /** A comment row as stored, before its sealed columns are opened. */
 interface StoredCommentRow {
-  id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
+  id: string; division_id: string; page_id: string; page_name: string | null; post_id: string; comment_id: string;
+  parent_comment_id: string | null;
   author_external_id_enc: string | null; author_name_enc: string | null; body_enc: string | null;
   commented_at: Date | null; created_at: Date; status: CommentStatus;
   public_reply_at: Date | null; public_reply_error: string | null;
   dm_at: Date | null; dm_error: string | null; attempts: number;
 }
 
-const COMMENT_COLUMNS = `id, page_id, page_name, post_id, comment_id,
+const COMMENT_COLUMNS = `id, division_id, page_id, page_name, post_id, comment_id, parent_comment_id,
             author_external_id_enc, author_name_enc, body_enc, commented_at, created_at,
             status, public_reply_at, public_reply_error, dm_at, dm_error, attempts`;
 
 function openCommentRow(keys: TenantKeys, tenantId: string, r: StoredCommentRow): FacebookCommentRow {
   return {
-    id: r.id, pageId: r.page_id, pageName: r.page_name, postId: r.post_id, commentId: r.comment_id,
+    id: r.id, divisionId: r.division_id, pageId: r.page_id, pageName: r.page_name, postId: r.post_id, commentId: r.comment_id,
+    parentCommentId: r.parent_comment_id,
     authorExternalId: r.author_external_id_enc ? openField(keys, tenantId, r.author_external_id_enc) : null,
     authorName: r.author_name_enc ? openField(keys, tenantId, r.author_name_enc) : null,
     body: r.body_enc ? openField(keys, tenantId, r.body_enc) : '',

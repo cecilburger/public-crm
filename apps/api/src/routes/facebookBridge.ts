@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { invalid, notFound, conflict } from '@kirana/core';
+import { invalid, notFound, conflict, bridgeSessionKey, DEFAULT_DIVISION, type Actor } from '@kirana/core';
 import {
   getFbBridgeConnection, setFbBridgeConnection, clearFbBridgeConnection, clearCommentDmError,
-  ensureMessengerBridgeChannel, listFacebookComments, getFacebookComment, audit,
+  ensureMessengerBridgeChannel, listFacebookComments, getFacebookComment, audit, channelHome,
   type FbBridgeConnection, type FacebookCommentRow,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
@@ -31,6 +31,10 @@ import type { AppCtx } from '../app.ts';
  * enqueue rather than act — the worker's claim decides whether anything reaches
  * the bridge.
  */
+/** Comments already logged as handed to a console (`fb_comment_inbox_visible`). */
+const inboxShown = new Set<string>();
+const INBOX_SHOWN_LIMIT = 5_000;
+
 export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx): void {
   const bridgeCall = async <T>(path: string, init: RequestInit): Promise<{ ok: boolean; body: T | null }> => {
     try {
@@ -54,6 +58,28 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
   }
 
   /**
+   * The bridge files each division's Page under its own browser profile:
+   * Marketing's is the bare tenant id (every profile that existed before
+   * divisions), any other division's carries a suffix. Derived rather than
+   * read back, so a connect that has not written its row yet still addresses
+   * the right profile.
+   */
+  const sessionOf = (actor: Actor): string => bridgeSessionKey(actor.tenantId, actor.divisionKey ?? DEFAULT_DIVISION);
+
+  /**
+   * A Page id is unique across the whole system (`channels_provider_key`), so
+   * connecting one that another division — or another tenant — already holds
+   * has to be refused before the channel upsert runs: that upsert would move
+   * the row, and under row-level security it cannot even see the row it
+   * would collide with. A read over the control pool, ids only.
+   */
+  const pageIsFree = async (actor: Actor, pageId: string): Promise<boolean> => {
+    const home = await channelHome(ctx.control, 'messenger_bridge', pageId);
+    return !home || (home.tenantId === actor.tenantId && home.divisionId === actor.divisionId);
+  };
+  const CROSS_DIVISION = 'Halaman ini sudah terhubung di divisi lain — putuskan di sana dulu';
+
+  /**
    * The bridge is the source of truth for session state — it is the only thing
    * that can see whether the Chromium profile still holds a live login. This
    * database row is a cache of what it last said, refreshed on every read so
@@ -69,7 +95,7 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
     const stored = await ctx.asTenant(req, (tx) =>
       getFbBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }));
 
-    const live = await bridgeCall<BridgeState>(`/internal/sessions/${actor.tenantId}/status`, { method: 'GET' });
+    const live = await bridgeCall<BridgeState>(`/internal/sessions/${sessionOf(actor)}/status`, { method: 'GET' });
     if (!live.ok || !live.body) {
       return {
         ...stored,
@@ -106,7 +132,12 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
      */
     const pageId = live.body.pageId ?? stored.pageId;
     const pageName = live.body.pageName ?? stored.pageName;
+    // Never repaired across a division: a Page that another division holds
+    // is that division's, and this one shows the conflict instead.
     if (live.body.status === 'ready' && pageId && pageName) {
+      if (!(await pageIsFree(actor, pageId))) {
+        return { ...stored, ...live.body, bridgeReachable: true, lastError: CROSS_DIVISION };
+      }
       await ctx.asTenant(req, (tx) =>
         ensureMessengerBridgeChannel({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
           pageId, pageName, status: 'connected',
@@ -144,9 +175,15 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
       throw invalid('Isi ID dan nama Halaman Facebook yang mau dihubungkan');
     }
 
-    const call = await bridgeCall<BridgeState>(`/internal/sessions/${actor.tenantId}/login-window`, {
+    // Refused before a login window is opened for it: nothing to clean up.
+    if (!(await pageIsFree(actor, body.data.pageId))) throw conflict(CROSS_DIVISION);
+
+    const sessionKey = sessionOf(actor);
+    const call = await bridgeCall<BridgeState>(`/internal/sessions/${sessionKey}/login-window`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body.data),
+      // The bridge keeps both beside the profile, so every event it later
+      // posts can name the tenant without asking.
+      body: JSON.stringify({ ...body.data, tenantId: actor.tenantId, sessionKey }),
     });
     if (!call.ok || !call.body) {
       throw invalid('Layanan Facebook Bridge tidak bisa dihubungi — pastikan sudah dijalankan (npm run dev:fb-bridge)');
@@ -183,7 +220,7 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
    * a lie about what was revoked. */
   app.post('/v1/facebook-bridge/disconnect', async (req) => {
     const actor = ctx.guard(req, 'channel:manage');
-    await bridgeCall(`/internal/sessions/${actor.tenantId}`, { method: 'DELETE' });
+    await bridgeCall(`/internal/sessions/${sessionOf(actor)}`, { method: 'DELETE' });
     await ctx.asTenant(req, (tx) =>
       clearFbBridgeConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, { actorId: actor.userId }));
     return { ok: true };
@@ -232,6 +269,17 @@ export function registerFacebookBridgeRoutes(app: FastifyInstance, ctx: AppCtx):
 
     const comments = await ctx.asTenant(req, (tx) =>
       listFacebookComments({ tx, tenantId: actor.tenantId, kek: ctx.kek }, query.data));
+    // The last boundary of the inbound trace: the first time each comment is
+    // actually handed to a console. Once per comment per process, ids only.
+    for (const c of comments) {
+      if (inboxShown.has(c.id)) continue;
+      if (inboxShown.size >= INBOX_SHOWN_LIMIT) inboxShown.clear();
+      inboxShown.add(c.id);
+      req.log.info({
+        event: 'fb_comment_inbox_visible', tenantId: actor.tenantId, divisionId: c.divisionId,
+        rowId: c.id, postId: c.postId, commentId: c.commentId, parentCommentId: c.parentCommentId,
+      }, 'fb_comment_inbox_visible');
+    }
     return { comments };
   });
 

@@ -1,6 +1,6 @@
 import {
   COMMENTS, COMMENT_ACTIONS, COMMENT_ID_ATTR_RE, COMMENT_ID_B64_RE, COMMENT_ID_DECODED_RE, COMMENT_ID_RE,
-  POST_ID_RE, PROFILE_ID_RE,
+  POST_ID_RE, PROFILE_ID_RE, REPLY_COMMENT_ID_RE,
 } from '../selectors.ts';
 import {
   changeSignature, firstHrefMatch, isTimestampish, links, parseHtml, queryAll, queryFirst, textOf, textRuns,
@@ -11,6 +11,8 @@ export interface ParsedComment {
   /** Facebook's own comment id. Required — see `droppedNoId`. */
   commentId: string;
   postId: string;
+  /** The comment this one answers when it is a reply; null for a top-level comment. */
+  parentCommentId: string | null;
   authorId: string | null;
   authorName: string;
   text: string;
@@ -35,7 +37,21 @@ export interface ParsedComments {
   /** Comments dropped for having no readable post id, which would leave them
    * unattributable. */
   droppedNoPost: number;
+  /**
+   * Comments the Page wrote itself — its replies to customers, and anything it
+   * said first under its own post — dropped. They are not customers; ingested
+   * they would sit in the inbox as a customer waiting for an answer.
+   */
+  droppedPageOwn: number;
   matchedComments: number;
+  /**
+   * Post articles seen, and how many of those carried no post link. A feed
+   * still rendering shows post-shaped placeholders with no link in them, and
+   * telling that apart from "this Page has no posts" is the whole diagnosis of
+   * an empty sweep.
+   */
+  postArticles: number;
+  postArticlesWithoutId: number;
   /**
    * Every post seen in this reading, newest first, whether or not it had a
    * comment on it.
@@ -60,7 +76,8 @@ export interface ParsedComments {
  * Pure, same as the Messenger parsers: `outerHTML` in, structured comments out.
  */
 export function parseFacebookComments(
-  html: string, opts: { defaultPostId?: string | null } = {},
+  html: string,
+  opts: { defaultPostId?: string | null; pageId?: string | null; pageName?: string | null } = {},
 ): ParsedComments {
   const root = parseHtml(html);
   const feed = queryFirst(root, COMMENTS.feed) ?? root;
@@ -73,15 +90,20 @@ export function parseFacebookComments(
   // enclosing post article as the fallback for a build that does not.
   const nodes = queryAll(feed, COMMENTS.comment);
   const postIds: string[] = [];
+  let postArticles = 0;
+  let postArticlesWithoutId = 0;
   for (const post of queryAll(feed, COMMENTS.post)) {
     const label = post.getAttribute?.('aria-label') ?? '';
     if (/omment|omentar/i.test(label)) continue;
+    postArticles += 1;
     const id = firstHrefMatch(post, POST_ID_RE);
-    if (id && !postIds.includes(id)) postIds.push(id);
+    if (!id) { postArticlesWithoutId += 1; continue; }
+    if (!postIds.includes(id)) postIds.push(id);
   }
   const comments: ParsedComment[] = [];
   let droppedNoId = 0;
   let droppedNoPost = 0;
+  let droppedPageOwn = 0;
   const matchedComments = nodes.length;
   for (const node of nodes) {
     const commentId = commentIdOf(node);
@@ -91,20 +113,89 @@ export function parseFacebookComments(
       ?? (post ? firstHrefMatch(post, POST_ID_RE) : null)
       ?? opts.defaultPostId ?? null;
     if (!postId) { droppedNoPost += 1; continue; }
-    const authorName = authorNameOf(node);
+    const author = authorOf(node, commentId);
+    const { authorId, authorName } = author;
+    if (isPageOwn(author, opts)) { droppedPageOwn += 1; continue; }
     const text = bodyOf(node, authorName);
     // A bubble that rendered as a sticker or a GIF has no text to ingest.
     if (!text) continue;
     comments.push({
       commentId,
       postId,
-      authorId: firstHrefMatch(node, PROFILE_ID_RE),
+      parentCommentId: parentOf(node, commentId),
+      authorId,
       authorName,
       text,
       commentedAt: timestampFrom(node, COMMENTS.timeAttrs),
     });
   }
-  return { comments, droppedNoId, droppedNoPost, matchedComments, postIds };
+  return {
+    comments, droppedNoId, droppedNoPost, droppedPageOwn, matchedComments, postIds, postArticles, postArticlesWithoutId,
+  };
+}
+
+interface CommentAuthor {
+  authorId: string | null;
+  authorName: string;
+  /** Read off the comment's own author link, rather than guessed from the first profile link anywhere in it. */
+  fromOwnLink: boolean;
+}
+
+/**
+ * The comment's author, from the author's OWN anchor: the avatar and name
+ * links the live Page writes as `<profile>?comment_id=<this comment>`. Any
+ * other profile link inside a comment is someone it mentions — a customer
+ * answering the Page's reply has the Page tagged in their text — and reading
+ * the first profile link anywhere filed that customer as the Page.
+ *
+ * A profile with a username links by name (`facebook.com/sinta.uji`), which
+ * carries no numeric id: the id is then null and the link's text is the name.
+ * Renderings with no such anchor fall back to the old reading.
+ */
+function authorOf(node: El, commentId: string): CommentAuthor {
+  const own = links(node).filter(({ href }) => idFromHref(href) === commentId && !POST_ID_RE.test(href));
+  if (own.length > 0) {
+    const authorId = own.map(({ href }) => profileIdOf(href)).find((id): id is string => id !== null) ?? null;
+    const fromText = own.map(({ el }) => textOf(el).trim()).find((text) => text !== '') ?? '';
+    return { authorId, authorName: fromText || authorNameOf(node), fromOwnLink: true };
+  }
+  return { authorId: firstHrefMatch(node, PROFILE_ID_RE), authorName: authorNameOf(node), fromOwnLink: false };
+}
+
+function profileIdOf(href: string): string | null {
+  const m = PROFILE_ID_RE.exec(href);
+  return m ? (m.slice(1).find((g) => g) ?? null) : null;
+}
+
+/**
+ * Written by the Page itself. Read off the author's own link, the Page's id
+ * decides, and for a Page that links by username its name does. Without that
+ * link the reading is a guess, so both the id and the name have to agree —
+ * dropping a real customer is the one mistake here that cannot be seen or
+ * undone, while a Page comment that slips through is still recognised by the
+ * CRM before anything answers it.
+ */
+function isPageOwn(author: CommentAuthor, page: { pageId?: string | null; pageName?: string | null }): boolean {
+  const sameId = Boolean(page.pageId) && author.authorId === page.pageId;
+  const sameName = Boolean(page.pageName)
+    && author.authorName.trim().toLowerCase() === page.pageName!.trim().toLowerCase();
+  if (author.fromOwnLink) return author.authorId ? sameId : sameName;
+  return sameId && sameName;
+}
+
+/**
+ * The comment a reply answers, read off the reply's own permalink
+ * (`comment_id=<parent>&reply_comment_id=<this one>`). Only a link whose
+ * `reply_comment_id` is this comment counts: a top-level comment that merely
+ * contains its replies' links must not be filed as a reply to itself.
+ */
+function parentOf(node: El, commentId: string): string | null {
+  for (const { href } of links(node)) {
+    if (REPLY_COMMENT_ID_RE.exec(href)?.[1] !== commentId) continue;
+    const parent = COMMENT_ID_RE.exec(href)?.[1];
+    if (parent && parent !== commentId) return parent;
+  }
+  return null;
 }
 
 /** The nearest ancestor that is a post article rather than another comment,
@@ -141,8 +232,12 @@ function commentIdOf(node: El): string | null {
   return null;
 }
 
-/** One link's comment id, whichever of the two forms it is written in. */
+/** One link's comment id, whichever of the forms it is written in. A reply's
+ * own permalink names its parent in `comment_id` and itself in
+ * `reply_comment_id`, so the latter wins whenever it is there. */
 function idFromHref(href: string): string | null {
+  const reply = REPLY_COMMENT_ID_RE.exec(href)?.[1];
+  if (reply) return reply;
   const numeric = COMMENT_ID_RE.exec(href)?.[1];
   if (numeric) return numeric;
   const encoded = COMMENT_ID_B64_RE.exec(href)?.[1];

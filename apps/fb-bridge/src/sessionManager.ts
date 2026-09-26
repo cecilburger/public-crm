@@ -92,6 +92,13 @@ export class SenderNotImplementedError extends Error {}
 export class ThreadRequiresAcceptanceError extends Error {}
 /** Typed into the composer, but never seen arriving in the transcript. */
 export class SendNotConfirmedError extends Error {}
+/**
+ * A DM given up on before a single character was typed, so nothing reached
+ * Facebook and trying again cannot send it twice. A subclass so every place
+ * that handles an unconfirmed send still does; only the DM route tells the two
+ * apart.
+ */
+export class SendNotAttemptedError extends SendNotConfirmedError {}
 
 /**
  * A comment action whose DOM path has not been verified against the live site
@@ -131,6 +138,9 @@ export interface SessionState {
 export interface PageMarker {
   pageId: string;
   pageName: string;
+  /** The tenant the CRM named when it connected this Page; profiles from
+   * before the CRM said so have none, and the session key speaks instead. */
+  tenantId?: string | null;
   /**
    * The Business Suite asset id, when this connection is a Page.
    *
@@ -176,19 +186,19 @@ export class SessionManager {
 
   constructor(private authDir: string) {}
 
-  private profileDir(tenantId: string): string {
-    return path.join(this.authDir, tenantId);
+  private profileDir(sessionKey: string): string {
+    return path.join(this.authDir, sessionKey);
   }
 
   /** Public so the watchers can keep their own per-tenant state (thread
    * anchors, seen comment ids) beside the profile without duplicating the
    * naming scheme. */
-  getProfileDir(tenantId: string): string {
-    return this.profileDir(tenantId);
+  getProfileDir(sessionKey: string): string {
+    return this.profileDir(sessionKey);
   }
 
-  private markerFile(tenantId: string): string {
-    return path.join(this.profileDir(tenantId), '.page');
+  private markerFile(sessionKey: string): string {
+    return path.join(this.profileDir(sessionKey), '.page');
   }
 
   /**
@@ -200,13 +210,13 @@ export class SessionManager {
    * console still showed 'ready' — so a restart could not resume on its own and
    * needed a manual reconnect every time. A tiny file avoids all of that.
    */
-  async getPageMarker(tenantId: string): Promise<PageMarker | null> {
-    const cached = this.markers.get(tenantId);
+  async getPageMarker(sessionKey: string): Promise<PageMarker | null> {
+    const cached = this.markers.get(sessionKey);
     if (cached) return cached;
     try {
-      const parsed = JSON.parse(await fs.readFile(this.markerFile(tenantId), 'utf8')) as PageMarker;
+      const parsed = JSON.parse(await fs.readFile(this.markerFile(sessionKey), 'utf8')) as PageMarker;
       if (parsed?.pageId) {
-        this.markers.set(tenantId, parsed);
+        this.markers.set(sessionKey, parsed);
         return parsed;
       }
     } catch {
@@ -215,16 +225,16 @@ export class SessionManager {
     return null;
   }
 
-  private async persistPageMarker(tenantId: string, marker: PageMarker): Promise<void> {
-    this.markers.set(tenantId, marker);
-    await fs.mkdir(this.profileDir(tenantId), { recursive: true }).catch(() => {});
-    await fs.writeFile(this.markerFile(tenantId), JSON.stringify(marker), 'utf8').catch(() => {});
+  private async persistPageMarker(sessionKey: string, marker: PageMarker): Promise<void> {
+    this.markers.set(sessionKey, marker);
+    await fs.mkdir(this.profileDir(sessionKey), { recursive: true }).catch(() => {});
+    await fs.writeFile(this.markerFile(sessionKey), JSON.stringify(marker), 'utf8').catch(() => {});
   }
 
   /** Every tenant with a connected Page, read from disk — this is what the
    * watchers iterate, so it has to reflect what is on disk rather than what
    * happened to connect during this process's lifetime. */
-  async knownTenantIds(): Promise<string[]> {
+  async knownSessionKeys(): Promise<string[]> {
     let entries: string[];
     try {
       entries = await fs.readdir(this.authDir);
@@ -232,15 +242,15 @@ export class SessionManager {
       return [];
     }
     const known: string[] = [];
-    for (const tenantId of entries) {
-      if (await this.getPageMarker(tenantId)) known.push(tenantId);
+    for (const sessionKey of entries) {
+      if (await this.getPageMarker(sessionKey)) known.push(sessionKey);
     }
     return known;
   }
 
-  async hasSession(tenantId: string): Promise<boolean> {
+  async hasSession(sessionKey: string): Promise<boolean> {
     try {
-      return (await fs.readdir(this.profileDir(tenantId))).length > 0;
+      return (await fs.readdir(this.profileDir(sessionKey))).length > 0;
     } catch {
       return false;
     }
@@ -249,17 +259,17 @@ export class SessionManager {
   /** Lets a watcher notice that a tenant it marked "observed" is sitting on a
    * dead CDP connection — its observer died with that browser and nothing
    * re-attaches it on its own. */
-  isConnected(tenantId: string): boolean {
-    return this.browsers.get(tenantId)?.connected ?? false;
+  isConnected(sessionKey: string): boolean {
+    return this.browsers.get(sessionKey)?.connected ?? false;
   }
 
-  async status(tenantId: string): Promise<SessionState> {
-    const marker = await this.getPageMarker(tenantId);
-    const lastError = this.lastErrors.get(tenantId) ?? null;
+  async status(sessionKey: string): Promise<SessionState> {
+    const marker = await this.getPageMarker(sessionKey);
+    const lastError = this.lastErrors.get(sessionKey) ?? null;
     const base = { pageId: marker?.pageId ?? null, pageName: marker?.pageName ?? null, lastError };
 
-    if (this.loginWindows.has(tenantId)) return { ...base, status: 'awaiting_login' };
-    if (!marker || !(await this.hasSession(tenantId))) return { ...base, status: 'disconnected' };
+    if (this.loginWindows.has(sessionKey)) return { ...base, status: 'awaiting_login' };
+    if (!marker || !(await this.hasSession(sessionKey))) return { ...base, status: 'disconnected' };
     if (lastError) return { ...base, status: 'error' };
     return { ...base, status: 'ready' };
   }
@@ -273,44 +283,44 @@ export class SessionManager {
    * empty cache and both launching. Memoising the in-flight launch per tenant
    * makes every concurrent caller await the one real launch.
    */
-  private async ensureBrowser(tenantId: string): Promise<Browser | null> {
-    const existing = this.browsers.get(tenantId);
+  private async ensureBrowser(sessionKey: string): Promise<Browser | null> {
+    const existing = this.browsers.get(sessionKey);
     // A cached browser whose CDP connection has died fails every `newPage()`
     // call on it forever, with the OS process still alive. Re-checking here and
     // falling through to relaunch is what makes that self-heal.
     if (existing) {
       if (existing.connected) return existing;
-      this.browsers.delete(tenantId);
+      this.browsers.delete(sessionKey);
       await existing.close().catch(() => {});
     }
 
     // A login window is a browser on this same profile. Launching a second one
     // beside it would hit Chrome's lock and kill the operator's half-finished
     // login.
-    if (this.loginWindows.has(tenantId)) return null;
+    if (this.loginWindows.has(sessionKey)) return null;
 
-    const inFlight = this.launching.get(tenantId);
+    const inFlight = this.launching.get(sessionKey);
     if (inFlight) return inFlight;
 
     const launch = (async () => {
-      if (!(await this.hasSession(tenantId))) return null;
-      await this.clearCrashedSessionState(tenantId);
-      const browser = await this.launch(tenantId, HEADLESS);
-      this.browsers.set(tenantId, browser);
+      if (!(await this.hasSession(sessionKey))) return null;
+      await this.clearCrashedSessionState(sessionKey);
+      const browser = await this.launch(sessionKey, HEADLESS);
+      this.browsers.set(sessionKey, browser);
       return browser;
     })();
-    this.launching.set(tenantId, launch);
+    this.launching.set(sessionKey, launch);
     try {
       return await launch;
     } finally {
-      this.launching.delete(tenantId);
+      this.launching.delete(sessionKey);
     }
   }
 
-  private async launch(tenantId: string, headless: boolean): Promise<Browser> {
+  private async launch(sessionKey: string, headless: boolean): Promise<Browser> {
     return await puppeteerExtra.launch({
       headless,
-      userDataDir: this.profileDir(tenantId),
+      userDataDir: this.profileDir(sessionKey),
       defaultViewport: headless ? { width: 1400, height: 1000 } : null,
       // Puppeteer's default is three minutes, which is not a timeout so much as
       // a hang. Confirmed live: one wedged in-page call held a comment action
@@ -345,16 +355,16 @@ export class SessionManager {
    * Chrome's own session-restore artifacts before every launch heads it off;
    * `Cookies` and the rest of the authenticated profile are untouched.
    */
-  private async clearCrashedSessionState(tenantId: string): Promise<void> {
-    const defaultDir = path.join(this.profileDir(tenantId), 'Default');
+  private async clearCrashedSessionState(sessionKey: string): Promise<void> {
+    const defaultDir = path.join(this.profileDir(sessionKey), 'Default');
     const artifacts = ['Sessions', 'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'];
     await Promise.all(artifacts.map((name) =>
       fs.rm(path.join(defaultDir, name), { recursive: true, force: true }).catch(() => {})));
   }
 
   /** The long-lived page a watcher installs its observer on. */
-  async getActivePage(tenantId: string): Promise<Page | null> {
-    const browser = await this.ensureBrowser(tenantId);
+  async getActivePage(sessionKey: string): Promise<Page | null> {
+    const browser = await this.ensureBrowser(sessionKey);
     if (!browser) return null;
     const pages = await browser.pages();
     return this.configurePage(pages[0] ?? await browser.newPage());
@@ -364,8 +374,8 @@ export class SessionManager {
    * must not disturb the long-lived observer page — re-navigating that one
    * tears its observer down, which `apps/ig-bridge` confirmed live stops
    * inbound messages arriving until the next reattach. */
-  async newPage(tenantId: string): Promise<Page | null> {
-    const browser = await this.ensureBrowser(tenantId);
+  async newPage(sessionKey: string): Promise<Page | null> {
+    const browser = await this.ensureBrowser(sessionKey);
     if (!browser) return null;
     return this.configurePage(await browser.newPage());
   }
@@ -391,24 +401,24 @@ export class SessionManager {
    * the length of a human login.
    */
   async openLoginWindow(
-    tenantId: string, marker: PageMarker, onSettled?: (state: SessionState) => void,
+    sessionKey: string, marker: PageMarker, onSettled?: (state: SessionState) => void,
   ): Promise<SessionState> {
-    if (this.loginWindows.has(tenantId)) return this.status(tenantId);
+    if (this.loginWindows.has(sessionKey)) return this.status(sessionKey);
 
-    await this.closeBrowser(tenantId);
-    await this.clearCrashedSessionState(tenantId);
-    this.lastErrors.delete(tenantId);
-    await this.persistPageMarker(tenantId, marker);
+    await this.closeBrowser(sessionKey);
+    await this.clearCrashedSessionState(sessionKey);
+    this.lastErrors.delete(sessionKey);
+    await this.persistPageMarker(sessionKey, marker);
 
-    const browser = await this.launch(tenantId, false);
-    this.loginWindows.set(tenantId, browser);
+    const browser = await this.launch(sessionKey, false);
+    this.loginWindows.set(sessionKey, browser);
 
     const pages = await browser.pages();
     const page = await this.configurePage(pages[0] ?? await browser.newPage());
     await page.goto(URLS.login, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
 
-    void this.awaitLogin(tenantId, page).then(async (state) => {
-      this.loginWindows.delete(tenantId);
+    void this.awaitLogin(sessionKey, page).then(async (state) => {
+      this.loginWindows.delete(sessionKey);
       await browser.close().catch(() => {});
       onSettled?.(state);
     });
@@ -417,18 +427,18 @@ export class SessionManager {
   }
 
   /** Polls the operator's own window until it is no longer a login wall. */
-  private async awaitLogin(tenantId: string, page: Page): Promise<SessionState> {
+  private async awaitLogin(sessionKey: string, page: Page): Promise<SessionState> {
     const deadline = Date.now() + LOGIN_WINDOW_TIMEOUT_MS;
-    const marker = await this.getPageMarker(tenantId);
+    const marker = await this.getPageMarker(sessionKey);
     const base = { pageId: marker?.pageId ?? null, pageName: marker?.pageName ?? null };
 
     while (Date.now() < deadline) {
       if (page.isClosed()) {
         // The operator closed the window. Whether they finished is decided by
         // whether the profile now holds a session, not by guessing.
-        const ok = await this.hasSession(tenantId);
+        const ok = await this.hasSession(sessionKey);
         const lastError = ok ? null : 'Jendela login ditutup sebelum login selesai';
-        if (lastError) this.lastErrors.set(tenantId, lastError);
+        if (lastError) this.lastErrors.set(sessionKey, lastError);
         return { ...base, status: ok ? 'ready' : 'disconnected', lastError };
       }
 
@@ -465,14 +475,14 @@ export class SessionManager {
       // its value is a credential and is never logged, stored or sent anywhere.
       const cookies = await page.cookies('https://www.facebook.com').catch(() => []);
       if (cookies.some((cookie) => cookie.name === 'c_user' && cookie.value)) {
-        this.lastErrors.delete(tenantId);
+        this.lastErrors.delete(sessionKey);
         return { ...base, status: 'ready', lastError: null };
       }
       await sleep(LOGIN_POLL_INTERVAL_MS);
     }
 
     const lastError = 'Waktu login habis — operator tidak menyelesaikan login dalam 15 menit';
-    this.lastErrors.set(tenantId, lastError);
+    this.lastErrors.set(sessionKey, lastError);
     return { ...base, status: 'error', lastError };
   }
 
@@ -545,33 +555,33 @@ export class SessionManager {
 
   /** Records why a tenant stopped working, so `status()` reports it instead of
    * claiming 'ready' for a session that is actually broken. */
-  noteError(tenantId: string, error: string): void {
-    this.lastErrors.set(tenantId, error);
+  noteError(sessionKey: string, error: string): void {
+    this.lastErrors.set(sessionKey, error);
   }
 
   /**
    * Drops in-memory session state after a read found the session dead, without
    * deleting the profile — the operator may still be able to log in against it.
-   * Removing the marker is what stops `knownTenantIds` retrying a session
+   * Removing the marker is what stops `knownSessionKeys` retrying a session
    * already known to be dead on every following tick.
    */
-  forgetSession(tenantId: string, reason: string): void {
-    this.lastErrors.set(tenantId, reason);
-    this.markers.delete(tenantId);
-    void fs.rm(this.markerFile(tenantId), { force: true }).catch(() => {});
-    void this.closeBrowser(tenantId);
+  forgetSession(sessionKey: string, reason: string): void {
+    this.lastErrors.set(sessionKey, reason);
+    this.markers.delete(sessionKey);
+    void fs.rm(this.markerFile(sessionKey), { force: true }).catch(() => {});
+    void this.closeBrowser(sessionKey);
   }
 
-  private async closeBrowser(tenantId: string): Promise<void> {
+  private async closeBrowser(sessionKey: string): Promise<void> {
     // A housekeeping-driven launch may be in flight; waiting for it to land
     // means it gets closed here instead of surviving as an orphaned second
     // Chrome pointed at the same profile.
-    const inFlight = this.launching.get(tenantId);
+    const inFlight = this.launching.get(sessionKey);
     if (inFlight) await inFlight.catch(() => {});
 
-    const browser = this.browsers.get(tenantId);
+    const browser = this.browsers.get(sessionKey);
     if (browser) {
-      this.browsers.delete(tenantId);
+      this.browsers.delete(sessionKey);
       await browser.close().catch(() => {});
     }
   }
@@ -593,12 +603,12 @@ export class SessionManager {
    * optimistically even when the server rejected the message, so the proof is a
    * new bubble of our own carrying exactly this text.
    */
-  async sendMessage(tenantId: string, threadId: string, text: string): Promise<void> {
-    const marker = await this.getPageMarker(tenantId);
+  async sendMessage(sessionKey: string, threadId: string, text: string): Promise<void> {
+    const marker = await this.getPageMarker(sessionKey);
     const ctx: TransportContext = { pageName: marker?.pageName ?? null, assetId: marker?.assetId ?? null };
     const transport = ctx.assetId ? businessSuiteTransport : messengerDotComTransport;
 
-    const page = await this.newPage(tenantId);
+    const page = await this.newPage(sessionKey);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
 
     try {
@@ -626,15 +636,17 @@ export class SessionManager {
         page, async () => (await transport.readSurfaceHtml(page)) ?? '', SURFACE_BUDGET_MS,
       );
       trace('send', () => `surface ${settled ? 'settled' : 'still moving'} at ${page.url().slice(0, 80)}`);
+      // Everything thrown up to the typing below is SendNotAttemptedError:
+      // nothing has reached Facebook yet, so the CRM may try again.
       if (!settled) {
-        throw new SendNotConfirmedError(
+        throw new SendNotAttemptedError(
           'Percakapan Facebook masih berubah — pesan tidak diketik agar tidak terkirim ke percakapan lain',
         );
       }
       if (transport.kind === 'business_suite') {
         const correctThread = await assertBusinessSuiteThreadSurface(page, threadId);
         if (!correctThread) {
-          throw new SendNotConfirmedError(
+          throw new SendNotAttemptedError(
             'Business Suite tidak membuktikan percakapan Messenger tujuan yang benar — pesan tidak diketik',
           );
         }
@@ -643,10 +655,10 @@ export class SessionManager {
 
       const focused = await withDeadline(focusComposer(page, transport.composerSelectors), transport.composerWaitMs, 'membuka kotak pesan');
       if (!focused) {
-        throw new SendNotConfirmedError('Kotak pesan Facebook tidak dapat difokuskan — pesan tidak diketik');
+        throw new SendNotAttemptedError('Kotak pesan Facebook tidak dapat difokuskan — pesan tidak diketik');
       }
       if (transport.kind === 'business_suite' && !(await assertBusinessSuiteThreadSurface(page, threadId))) {
-        throw new SendNotConfirmedError(
+        throw new SendNotAttemptedError(
           'Business Suite mengubah percakapan sebelum pesan diisi — pesan tidak diketik',
         );
       }
@@ -680,7 +692,7 @@ export class SessionManager {
       );
     } catch (err) {
       if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
-        this.forgetSession(tenantId, (err as Error).message);
+        this.forgetSession(sessionKey, (err as Error).message);
       }
       throw err;
     } finally {
@@ -697,10 +709,10 @@ export class SessionManager {
    * the worker records "not available yet" on the comment, in words an agent
    * can read, instead of a reply that sits queued looking sent.
    */
-  async replyToComment(tenantId: string, target: CommentTarget): Promise<void> {
-    const marker = await this.getPageMarker(tenantId);
+  async replyToComment(sessionKey: string, target: CommentTarget): Promise<void> {
+    const marker = await this.getPageMarker(sessionKey);
     if (!marker) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
-    const page = await this.newPage(tenantId);
+    const page = await this.newPage(sessionKey);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
 
     const t0 = Date.now();
@@ -791,7 +803,7 @@ export class SessionManager {
       );
     } catch (err) {
       if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
-        this.forgetSession(tenantId, (err as Error).message);
+        this.forgetSession(sessionKey, (err as Error).message);
       }
       throw err;
     } finally {
@@ -810,8 +822,8 @@ export class SessionManager {
    * Page's inbox is exactly what `selected_item_id` carries for a Messenger
    * conversation — confirmed live against a known contact.
    */
-  async privateReplyToComment(tenantId: string, target: CommentTarget): Promise<{ threadId: string }> {
-    const marker = await this.getPageMarker(tenantId);
+  async privateReplyToComment(sessionKey: string, target: CommentTarget): Promise<{ threadId: string }> {
+    const marker = await this.getPageMarker(sessionKey);
     if (!marker) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
     const ctx: TransportContext = { pageName: marker.pageName, assetId: marker.assetId ?? null };
     const transport = ctx.assetId ? businessSuiteTransport : messengerDotComTransport;
@@ -824,7 +836,7 @@ export class SessionManager {
     const mark = (step: string) => {
       trace('private-reply', `${step} +${Date.now() - t0}ms`);
     };
-    const postPage = await this.newPage(tenantId);
+    const postPage = await this.newPage(sessionKey);
     if (!postPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
     let threadPage: Page | null = null;
 
@@ -856,7 +868,7 @@ export class SessionManager {
 
       // The thread is opened BEFORE the send so the baseline count is taken
       // against the same page the confirmation will read.
-      threadPage = await this.newPage(tenantId);
+      threadPage = await this.newPage(sessionKey);
       mark('open-thread');
       if (!threadPage) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
       await threadPage.goto(transport.threadUrl(ctx, threadId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -882,7 +894,7 @@ export class SessionManager {
       // Everything the browser had before the click, so a page that merely
       // navigated into the messaging surface can be told from one that was
       // already showing a composer.
-      const browser = await this.ensureBrowser(tenantId);
+      const browser = await this.ensureBrowser(sessionKey);
       if (!browser) throw new NoActiveSessionError('Tidak ada sesi Facebook yang aktif untuk tenant ini');
       const known = new Set(await browser.pages().catch(() => [] as Page[]));
 
@@ -982,7 +994,7 @@ export class SessionManager {
       );
     } catch (err) {
       if (err instanceof SessionExpiredError || err instanceof CheckpointRequiredError) {
-        this.forgetSession(tenantId, (err as Error).message);
+        this.forgetSession(sessionKey, (err as Error).message);
       }
       throw err;
     } finally {
@@ -991,16 +1003,16 @@ export class SessionManager {
     }
   }
 
-  async logout(tenantId: string): Promise<void> {
-    const loginWindow = this.loginWindows.get(tenantId);
+  async logout(sessionKey: string): Promise<void> {
+    const loginWindow = this.loginWindows.get(sessionKey);
     if (loginWindow) {
-      this.loginWindows.delete(tenantId);
+      this.loginWindows.delete(sessionKey);
       await loginWindow.close().catch(() => {});
     }
-    await this.closeBrowser(tenantId);
-    this.markers.delete(tenantId);
-    this.lastErrors.delete(tenantId);
-    await fs.rm(this.profileDir(tenantId), { recursive: true, force: true }).catch(() => {});
+    await this.closeBrowser(sessionKey);
+    this.markers.delete(sessionKey);
+    this.lastErrors.delete(sessionKey);
+    await fs.rm(this.profileDir(sessionKey), { recursive: true, force: true }).catch(() => {});
   }
 
   /** Closes every browser cleanly on shutdown, so a routine `tsx watch` reload
@@ -1008,7 +1020,7 @@ export class SessionManager {
    * `clearCrashedSessionState` exists to recover from. */
   async closeAll(): Promise<void> {
     await Promise.all([
-      ...[...this.browsers.keys()].map((tenantId) => this.closeBrowser(tenantId)),
+      ...[...this.browsers.keys()].map((sessionKey) => this.closeBrowser(sessionKey)),
       ...[...this.loginWindows.values()].map((browser) => browser.close().catch(() => {})),
     ]);
     this.loginWindows.clear();

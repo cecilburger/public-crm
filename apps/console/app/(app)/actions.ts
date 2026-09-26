@@ -1084,6 +1084,44 @@ export async function setAutopilotMode(_prev: ActionResult | null, form: FormDat
   }
 }
 
+/* --------------------------------------------------------------- chatbot */
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function revalidateThreads(): void {
+  revalidatePath('/obrolan', 'layout');
+  revalidatePath('/chat-wa', 'layout');
+  revalidatePath('/chat-ig', 'layout');
+}
+
+/** Stop the bot on one conversation; a person answers it from here on. */
+export async function takeoverConversation(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  if (!UUID.test(conversationId)) return { ok: false, error: t.chatbot.takeoverFailed };
+  try {
+    await api(`/v1/conversations/${conversationId}/takeover`, { method: 'POST' });
+    revalidateThreads();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.takeoverFailed };
+  }
+}
+
+/** Hand a conversation back to the bot. The API refuses (409) a contact who opted out. */
+export async function resumeBot(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {
+  try { await assertCsrf(form); } catch { return { ok: false, error: new CsrfError().message }; }
+  const conversationId = String(form.get('conversationId') ?? '');
+  if (!UUID.test(conversationId)) return { ok: false, error: t.chatbot.resumeFailed };
+  try {
+    await api(`/v1/conversations/${conversationId}/bot/resume`, { method: 'POST' });
+    revalidateThreads();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof ApiError ? err.message : t.chatbot.resumeFailed };
+  }
+}
+
 /* ------------------------------------------------------------ two-factor */
 
 export interface MfaResult extends ActionResult {
@@ -1777,7 +1815,7 @@ async function queueCommentAction(
 
   try {
     await api(`/v1/facebook-bridge/comments/${commentId}/${step}`, { method: 'POST', body: { text } });
-    revalidatePath(`/obrolan/komentar/${commentId}`);
+    revalidatePath('/obrolan/komentar/[id]', 'page');
     revalidatePath('/obrolan', 'layout');
     return { ok: true };
   } catch (err) {

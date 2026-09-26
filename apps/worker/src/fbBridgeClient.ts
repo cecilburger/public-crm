@@ -23,9 +23,11 @@ export type FbBridgeError = Error & {
 };
 
 /** A comment, as the bridge needs it named: which Page session, which post,
- * which comment on it — and what to say. */
+ * which comment on it — and what to say. The session is a division's, not a
+ * tenant's: `sessionKey` is what the bridge files that division's browser
+ * profile under (`bridgeSessionKey` in @kirana/core). */
 export interface CommentTarget {
-  tenantId: string;
+  sessionKey: string;
   postId: string;
   commentId: string;
   text: string;
@@ -37,11 +39,31 @@ const PERMANENT_STATUSES = new Set([400, 404, 409, 501]);
 export class FbBridgeClient {
   constructor(private baseUrl: string, private secret: string) {}
 
-  /** Types a message into a Messenger thread's composer. */
-  async send(args: { tenantId: string; threadId: string; body: string }): Promise<void> {
-    await this.post(
-      `/internal/sessions/${args.tenantId}/threads/${args.threadId}/send`, { text: args.body }, 'send',
-    );
+  /**
+   * Types a message into a Messenger thread's composer.
+   *
+   * A 502 `send_not_confirmed` means the message was typed but not seen in the
+   * thread — it most likely arrived, and a retry would type it a second time.
+   * For a DM that is final: the row fails saying so and a person checks the
+   * inbox. Comment actions keep their own rule in `facebookComments.ts`.
+   */
+  async send(args: { sessionKey: string; threadId: string; body: string }): Promise<void> {
+    try {
+      await this.post(
+        `/internal/sessions/${args.sessionKey}/threads/${args.threadId}/send`, { text: args.body }, 'send',
+      );
+    } catch (err) {
+      const e = err as FbBridgeError;
+      if (e.status !== 502 || e.code !== 'send_not_confirmed') throw err;
+      const unconfirmed = new Error(
+        'fb-bridge send unconfirmed: pesan sudah diketik tapi tidak terkonfirmasi terkirim — '
+        + 'periksa kotak masuk Facebook sebelum mengirim ulang',
+      ) as FbBridgeError;
+      unconfirmed.status = e.status;
+      unconfirmed.code = e.code;
+      unconfirmed.permanent = true;
+      throw unconfirmed;
+    }
   }
 
   /**
@@ -55,7 +77,7 @@ export class FbBridgeClient {
    */
   async replyToComment(args: CommentTarget): Promise<void> {
     await this.post(
-      `/internal/sessions/${args.tenantId}/comments/reply`,
+      `/internal/sessions/${args.sessionKey}/comments/reply`,
       { postId: args.postId, commentId: args.commentId, text: args.text },
       'comment reply',
     );
@@ -69,7 +91,7 @@ export class FbBridgeClient {
    */
   async privateReplyToComment(args: CommentTarget): Promise<{ threadId: string }> {
     const body = await this.post(
-      `/internal/sessions/${args.tenantId}/comments/private-reply`,
+      `/internal/sessions/${args.sessionKey}/comments/private-reply`,
       { postId: args.postId, commentId: args.commentId, text: args.text },
       'private reply',
     );

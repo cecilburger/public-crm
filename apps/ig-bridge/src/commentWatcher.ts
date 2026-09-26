@@ -4,7 +4,7 @@ import { isSessionExpiredError } from './dmScraperPuppeteer.ts';
 
 export interface IgCommentEvent {
   event: 'comment';
-  tenantId: string;
+  sessionKey: string;
   comment: {
     postRef: string; commentRef: string; commenter: string; text: string; at: string;
     parentRef: string | null;
@@ -86,33 +86,33 @@ export class CommentWatcher {
     if (this.running) return;
     this.running = true;
     try {
-      for (const tenantId of await this.sessions.knownTenantIds()) {
-        await this.pollTenant(tenantId);
+      for (const sessionKey of await this.sessions.knownSessionKeys()) {
+        await this.pollTenant(sessionKey);
       }
     } finally {
       this.running = false;
     }
   }
 
-  private async pollTenant(tenantId: string): Promise<void> {
-    const ownUsername = await this.sessions.getOwnUsername(tenantId);
+  private async pollTenant(sessionKey: string): Promise<void> {
+    const ownUsername = await this.sessions.getOwnUsername(sessionKey);
     if (!ownUsername) return;
 
-    const page = await this.sessions.newPage(tenantId);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return;
 
     try {
       const comments = await readRecentComments(page, ownUsername);
-      for (const comment of comments) this.emit(toEvent(tenantId, comment));
+      for (const comment of comments) this.emit(toEvent(sessionKey, comment));
       if (comments.length > 0) {
-        this.log.info({ tenantId, count: comments.length }, 'ig-bridge read comments');
+        this.log.info({ sessionKey, count: comments.length }, 'ig-bridge read comments');
       }
       // A clean pass earns back the normal cadence after a back-off.
       this.interval = Math.max(60_000, Number(process.env.IG_COMMENT_POLL_MS ?? DEFAULT_INTERVAL_MS));
     } catch (err) {
       if (err instanceof ThrottledError) {
         this.interval = Math.min(this.interval * 2, MAX_INTERVAL_MS);
-        this.log.warn({ tenantId, nextPollMs: this.interval }, 'ig-bridge throttled reading comments — backing off');
+        this.log.warn({ sessionKey, nextPollMs: this.interval }, 'ig-bridge throttled reading comments — backing off');
         return;
       }
       // A dead session is the DM watcher's to notice and report: it is the
@@ -121,20 +121,20 @@ export class CommentWatcher {
       // from here would race it and, worse, tear down a session over a
       // comment read — which it once did.
       if (isSessionExpiredError(err)) {
-        this.log.warn({ tenantId }, 'ig-bridge: session looks expired while reading comments');
+        this.log.warn({ sessionKey }, 'ig-bridge: session looks expired while reading comments');
         return;
       }
-      this.log.warn({ err, tenantId }, 'ig-bridge could not read comments');
+      this.log.warn({ err, sessionKey }, 'ig-bridge could not read comments');
     } finally {
       await page.close().catch(() => {});
     }
   }
 }
 
-function toEvent(tenantId: string, comment: ScrapedComment): IgCommentEvent {
+function toEvent(sessionKey: string, comment: ScrapedComment): IgCommentEvent {
   return {
     event: 'comment',
-    tenantId,
+    sessionKey,
     comment: {
       postRef: comment.postRef,
       commentRef: comment.commentRef,

@@ -117,22 +117,55 @@ export class SessionManager {
    * polling on its own instead of needing a manual reconnect from Pengaturan
    * every time.
    */
-  private usernameFile(tenantId: string): string {
-    return path.join(this.profileDir(tenantId), '.own-username');
+  private usernameFile(sessionKey: string): string {
+    return path.join(this.profileDir(sessionKey), '.own-username');
   }
 
-  private async persistOwnUsername(tenantId: string, username: string): Promise<void> {
-    this.ownUsernames.set(tenantId, username);
-    await fs.mkdir(this.profileDir(tenantId), { recursive: true }).catch(() => {});
-    await fs.writeFile(this.usernameFile(tenantId), username, 'utf8').catch(() => {});
+  private async persistOwnUsername(sessionKey: string, username: string): Promise<void> {
+    this.ownUsernames.set(sessionKey, username);
+    await fs.mkdir(this.profileDir(sessionKey), { recursive: true }).catch(() => {});
+    await fs.writeFile(this.usernameFile(sessionKey), username, 'utf8').catch(() => {});
+  }
+
+  /**
+   * The tenant this profile belongs to, as the CRM stated it at login time.
+   * A session key already encodes it (Marketing's key *is* the tenant id;
+   * any other division's is `<tenantId>-<division>`), so this file is a
+   * convenience for the wire payload, not the source of truth.
+   */
+  private tenantIds = new Map<string, string>();
+
+  private tenantFile(sessionKey: string): string {
+    return path.join(this.profileDir(sessionKey), '.tenant');
+  }
+
+  async persistTenantId(sessionKey: string, tenantId: string): Promise<void> {
+    this.tenantIds.set(sessionKey, tenantId);
+    await fs.mkdir(this.profileDir(sessionKey), { recursive: true }).catch(() => {});
+    await fs.writeFile(this.tenantFile(sessionKey), tenantId, 'utf8').catch(() => {});
+  }
+
+  async getTenantId(sessionKey: string): Promise<string | null> {
+    const cached = this.tenantIds.get(sessionKey);
+    if (cached) return cached;
+    try {
+      const fromDisk = (await fs.readFile(this.tenantFile(sessionKey), 'utf8')).trim();
+      if (fromDisk) {
+        this.tenantIds.set(sessionKey, fromDisk);
+        return fromDisk;
+      }
+    } catch {
+      // Logged in before the CRM started naming tenants — the key still says.
+    }
+    return null;
   }
 
   /** Lets `DmWatcher` notice a tenant it already marked "observed" is
    * actually sitting on a dead browser connection (crashed, or CDP just
    * dropped) — its inbox observer died with that browser, silently, and
    * nothing re-attaches it on its own. */
-  isConnected(tenantId: string): boolean {
-    return this.contexts.get(tenantId)?.connected ?? false;
+  isConnected(sessionKey: string): boolean {
+    return this.contexts.get(sessionKey)?.connected ?? false;
   }
 
   /** One recovery attempt at a time per tenant, so a console polling every
@@ -152,39 +185,39 @@ export class SessionManager {
    * Cheap when it is not needed: the caller checks for a persisted username
    * first, so this only ever runs for a connection that is actually missing one.
    */
-  async recoverOwnUsername(tenantId: string): Promise<string | null> {
-    const inFlight = this.recoveringUsername.get(tenantId);
+  async recoverOwnUsername(sessionKey: string): Promise<string | null> {
+    const inFlight = this.recoveringUsername.get(sessionKey);
     if (inFlight) return inFlight;
 
     const attempt = (async () => {
-      const page = await this.newPage(tenantId);
+      const page = await this.newPage(sessionKey);
       if (!page) return null;
       try {
         const cookies = await page.cookies('https://www.instagram.com').catch(() => []);
         const dsUserId = cookies.find((c) => c.name === 'ds_user_id')?.value ?? null;
         const username = await this.readOwnUsername(page, dsUserId).catch(() => null);
-        if (username) await this.persistOwnUsername(tenantId, username);
+        if (username) await this.persistOwnUsername(sessionKey, username);
         return username;
       } finally {
         await page.close().catch(() => {});
       }
     })();
 
-    this.recoveringUsername.set(tenantId, attempt);
+    this.recoveringUsername.set(sessionKey, attempt);
     try {
       return await attempt;
     } finally {
-      this.recoveringUsername.delete(tenantId);
+      this.recoveringUsername.delete(sessionKey);
     }
   }
 
-  async getOwnUsername(tenantId: string): Promise<string | null> {
-    const cached = this.ownUsernames.get(tenantId);
+  async getOwnUsername(sessionKey: string): Promise<string | null> {
+    const cached = this.ownUsernames.get(sessionKey);
     if (cached) return cached;
     try {
-      const fromDisk = (await fs.readFile(this.usernameFile(tenantId), 'utf8')).trim();
+      const fromDisk = (await fs.readFile(this.usernameFile(sessionKey), 'utf8')).trim();
       if (fromDisk) {
-        this.ownUsernames.set(tenantId, fromDisk);
+        this.ownUsernames.set(sessionKey, fromDisk);
         return fromDisk;
       }
     } catch {
@@ -197,7 +230,7 @@ export class SessionManager {
    * what `DmWatcher` iterates each housekeeping cycle, so it has to reflect
    * disk state, not just what happened to log in during this particular
    * process's lifetime. */
-  async knownTenantIds(): Promise<string[]> {
+  async knownSessionKeys(): Promise<string[]> {
     let entries: string[];
     try {
       entries = await fs.readdir(this.authDir);
@@ -205,8 +238,8 @@ export class SessionManager {
       return [];
     }
     const known: string[] = [];
-    for (const tenantId of entries) {
-      if (await this.getOwnUsername(tenantId)) known.push(tenantId);
+    for (const sessionKey of entries) {
+      if (await this.getOwnUsername(sessionKey)) known.push(sessionKey);
     }
     return known;
   }
@@ -216,12 +249,12 @@ export class SessionManager {
    * Chromium profile itself or touching `ig_bridge_connections` (that DB
    * row lives in `apps/api`, told separately via the `session_error` event
    * this triggers). Removing the marker, not just the in-memory entry, is
-   * what stops `knownTenantIds` from retrying a session already known to be
+   * what stops `knownSessionKeys` from retrying a session already known to be
    * dead on every following tick until the user actually reconnects. */
-  forgetSession(tenantId: string): void {
-    this.ownUsernames.delete(tenantId);
-    void fs.rm(this.usernameFile(tenantId), { force: true }).catch(() => {});
-    void this.closeContext(tenantId);
+  forgetSession(sessionKey: string): void {
+    this.ownUsernames.delete(sessionKey);
+    void fs.rm(this.usernameFile(sessionKey), { force: true }).catch(() => {});
+    void this.closeContext(sessionKey);
   }
 
   /**
@@ -232,8 +265,8 @@ export class SessionManager {
    * (the cookie jar the last launch already wrote), the same profile
    * `login()` would have reused had it been called again.
    */
-  async getActivePage(tenantId: string): Promise<Page | null> {
-    const browser = await this.ensureBrowser(tenantId);
+  async getActivePage(sessionKey: string): Promise<Page | null> {
+    const browser = await this.ensureBrowser(sessionKey);
     if (!browser) return null;
     const pages = await browser.pages();
     return this.configurePage(pages[0] ?? await browser.newPage());
@@ -243,8 +276,8 @@ export class SessionManager {
    * one thread, checking Requests, sending) that must not disturb whatever
    * long-lived page `DmWatcher` keeps open with an inbox observer installed
    * on it. Same session, same cookies, just a separate tab. */
-  async newPage(tenantId: string): Promise<Page | null> {
-    const browser = await this.ensureBrowser(tenantId);
+  async newPage(sessionKey: string): Promise<Page | null> {
+    const browser = await this.ensureBrowser(sessionKey);
     if (!browser) return null;
     return this.configurePage(await browser.newPage());
   }
@@ -267,8 +300,8 @@ export class SessionManager {
   // concurrent caller awaits the one real launch instead of racing another.
   private launching = new Map<string, Promise<Browser | null>>();
 
-  private async ensureBrowser(tenantId: string): Promise<Browser | null> {
-    const existing = this.contexts.get(tenantId);
+  private async ensureBrowser(sessionKey: string): Promise<Browser | null> {
+    const existing = this.contexts.get(sessionKey);
     // A cached `Browser` whose underlying CDP connection has died (the
     // browser process crashed, or Chrome's own remote-debugging connection
     // just dropped — confirmed live, with the OS process still alive) fails
@@ -280,20 +313,20 @@ export class SessionManager {
     // is what makes that self-heal instead.
     if (existing) {
       if (existing.connected) return existing;
-      this.contexts.delete(tenantId);
+      this.contexts.delete(sessionKey);
       await existing.close().catch(() => {});
     }
 
-    const inFlight = this.launching.get(tenantId);
+    const inFlight = this.launching.get(sessionKey);
     if (inFlight) return inFlight;
 
     const launch = (async () => {
-      if (!(await this.hasSession(tenantId))) return null;
-      await this.clearCrashedSessionState(tenantId);
+      if (!(await this.hasSession(sessionKey))) return null;
+      await this.clearCrashedSessionState(sessionKey);
       let browser: Browser;
       try {
         browser = await puppeteerExtra.launch({
-          headless: HEADLESS, userDataDir: this.profileDir(tenantId), defaultViewport: { width: 1280, height: 900 },
+          headless: HEADLESS, userDataDir: this.profileDir(sessionKey), defaultViewport: { width: 1280, height: 900 },
         }) as unknown as Browser;
       } catch (err) {
         // Almost always the profile lock, held by a Chrome this process did
@@ -304,19 +337,19 @@ export class SessionManager {
         // bridge unable to open a single page until the stray was killed by
         // hand. Adopting it is strictly better than fighting it: same
         // profile, same cookies, same logged-in session.
-        const adopted = await this.adoptRunningBrowser(tenantId);
+        const adopted = await this.adoptRunningBrowser(sessionKey);
         if (!adopted) throw err;
-        this.contexts.set(tenantId, adopted);
+        this.contexts.set(sessionKey, adopted);
         return adopted;
       }
-      this.contexts.set(tenantId, browser);
+      this.contexts.set(sessionKey, browser);
       return browser;
     })();
-    this.launching.set(tenantId, launch);
+    this.launching.set(sessionKey, launch);
     try {
       return await launch;
     } finally {
-      this.launching.delete(tenantId);
+      this.launching.delete(sessionKey);
     }
   }
 
@@ -329,10 +362,10 @@ export class SessionManager {
    * browser from the previous `tsx watch` generation from a blocker into the
    * session we go on using.
    */
-  private async adoptRunningBrowser(tenantId: string): Promise<Browser | null> {
+  private async adoptRunningBrowser(sessionKey: string): Promise<Browser | null> {
     let port: string;
     try {
-      const contents = await fs.readFile(path.join(this.profileDir(tenantId), 'DevToolsActivePort'), 'utf8');
+      const contents = await fs.readFile(path.join(this.profileDir(sessionKey), 'DevToolsActivePort'), 'utf8');
       port = contents.split('\n')[0]?.trim() ?? '';
     } catch {
       return null;
@@ -349,15 +382,15 @@ export class SessionManager {
     }
   }
 
-  private profileDir(tenantId: string): string {
-    return path.join(this.authDir, tenantId);
+  private profileDir(sessionKey: string): string {
+    return path.join(this.authDir, sessionKey);
   }
 
   /** Public so `DmWatcher` can persist its own per-tenant state (thread
    * read-anchors) alongside the Chrome profile, without duplicating the
    * naming scheme. */
-  getProfileDir(tenantId: string): string {
-    return this.profileDir(tenantId);
+  getProfileDir(sessionKey: string): string {
+    return this.profileDir(sessionKey);
   }
 
   /**
@@ -376,38 +409,38 @@ export class SessionManager {
    * since nothing here reads them; there's simply nothing left for Chrome
    * to try restoring.
    */
-  private async clearCrashedSessionState(tenantId: string): Promise<void> {
-    const defaultDir = path.join(this.profileDir(tenantId), 'Default');
+  private async clearCrashedSessionState(sessionKey: string): Promise<void> {
+    const defaultDir = path.join(this.profileDir(sessionKey), 'Default');
     const artifacts = ['Sessions', 'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'];
     await Promise.all(artifacts.map((name) =>
       fs.rm(path.join(defaultDir, name), { recursive: true, force: true }).catch(() => {})));
   }
 
   /** Cheap, no browser involved — just "does this tenant have a saved profile". */
-  async hasSession(tenantId: string): Promise<boolean> {
+  async hasSession(sessionKey: string): Promise<boolean> {
     try {
-      const entries = await fs.readdir(this.profileDir(tenantId));
+      const entries = await fs.readdir(this.profileDir(sessionKey));
       return entries.length > 0;
     } catch {
       return false;
     }
   }
 
-  private async closeContext(tenantId: string): Promise<void> {
+  private async closeContext(sessionKey: string): Promise<void> {
     // `login`/`loginWithCookie` call this right before launching their own
     // fresh browser — if a housekeeping-driven `ensureBrowser` launch for
     // this same tenant happens to be in flight, wait for it to land (and
     // register itself in `this.contexts`) first, so it gets closed here
     // instead of surviving as an orphaned second Chrome pointed at the same
     // `userDataDir` the fresh login is about to launch against.
-    const inFlight = this.launching.get(tenantId);
+    const inFlight = this.launching.get(sessionKey);
     if (inFlight) await inFlight.catch(() => {});
 
-    const browser = this.contexts.get(tenantId);
+    const browser = this.contexts.get(sessionKey);
     if (browser) {
-      this.contexts.delete(tenantId);
-      this.pendingChallenge.delete(tenantId);
-      this.pendingUsernames.delete(tenantId);
+      this.contexts.delete(sessionKey);
+      this.pendingChallenge.delete(sessionKey);
+      this.pendingUsernames.delete(sessionKey);
       await browser.close().catch(() => {});
     }
   }
@@ -472,14 +505,14 @@ export class SessionManager {
     return { status: 'failed', error: 'Waktu tunggu habis — halaman Instagram tidak merespons seperti yang diharapkan' };
   }
 
-  async login(tenantId: string, username: string, password: string): Promise<LoginResult> {
-    await this.closeContext(tenantId);
-    await this.clearCrashedSessionState(tenantId);
+  async login(sessionKey: string, username: string, password: string): Promise<LoginResult> {
+    await this.closeContext(sessionKey);
+    await this.clearCrashedSessionState(sessionKey);
 
     const browser = await puppeteerExtra.launch({
-      headless: HEADLESS, userDataDir: this.profileDir(tenantId), defaultViewport: { width: 1280, height: 900 },
+      headless: HEADLESS, userDataDir: this.profileDir(sessionKey), defaultViewport: { width: 1280, height: 900 },
     }) as unknown as Browser;
-    this.contexts.set(tenantId, browser);
+    this.contexts.set(sessionKey, browser);
 
     const pages = await browser.pages();
     const page = await this.configurePage(pages[0] ?? await browser.newPage());
@@ -500,17 +533,17 @@ export class SessionManager {
 
       const result = await this.classifyOutcome(page);
       if (result.status === 'challenge_required') {
-        this.pendingChallenge.set(tenantId, page);
-        this.pendingUsernames.set(tenantId, username);
+        this.pendingChallenge.set(sessionKey, page);
+        this.pendingUsernames.set(sessionKey, username);
       } else if (result.status === 'ready') {
-        await this.persistOwnUsername(tenantId, username);
+        await this.persistOwnUsername(sessionKey, username);
         return { status: 'ready', username };
       } else {
-        await this.closeContext(tenantId);
+        await this.closeContext(sessionKey);
       }
       return result;
     } catch (err) {
-      await this.closeContext(tenantId);
+      await this.closeContext(sessionKey);
       return { status: 'failed', error: err instanceof Error ? err.message : 'Gagal membuka halaman login Instagram' };
     }
   }
@@ -529,15 +562,15 @@ export class SessionManager {
    * `apps/api`'s database.
    */
   async loginWithCookie(
-    tenantId: string, username: string, sessionId: string, csrfToken?: string, dsUserId?: string,
+    sessionKey: string, username: string, sessionId: string, csrfToken?: string, dsUserId?: string,
   ): Promise<LoginResult> {
-    await this.closeContext(tenantId);
-    await this.clearCrashedSessionState(tenantId);
+    await this.closeContext(sessionKey);
+    await this.clearCrashedSessionState(sessionKey);
 
     const browser = await puppeteerExtra.launch({
-      headless: HEADLESS, userDataDir: this.profileDir(tenantId), defaultViewport: { width: 1280, height: 900 },
+      headless: HEADLESS, userDataDir: this.profileDir(sessionKey), defaultViewport: { width: 1280, height: 900 },
     }) as unknown as Browser;
-    this.contexts.set(tenantId, browser);
+    this.contexts.set(sessionKey, browser);
 
     try {
       const pages = await browser.pages();
@@ -554,14 +587,14 @@ export class SessionManager {
       await sleep(1500);
 
       if (page.url().includes('/accounts/login')) {
-        await this.closeContext(tenantId);
+        await this.closeContext(sessionKey);
         return { status: 'failed', error: 'Session cookie tidak valid atau sudah kedaluwarsa — ambil ulang dari browser' };
       }
       await clickButtonByText(page, /Not now|Not Now/, 2000);
-      await this.persistOwnUsername(tenantId, username);
+      await this.persistOwnUsername(sessionKey, username);
       return { status: 'ready', username };
     } catch (err) {
-      await this.closeContext(tenantId);
+      await this.closeContext(sessionKey);
       return { status: 'failed', error: err instanceof Error ? err.message : 'Gagal memasukkan session cookie' };
     }
   }
@@ -587,19 +620,19 @@ export class SessionManager {
    * work and holding an HTTP request open for it would time out somewhere in
    * between; the console polls `/status` instead.
    */
-  async openLoginWindow(tenantId: string, onSettled?: (result: LoginResult) => void): Promise<LoginResult | { status: 'awaiting_login' }> {
+  async openLoginWindow(sessionKey: string, onSettled?: (result: LoginResult) => void): Promise<LoginResult | { status: 'awaiting_login' }> {
     // A second click must not launch a second Chrome against one `userDataDir`
     // — Chrome's own single-instance lock rejects that outright, and the error
     // it gives is far less useful than simply saying "a window is already open".
-    if (this.loginWindows.has(tenantId)) return { status: 'awaiting_login' };
+    if (this.loginWindows.has(sessionKey)) return { status: 'awaiting_login' };
 
-    await this.closeContext(tenantId);
-    await this.clearCrashedSessionState(tenantId);
+    await this.closeContext(sessionKey);
+    await this.clearCrashedSessionState(sessionKey);
 
     const browser = await puppeteerExtra.launch({
-      headless: false, userDataDir: this.profileDir(tenantId), defaultViewport: null,
+      headless: false, userDataDir: this.profileDir(sessionKey), defaultViewport: null,
     }) as unknown as Browser;
-    this.loginWindows.set(tenantId, browser);
+    this.loginWindows.set(sessionKey, browser);
 
     const pages = await browser.pages();
     const page = await this.configurePage(pages[0] ?? await browser.newPage());
@@ -607,18 +640,30 @@ export class SessionManager {
       waitUntil: 'domcontentloaded', timeout: 30_000,
     }).catch(() => {});
 
-    void this.awaitBrowserLogin(tenantId, page).then(async (result) => {
-      this.loginWindows.delete(tenantId);
+    // Without the `.catch()`, an exception anywhere inside `awaitBrowserLogin`
+    // — one the several `.catch(() => …)`s inside it don't happen to cover —
+    // rejects this promise, the `.then()` below never runs, and `loginWindows`
+    // keeps the entry forever: every poll of `/status` finds the same session
+    // still "awaiting login", with no window left to finish it in and no way
+    // out short of restarting the bridge process. Settling on failure here
+    // guarantees the map entry is always cleared and the console is always
+    // told something, however this ends.
+    void this.awaitBrowserLogin(sessionKey, page).then(async (result) => {
+      this.loginWindows.delete(sessionKey);
       await browser.close().catch(() => {});
       onSettled?.(result);
+    }).catch(async (err) => {
+      this.loginWindows.delete(sessionKey);
+      await browser.close().catch(() => {});
+      onSettled?.({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
     });
 
     return { status: 'awaiting_login' };
   }
 
   /** True while a human still has a login window open for this tenant. */
-  isAwaitingLogin(tenantId: string): boolean {
-    return this.loginWindows.has(tenantId);
+  isAwaitingLogin(sessionKey: string): boolean {
+    return this.loginWindows.has(sessionKey);
   }
 
   /**
@@ -629,8 +674,8 @@ export class SessionManager {
    * last few characters: it is the credential itself, and a CRM page is not
    * where it belongs in full.
    */
-  capturedFor(tenantId: string): { sessionIdMasked: string; csrfToken: string | null; dsUserId: string | null; capturedAt: string } | null {
-    const got = this.capturedCookies.get(tenantId);
+  capturedFor(sessionKey: string): { sessionIdMasked: string; csrfToken: string | null; dsUserId: string | null; capturedAt: string } | null {
+    const got = this.capturedCookies.get(sessionKey);
     if (!got) return null;
     const s = got.sessionId;
     const masked = s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : '……';
@@ -650,16 +695,16 @@ export class SessionManager {
    * operator was still typing. The `sessionid` cookie exists only once
    * Instagram has authenticated someone, so that is what this waits for.
    */
-  private async awaitBrowserLogin(tenantId: string, page: Page): Promise<LoginResult> {
+  private async awaitBrowserLogin(sessionKey: string, page: Page): Promise<LoginResult> {
     const deadline = Date.now() + LOGIN_WINDOW_TIMEOUT_MS;
 
     while (Date.now() < deadline) {
       if (page.isClosed()) {
         // Closed by the operator. Whether they finished is decided by what the
         // profile holds, not by assuming either way.
-        const cookies = this.capturedCookies.get(tenantId);
+        const cookies = this.capturedCookies.get(sessionKey);
         if (cookies) {
-          const username = await this.getOwnUsername(tenantId);
+          const username = await this.getOwnUsername(sessionKey);
           return { status: 'ready', username: username ?? '' };
         }
         return { status: 'failed', error: 'Jendela login ditutup sebelum login selesai' };
@@ -669,7 +714,7 @@ export class SessionManager {
       const sessionId = cookies.find((c) => c.name === 'sessionid' && c.value)?.value;
 
       if (sessionId) {
-        this.capturedCookies.set(tenantId, {
+        this.capturedCookies.set(sessionKey, {
           sessionId,
           csrfToken: cookies.find((c) => c.name === 'csrftoken')?.value ?? null,
           dsUserId: cookies.find((c) => c.name === 'ds_user_id')?.value ?? null,
@@ -682,7 +727,7 @@ export class SessionManager {
         // watcher file our own replies as the customer's messages.
         const dsUserId = cookies.find((c) => c.name === 'ds_user_id')?.value ?? null;
         const username = await this.readOwnUsername(page, dsUserId).catch(() => null);
-        if (username) await this.persistOwnUsername(tenantId, username);
+        if (username) await this.persistOwnUsername(sessionKey, username);
         // A session without a username is still a session, but it is not one
         // anything should run on: `sendDm` needs `ownUsername` to tell our own
         // bubbles from the customer's. Said out loud rather than returned as an
@@ -767,8 +812,8 @@ export class SessionManager {
     return fromDom && fromDom.trim() ? fromDom.trim() : null;
   }
 
-  async submitChallenge(tenantId: string, code: string): Promise<LoginResult> {
-    const page = this.pendingChallenge.get(tenantId);
+  async submitChallenge(sessionKey: string, code: string): Promise<LoginResult> {
+    const page = this.pendingChallenge.get(sessionKey);
     if (!page) return { status: 'failed', error: 'Tidak ada proses login yang menunggu kode' };
 
     try {
@@ -778,15 +823,15 @@ export class SessionManager {
       await clickButtonByText(page, /Confirm|Submit|Next/, 5000);
 
       const result = await this.classifyOutcome(page);
-      if (result.status !== 'challenge_required') this.pendingChallenge.delete(tenantId);
+      if (result.status !== 'challenge_required') this.pendingChallenge.delete(sessionKey);
       if (result.status === 'ready') {
-        const username = this.pendingUsernames.get(tenantId);
-        if (username) await this.persistOwnUsername(tenantId, username);
+        const username = this.pendingUsernames.get(sessionKey);
+        if (username) await this.persistOwnUsername(sessionKey, username);
       }
-      if (result.status === 'failed') await this.closeContext(tenantId);
+      if (result.status === 'failed') await this.closeContext(sessionKey);
       return result;
     } catch (err) {
-      await this.closeContext(tenantId);
+      await this.closeContext(sessionKey);
       return { status: 'failed', error: err instanceof Error ? err.message : 'Gagal mengirim kode verifikasi' };
     }
   }
@@ -799,11 +844,11 @@ export class SessionManager {
    * the observer down along with it, and inbound messages stop arriving
    * from that point on until the next reattach.
    */
-  async sendDm(tenantId: string, threadId: string, text: string, username?: string): Promise<void> {
-    const page = await this.newPage(tenantId);
+  async sendDm(sessionKey: string, threadId: string, text: string, username?: string): Promise<void> {
+    const page = await this.newPage(sessionKey);
     if (!page) throw new NoActiveSessionError('Tidak ada sesi Instagram yang aktif untuk tenant ini');
     try {
-      const ownUsername = await this.getOwnUsername(tenantId);
+      const ownUsername = await this.getOwnUsername(sessionKey);
       // Taken before anything is typed: only a message that appears after
       // this instant can be the one we are sending now. A few seconds of
       // slack absorbs clock differences between here and Instagram.
@@ -830,28 +875,44 @@ export class SessionManager {
         // can see it, and settles the question before a retry is earned.
         if (!(err instanceof SendNotConfirmedError) || !username) throw err;
         if (!(await dmLanded(page, username, text, { sinceMs: startedAt }))) throw err;
+        return;
+      }
+
+      // The other direction of the same problem: the thread page renders a
+      // just-typed bubble optimistically — it's the same client behaviour
+      // that clears the composer regardless of whether Instagram's server
+      // actually accepted the message (see `sendThreadMessage`) — so a
+      // bubble the scrape found can still be one the server silently
+      // rejected a moment later. Confirmed live: a reply reported `sent`
+      // here was never on the recipient's side. When the contact's username
+      // is known, the same inbox call that rescues a false failure above is
+      // asked to agree before this reports success at all.
+      if (username && !(await dmLanded(page, username, text, { sinceMs: startedAt }))) {
+        throw new SendNotConfirmedError(
+          'Pesan tampak terkirim di halaman thread tapi tidak ada di inbox Instagram — kemungkinan ditolak diam-diam setelah tampil sesaat',
+        );
       }
     } catch (err) {
-      if (err instanceof SessionExpiredError) this.forgetSession(tenantId);
+      if (err instanceof SessionExpiredError) this.forgetSession(sessionKey);
       throw err;
     } finally {
       await page.close().catch(() => {});
     }
   }
 
-  async logout(tenantId: string): Promise<void> {
-    await this.closeContext(tenantId);
-    const window = this.loginWindows.get(tenantId);
+  async logout(sessionKey: string): Promise<void> {
+    await this.closeContext(sessionKey);
+    const window = this.loginWindows.get(sessionKey);
     if (window) {
       // A login window left open would keep writing to the profile directory
       // being deleted underneath it, and on the next poll would report a
       // session for a connection the operator just revoked.
-      this.loginWindows.delete(tenantId);
+      this.loginWindows.delete(sessionKey);
       await window.close().catch(() => {});
     }
-    this.ownUsernames.delete(tenantId);
-    this.capturedCookies.delete(tenantId);
-    await fs.rm(this.profileDir(tenantId), { recursive: true, force: true }).catch(() => {});
+    this.ownUsernames.delete(sessionKey);
+    this.capturedCookies.delete(sessionKey);
+    await fs.rm(this.profileDir(sessionKey), { recursive: true, force: true }).catch(() => {});
   }
 
   /** Closes every open browser cleanly — called on process shutdown so a
@@ -859,6 +920,6 @@ export class SessionManager {
    * uncleanly-shut-down state `clearCrashedSessionState` above exists to
    * recover from in the first place. */
   async closeAll(): Promise<void> {
-    await Promise.all([...this.contexts.keys()].map((tenantId) => this.closeContext(tenantId)));
+    await Promise.all([...this.contexts.keys()].map((sessionKey) => this.closeContext(sessionKey)));
   }
 }

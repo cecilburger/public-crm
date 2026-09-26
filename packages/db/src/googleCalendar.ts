@@ -1,5 +1,6 @@
 import type { Ctx } from './repo.ts';
 import { tenantKeys, sealField, openField } from './keys.ts';
+import { divisionSql } from './divisions.ts';
 
 export interface GoogleCalendarTokens {
   accessToken: string;
@@ -8,7 +9,10 @@ export interface GoogleCalendarTokens {
   email: string | null;
 }
 
-/** Upserts on (tenant_id, user_id) — reconnecting the same account just refreshes the stored tokens. */
+// One connection per user *per division* (0059): Marketing and AI book on
+// different calendars, so a person connects each separately.
+
+/** Upserts on (tenant_id, division_id, user_id) — reconnecting the same account just refreshes the stored tokens. */
 export async function saveGoogleCalendarConnection(
   ctx: Ctx, args: { userId: string; tokens: GoogleCalendarTokens },
 ): Promise<void> {
@@ -17,13 +21,13 @@ export async function saveGoogleCalendarConnection(
   const refreshEnc = sealField(keys, ctx.tenantId, args.tokens.refreshToken);
   await ctx.tx.query(
     `insert into google_calendar_connections
-       (tenant_id, user_id, google_email, access_token_enc, refresh_token_enc, token_expires_at)
-     values ($1,$2,$3,$4,$5,$6)
-     on conflict (tenant_id, user_id) do update set
+       (tenant_id, division_id, user_id, google_email, access_token_enc, refresh_token_enc, token_expires_at)
+     values ($1, ${divisionSql(7)}, $2, $3, $4, $5, $6)
+     on conflict (tenant_id, division_id, user_id) do update set
        google_email = excluded.google_email, access_token_enc = excluded.access_token_enc,
        refresh_token_enc = excluded.refresh_token_enc, token_expires_at = excluded.token_expires_at,
        updated_at = now()`,
-    [ctx.tenantId, args.userId, args.tokens.email, accessEnc, refreshEnc, args.tokens.expiresAt],
+    [ctx.tenantId, args.userId, args.tokens.email, accessEnc, refreshEnc, args.tokens.expiresAt, ctx.divisionId ?? null],
   );
 }
 
@@ -36,8 +40,8 @@ export async function updateGoogleCalendarAccessToken(
   await ctx.tx.query(
     `update google_calendar_connections
         set access_token_enc = $3, token_expires_at = $4, updated_at = now()
-      where tenant_id = $1 and user_id = $2`,
-    [ctx.tenantId, args.userId, accessEnc, args.expiresAt],
+      where tenant_id = $1 and user_id = $2 and division_id = ${divisionSql(5)}`,
+    [ctx.tenantId, args.userId, accessEnc, args.expiresAt, ctx.divisionId ?? null],
   );
 }
 
@@ -52,8 +56,9 @@ export async function getGoogleCalendarConnection(
     google_email: string | null; access_token_enc: string; refresh_token_enc: string; token_expires_at: Date;
   }>(
     `select google_email, access_token_enc, refresh_token_enc, token_expires_at
-       from google_calendar_connections where tenant_id = $1 and user_id = $2`,
-    [ctx.tenantId, args.userId],
+       from google_calendar_connections
+      where tenant_id = $1 and user_id = $2 and division_id = ${divisionSql(3)}`,
+    [ctx.tenantId, args.userId, ctx.divisionId ?? null],
   );
   const row = rows[0];
   if (!row) return null;
@@ -68,7 +73,8 @@ export async function getGoogleCalendarConnection(
 
 export async function deleteGoogleCalendarConnection(ctx: Ctx, args: { userId: string }): Promise<void> {
   await ctx.tx.query(
-    `delete from google_calendar_connections where tenant_id = $1 and user_id = $2`,
-    [ctx.tenantId, args.userId],
+    `delete from google_calendar_connections
+      where tenant_id = $1 and user_id = $2 and division_id = ${divisionSql(3)}`,
+    [ctx.tenantId, args.userId, ctx.divisionId ?? null],
   );
 }

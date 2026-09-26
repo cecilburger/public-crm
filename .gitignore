@@ -26,3 +26,6 @@ apps/fb-bridge/.fb_bridge_auth/
 
 # The dev stack's Postgres cluster (tools/local-postgres.ts).
 /.dev-stack-pg/
+
+# Claude Code's own local session state — never anything the repo needs.
+/.claude/

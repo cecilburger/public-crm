@@ -25,7 +25,7 @@ import {
   queueOutboundMessage, createDeal, updateDeal, tenantKeys, openField,
   upsertDraftOrder, setDeliveryDetails, confirmOrder, markOrderPaid, markOrderFulfilled, releaseOrder,
   createTask, setTaskStatus, createBrand, setBrandStatus, createContact, createWaBridgeChannel,
-  ensureConversation,
+  ensureConversation, CHATBOT_LEASE_STALE_MS,
 } from '@kirana/db';
 import { env, loadKek } from '@kirana/core';
 import { buildApp, type Dispatch } from '../apps/api/src/app.ts';
@@ -34,11 +34,13 @@ import { processInboundWebhook } from '../apps/worker/src/processors/inboundNorm
 import { processAutopilotDraft } from '../apps/worker/src/processors/autopilotDraft.ts';
 import { processOutbound } from '../apps/worker/src/processors/outboundSend.ts';
 import {
+  processChatbotReply, markChatbotExhausted, CHATBOT_REPLY_QUEUE, type ChatbotJob,
+} from '../apps/worker/src/processors/chatbotReply.ts';
+import { bdBrainFromEnv } from '../apps/worker/src/bdBrain.ts';
+import {
   processCommentPublicReply, processCommentDm, processCommentAutopilot, type CommentActionJob,
 } from '../apps/worker/src/processors/facebookComments.ts';
-import { processBdDraft } from '../apps/worker/src/processors/bdDraft.ts';
 import { processIgCommentReply } from '../apps/worker/src/processors/igCommentReply.ts';
-import { BdBrainClient } from '../apps/worker/src/bdBrain.ts';
 import { closePeriodAndIssueInvoice } from '../apps/worker/src/processors/billingRollup.ts';
 import { startLocalPostgres } from './local-postgres.ts';
 import { importFromPglite } from './pglite-import.ts';
@@ -762,16 +764,41 @@ const fbBridge = new FbBridgeClient(e.FB_BRIDGE_URL, e.FB_BRIDGE_SECRET);
 
 const realtime = createRealtimeHub();
 
-// The BD brain, same wiring as apps/worker/src/main.ts: a brand writing in
-// on WhatsApp Web or an Instagram DM is routed to `bd.draft` by the ingress,
-// and without this the dev stack dropped that job on the floor — the message
-// showed in the console and nothing ever answered it. `npm run dev:bd-brain`
-// in another terminal; unset, the job says so once per message.
-const bdBrain = process.env.BD_BRAIN_URL
-  ? new BdBrainClient(process.env.BD_BRAIN_URL, process.env.BD_BRAIN_SECRET ?? '')
-  : null;
-if (!bdBrain) console.warn('[dev-stack] BD_BRAIN_URL is not set — BD conversations will not be answered');
+// The DM chatbot, same as the worker's: trained-cb when BD_BRAIN_URL is set,
+// otherwise every run is recorded as `brain_not_configured`.
+const bdBrain = bdBrainFromEnv();
+const CHATBOT_BUSY_WAIT_MS = 3_000;
+/** Past this a held lease has been swept (`CHATBOT_LEASE_STALE_MS`) and the next run on the thread has had its turn. */
+const CHATBOT_BUSY_GIVE_UP_MS = 2 * CHATBOT_LEASE_STALE_MS;
 
+/**
+ * Off the webhook's request path, like the real queue: two messages on one
+ * thread then really do overlap, and the later one waits for the lease the
+ * way the worker's delayed retry would. There are no retries here, so a
+ * failure is final and hands the conversation to a person, as the worker's
+ * last attempt does.
+ */
+const runChatbot = (payload: unknown): void => {
+  const job = payload as ChatbotJob;
+  const wait = () => new Promise<void>((resolve) => setTimeout(resolve, CHATBOT_BUSY_WAIT_MS));
+  void (async () => {
+    const giveUpAt = Date.now() + CHATBOT_BUSY_GIVE_UP_MS;
+    while (Date.now() < giveUpAt) {
+      const outcome = await processChatbotReply({ db, kek, brain: bdBrain, dispatch }, job, { onBusy: wait });
+      if (outcome.status !== 'busy') return;
+    }
+    console.error(`[dev-stack] chatbot.reply gave up on message ${job.messageId}: the conversation stayed busy`);
+  })().catch(async (err) => {
+    const message = (err as Error).message;
+    console.error(`[dev-stack] chatbot.reply failed on message ${job.messageId}:`, message);
+    await markChatbotExhausted(db, job, message).catch((e: Error) =>
+      console.error('[dev-stack] could not hand the conversation over:', e.message));
+  });
+};
+
+// What the bot says to a comment, asked of the bot itself — same as the
+// worker's own `commentTexts`, kept here too since a comment reply routed
+// through this dev stack needs it and nothing else in this file defines it.
 const commentTexts = async (): Promise<{ publicReply: string; dmOpener: string } | null> => {
   if (!process.env.BD_BRAIN_URL) return null;
   try {
@@ -805,15 +832,7 @@ const dispatch: Dispatch = async ({ queue, payload, delayMs }) => {
       },
       (payload as { webhookEventId: string }).webhookEventId);
   }
-  if (queue === 'autopilot.draft') await runAutopilot(payload);
-  if (queue === 'bd.draft') {
-    if (!bdBrain) {
-      console.warn('[dev-stack] bd.draft skipped — BD_BRAIN_URL is not configured');
-    } else {
-      await processBdDraft({ db, kek, brain: bdBrain, dispatch }, payload as { tenantId: string; conversationId: string; text: string })
-        .catch((err) => console.error('[dev-stack] bd.draft failed:', (err as Error).message));
-    }
-  }
+  if (queue === CHATBOT_REPLY_QUEUE) runChatbot(payload);
   if (queue === 'igComment.reply') {
     await processIgCommentReply({ db, kek, igBridge, commentTexts }, payload as { tenantId: string; commentId: string })
       .catch((err) => console.error('[dev-stack] igComment.reply failed:', (err as Error).message));

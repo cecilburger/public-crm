@@ -6,6 +6,13 @@
  * billing, and it never touches the database — it posts one of these shapes to
  * `POST /v1/webhooks/fb-bridge` and that is the entire coupling.
  *
+ * `sessionKey` names the browser profile an event came off — one per
+ * Marketing/AI division, issued by the CRM (`bridgeSessionKey` there). A
+ * Marketing profile's key is the bare tenant id, which is what every profile
+ * was named before divisions existed, so nothing on disk moved. The tenant id
+ * the CRM also expects on the wire is added by `postEvent` in main.ts from the
+ * profile's marker, or recovered from the key itself.
+ *
  * `apps/worker` re-declares the payload it parses rather than importing this
  * file, the same way it already does for `apps/ig-bridge`'s events: the two
  * services deploy separately, so a shared type would be a lie about how tightly
@@ -30,7 +37,7 @@ export type Direction = 'inbound' | 'outbound';
 
 export interface FbMessageEvent {
   event: 'message';
-  tenantId: string;
+  sessionKey: string;
   /** When the bridge emitted this, ISO-8601. Not when Facebook says it was
    * sent — that is `sentAt`, which may be missing. */
   at: string;
@@ -68,7 +75,7 @@ export interface FbMessageEvent {
 
 export interface FbCommentEvent {
   event: 'comment';
-  tenantId: string;
+  sessionKey: string;
   at: string;
   comment: {
     /** Facebook's own comment id — the idempotency key. A comment with no id
@@ -76,6 +83,8 @@ export interface FbCommentEvent {
      * nothing to stop it being ingested again on the next reconciliation pass. */
     commentId: string;
     postId: string;
+    /** The comment this one answers when it is a reply; null for a top-level comment. */
+    parentCommentId?: string | null;
     authorId: string | null;
     authorName: string;
     text: string;
@@ -96,7 +105,7 @@ export interface FbCommentEvent {
  */
 export interface FbSessionErrorEvent {
   event: 'session_error';
-  tenantId: string;
+  sessionKey: string;
   at: string;
   error: string;
   needsLogin: boolean;
@@ -117,7 +126,7 @@ export type FbBridgeEvent = FbMessageEvent | FbCommentEvent | FbSessionErrorEven
  * too, and the test suite asserts the two agree.
  */
 export function compositeMessageKey(args: {
-  tenantId: string; threadId: string; senderId: string; seq: number; text: string;
+  sessionKey: string; threadId: string; senderId: string; seq: number; text: string;
 }): string {
-  return `fb_dm:${args.tenantId}:${args.threadId}:${args.senderId}:${args.seq}:${args.text}`;
+  return `fb_dm:${args.sessionKey}:${args.threadId}:${args.senderId}:${args.seq}:${args.text}`;
 }

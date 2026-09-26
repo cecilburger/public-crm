@@ -34,8 +34,14 @@ function findPython(): string {
     ? [preferred.includes('/') || preferred.includes('\\') ? path.resolve(root, preferred) : preferred]
     : ['python3', 'python'];
   for (const candidate of candidates) {
+    // No `shell: true`: Windows' own PATH/PATHEXT lookup already finds a
+    // bare `python`/`python3`, and routing through cmd.exe instead only means
+    // an interpreter path with a space (BD_BRAIN_PYTHON pointed at a venv
+    // under one, or this repo's own directory) gets split into two arguments
+    // and "is not recognized" instead of running — confirmed live against a
+    // path with spaces in it.
     const probe = spawnSync(candidate, ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'], {
-      stdio: 'ignore', shell: process.platform === 'win32',
+      stdio: 'ignore',
     });
     if (probe.status === 0) return candidate;
   }
@@ -55,7 +61,7 @@ const pythonPath = [path.join(appDir, 'src'), process.env.PYTHONPATH].filter(Boo
 if (process.argv.includes('--test')) {
   const extra = process.argv.slice(process.argv.indexOf('--test') + 1);
   const test = spawnSync(python, ['-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider', ...extra], {
-    cwd: appDir, stdio: 'inherit', shell: process.platform === 'win32',
+    cwd: appDir, stdio: 'inherit',
     env: { ...process.env, PYTHONPATH: pythonPath, ANTHROPIC_API_KEY: '', USE_LLM_INTENTS: 'false', USE_LLM_REPLIES: 'false' },
   });
   process.exit(test.status ?? 1);
@@ -72,7 +78,6 @@ console.log(`[bd-brain] ${python} -m bd_bot brain-serve --port ${port}  (cwd app
 const child = spawn(python, ['-m', 'bd_bot', 'brain-serve', '--port', port], {
   cwd: appDir,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
   env: { ...process.env, PYTHONPATH: pythonPath, PYTHONUNBUFFERED: '1' },
 });
 

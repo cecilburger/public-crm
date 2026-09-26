@@ -6,9 +6,10 @@ import { ago, awaitingReply } from '@/lib/format';
 import { t } from '@/lib/copy';
 import type { ConversationSummary, FacebookComment, WaBridgeChannel } from '@/lib/api';
 import {
-  inboxHref, shouldShowCommentsUnavailable, shouldShowInstagramNotReady, toInboxItems,
+  groupCommentsByPost, inboxHref, shouldShowCommentsUnavailable, shouldShowInstagramNotReady, toInboxItems,
   type InboxItem,
 } from '@/lib/inbox';
+import { inboxBotChip } from '@/lib/chatbot';
 
 /**
  * Three filters, and the useful one is first.
@@ -96,6 +97,25 @@ export function ConversationList(
     : filter === 'selesai' ? itemIsDone(i)
     : true);
 
+  // Meta Business Suite's own "Facebook comments" tab names the POST on the
+  // left, not the person — a busy post reads as one row there, not N
+  // unrelated ones. Scoped to this one filter tab: "Semua" still lists
+  // individual items (a comment beside a DM, sorted on one clock, is the
+  // entire reason that view exists), and grouping it there would undo that.
+  //
+  // The status tabs still apply, to a post rather than to one comment inside
+  // it: "Perlu dibalas" keeps a post with even one waiting comment, "Selesai"
+  // keeps a post only once every comment on it is done.
+  const postGroups = channel === 'facebook_comment'
+    ? groupCommentsByPost(
+        byChannel.filter((i): i is Extract<Item, { kind: 'comment' }> => i.kind === 'comment')
+          .map((i) => i.comment),
+      ).filter((g) =>
+        filter === 'perlu' ? g.needsReply
+        : filter === 'selesai' ? !g.needsReply
+        : true)
+    : null;
+
   const tabs = [
     { key: 'semua', label: t.chats.filterAll, n: byChannel.length },
     { key: 'perlu', label: t.chats.filterNeedsReply, n: counts.perlu },
@@ -162,7 +182,38 @@ export function ConversationList(
       ) : null}
 
       <div className="scroll">
-        {shown.length === 0 ? (
+        {postGroups ? (
+          postGroups.length === 0 ? (
+            <p className="empty" style={{ fontSize: 13 }}>{t.chats.emptyList}</p>
+          ) : (
+            postGroups.map((group) => {
+              const href = `${basePath}/komentar/${group.postId}`;
+              const active = pathname === href;
+              const latest = group.comments[group.comments.length - 1];
+              const query = params.toString();
+              return (
+                <Link
+                  key={`post:${group.postId}`}
+                  href={query ? `${href}?${query}` : href}
+                  className={`thread-item ${group.needsReply ? 'waiting' : ''}`}
+                  aria-current={active ? 'page' : undefined}
+                >
+                  <span className="row1">
+                    {group.needsReply ? <span className="dot warn" aria-label={t.chats.needsReply} /> : null}
+                    <span className="who">{t.inbox.postLabel(group.postId)}</span>
+                    <span className="when tnum" suppressHydrationWarning>{ago(group.latestAt)}</span>
+                  </span>
+                  <span className="row2">
+                    <span className="chip">{t.inbox.commentCount(group.comments.length)}</span>
+                    {latest ? (
+                      <span className="preview">{latest.authorName || '—'}: {latest.body}</span>
+                    ) : null}
+                  </span>
+                </Link>
+              );
+            })
+          )
+        ) : shown.length === 0 ? (
           <p className="empty" style={{ fontSize: 13 }}>{t.chats.emptyList}</p>
         ) : (
           shown.map((item) => {
@@ -193,6 +244,7 @@ export function ConversationList(
             }
 
             const c = item.conversation;
+            const botChip = inboxBotChip(c);
             return (
               <Link
                 key={c.id}
@@ -217,6 +269,8 @@ export function ConversationList(
                 </span>
                 <span className="row2">
                   <span className="chip">{t.channels[c.channel_kind] ?? c.channel_kind}</span>
+                  {botChip === 'bot' ? <span className="chip accent">{t.chatbot.inboxBot}</span> : null}
+                  {botChip === 'needs_human' ? <span className="chip danger">{t.chatbot.inboxNeedsHelp}</span> : null}
                   {waiting ? <span className="chip warn">{t.chats.needsReply}</span> : null}
                   {c.status === 'resolved' ? <span className="chip good">{t.chats.done}</span> : null}
                   {c.assignee_id === null && c.status !== 'resolved'

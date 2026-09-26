@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   withTenant, ingestInboundMessage, upsertContactByPhone, tenantKeys, openField,
   beginDekRotation, rotateBatch, finishDekRotation, rotateTenantDek, rewrapUnderNewKek,
+  setIgBridgeConnection, getIgBridgeConnection, saveGoogleCalendarConnection, getGoogleCalendarConnection,
   ENCRYPTED_COLUMNS, type Database,
 } from '@kirana/db';
 import { loadKek } from '@kirana/core';
@@ -49,6 +50,54 @@ describe('rotating a tenant data key', () => {
     for (const row of afterCt) {
       const old = beforeCt.find((b) => b.id === row.id)!;
       expect(row.body_enc).not.toBe(old.body_enc);
+    }
+  });
+
+  it('rotates both divisions\' connection rows, not just the first one per tenant', async () => {
+    const [owner] = await withTenant(db, t.tenantId, (tx) => tx.query<{ id: string }>('select id from users limit 1'));
+    const accounts = [[t.divisions.marketing, 'toko.marketing'], [t.divisions.ai, 'toko.ai']] as const;
+
+    for (const [divisionId, username] of accounts) {
+      await withTenant(db, t.tenantId, async (tx) => {
+        const ctx = { tx, tenantId: t.tenantId, kek: TEST_KEK };
+        await setIgBridgeConnection(ctx, { status: 'ready', username, actorId: owner!.id });
+        await saveGoogleCalendarConnection(ctx, {
+          userId: owner!.id,
+          tokens: { accessToken: `at-${username}`, refreshToken: `rt-${username}`, expiresAt: new Date(), email: null },
+        });
+      }, { divisionId });
+    }
+
+    const stored = () => withTenant(db, t.tenantId, async (tx) => ({
+      ig: await tx.query<{ username_enc: string }>('select username_enc from ig_bridge_connections order by division_id'),
+      calendar: await tx.query<{ access_token_enc: string }>(
+        'select access_token_enc from google_calendar_connections order by division_id'),
+    }));
+    const before = await stored();
+    expect(before.ig).toHaveLength(2);
+    expect(before.calendar).toHaveLength(2);
+
+    // One row per batch: a cursor that is not unique within the tenant would
+    // step over the second division's row here.
+    const result = await rotateTenantDek(db, TEST_KEK, t.tenantId, { batchSize: 1 });
+    expect(result.finished).toBe(true);
+
+    const after = await stored();
+    for (const i of [0, 1]) {
+      expect(after.ig[i]!.username_enc).not.toBe(before.ig[i]!.username_enc);
+      expect(after.calendar[i]!.access_token_enc).not.toBe(before.calendar[i]!.access_token_enc);
+    }
+
+    for (const [divisionId, username] of accounts) {
+      const read = await withTenant(db, t.tenantId, async (tx) => {
+        const ctx = { tx, tenantId: t.tenantId, kek: TEST_KEK };
+        return {
+          ig: await getIgBridgeConnection(ctx),
+          calendar: await getGoogleCalendarConnection(ctx, { userId: owner!.id }),
+        };
+      }, { divisionId });
+      expect(read.ig.username).toBe(username);
+      expect(read.calendar?.accessToken).toBe(`at-${username}`);
     }
   });
 

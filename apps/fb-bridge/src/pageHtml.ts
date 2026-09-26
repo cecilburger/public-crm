@@ -549,6 +549,17 @@ export function buildPrivateMessageSurfaceEvidenceScript(): string {
         var box = el.getBoundingClientRect();
         return box.width > 0 && box.height > 0;
       }
+      // Business Suite's own \`data-surface\` instrumentation wraps sections in a
+      // marker span styled \`display: contents\` — laid out as if the wrapper
+      // were not there at all, so it never has a box of its own. \`visible()\`
+      // reports one of these as invisible even while its content fills the
+      // screen. Confirmed live: the detail pane's wrapper matched, its composer
+      // was a visible descendant, and the wrapper's own rect was still 0x0.
+      function surfacePresent(el) {
+        if (!el) return false;
+        if (window.getComputedStyle(el).display === 'contents') return true;
+        return visible(el);
+      }
       function visibleDescendant(root, selectors) {
         for (var i = 0; i < selectors.length; i++) {
           var nodes = root.querySelectorAll(selectors[i]);
@@ -595,7 +606,7 @@ export function buildPrivateMessageSurfaceEvidenceScript(): string {
       return {
         dialogs: dialogs,
         businessSuite: {
-          detailView: visible(detail),
+          detailView: surfacePresent(detail),
           editor: detail ? visibleDescendant(detail, businessEditors) : false,
           selectedThreadId: selected.id,
           selectedThreadType: selected.type,

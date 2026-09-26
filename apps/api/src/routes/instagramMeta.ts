@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { invalid } from '@kirana/core';
+import { invalid, conflict } from '@kirana/core';
 import {
   getIgMetaConnection, setIgMetaConnection, setIgMetaError, clearIgMetaConnection, ensureInstagramChannel, audit,
+  channelHome,
 } from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
@@ -49,13 +50,31 @@ export function registerInstagramMetaRoutes(app: FastifyInstance, ctx: AppCtx): 
     const body = z.object({ accessToken: z.string().min(1).max(500) }).safeParse(req.body);
     if (!body.success) throw invalid('Tempel token yang valid');
 
+    let me: { user_id: string; username: string };
     try {
-      const me = await parseGraphResponse<{ user_id: string; username: string }>(
+      me = await parseGraphResponse<{ user_id: string; username: string }>(
         await fetch(`${IG_GRAPH_URL}/me?${new URLSearchParams({
           fields: 'user_id,username', access_token: body.data.accessToken,
         })}`),
       );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Gagal memverifikasi token Instagram';
+      await ctx.asTenant(req, (tx) => setIgMetaError({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
+        error: message.slice(0, 500), actorId: actor.userId,
+      }));
+      throw invalid(message);
+    }
 
+    // An account is unique across the whole system (`channels_provider_key`):
+    // one that another division — or tenant — already holds is refused here,
+    // before the channel upsert could move it or trip over a row that
+    // row-level security hides from this division.
+    const home = await channelHome(ctx.control, 'instagram', me.user_id);
+    if (home && (home.tenantId !== actor.tenantId || home.divisionId !== actor.divisionId)) {
+      throw conflict('Akun Instagram ini sudah terhubung di divisi lain — putuskan di sana dulu');
+    }
+
+    try {
       await ctx.asTenant(req, async (tx) => {
         await setIgMetaConnection({ tx, tenantId: actor.tenantId, kek: ctx.kek }, {
           accessToken: body.data.accessToken, igUserId: me.user_id, igUsername: me.username, actorId: actor.userId,

@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   withTenant, ingestInboundMessage, ingestInboundInstagramDmMessage, ensureInstagramBridgeChannel,
-  tenantKeys, openField, getBdConversationNode, type Database,
+  createWaBridgeChannel, tenantKeys, openField, getBdConversationNode, type Ctx, type Database,
 } from '@kirana/db';
 import { BdBrainClient } from '../apps/worker/src/bdBrain.ts';
-import { processBdDraft } from '../apps/worker/src/processors/bdDraft.ts';
+import { processChatbotReply } from '../apps/worker/src/processors/chatbotReply.ts';
 import { freshDb, makeTenant, TEST_KEK, type TestTenant } from './helpers/db.ts';
 
 /**
@@ -32,14 +32,20 @@ describe.skipIf(!URL_)('BD brain, end to end over HTTP', () => {
   let t: TestTenant;
   let brain: BdBrainClient;
   let igChannelId: string;
+  let waWeb: string;
   const dispatched: { queue: string; payload: unknown }[] = [];
+
+  const inDivision = <T>(fn: (ctx: Ctx) => Promise<T>) =>
+    withTenant(db, t.tenantId, (tx) => fn({ tx, tenantId: t.tenantId, kek: TEST_KEK, divisionId: t.divisions.marketing }),
+      { divisionId: t.divisions.marketing });
 
   beforeAll(async () => {
     db = await freshDb();
     t = await makeTenant(db, 'bdsmoke');
     brain = new BdBrainClient(URL_!, SECRET);
-    ({ channelId: igChannelId } = await withTenant(db, t.tenantId, (tx) =>
-      ensureInstagramBridgeChannel({ tx, tenantId: t.tenantId, kek: TEST_KEK }, { username: 'mcnasia.biz' })));
+    ({ channelId: igChannelId } = await inDivision((ctx) =>
+      ensureInstagramBridgeChannel(ctx, { username: 'mcnasia.biz' })));
+    ({ channelId: waWeb } = await inDivision((ctx) => createWaBridgeChannel(ctx, { displayName: 'WA Web' })));
   });
   afterAll(async () => { await db?.close(); });
 
@@ -71,14 +77,14 @@ describe.skipIf(!URL_)('BD brain, end to end over HTTP', () => {
 
   it('WhatsApp: ad text → form → price → focus → accept → email → booking', async () => {
     const say = async (text: string) => {
-      const m = await withTenant(db, t.tenantId, (tx) =>
-        ingestInboundMessage({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
-          channelId: t.channelId, from: '08120000001', body: text,
+      const m = await inDivision((ctx) =>
+        ingestInboundMessage(ctx, {
+          channelId: waWeb, from: '08120000001', body: text,
           providerMessageId: `wamid.${Math.random()}`, displayName: 'Cika',
         }));
-      const out = await processBdDraft(
+      const out = await processChatbotReply(
         { db, kek: TEST_KEK, brain, dispatch: async (j) => { dispatched.push(j); } },
-        { tenantId: t.tenantId, conversationId: m.conversationId, text },
+        { tenantId: t.tenantId, divisionId: t.divisions.marketing, conversationId: m.conversationId, messageId: m.messageId },
       );
       return { conversationId: m.conversationId, out };
     };
@@ -96,7 +102,7 @@ describe.skipIf(!URL_)('BD brain, end to end over HTTP', () => {
     for (const text of steps) {
       const { conversationId: id, out } = await say(text);
       conversationId = id;
-      intents.push(out.intent ?? '?');
+      intents.push('intent' in out ? out.intent : '?');
       expect(out.status).not.toBe('skipped');
     }
     expect(intents).toEqual(['lead_iklan', 'isi_form', 'tanya_harga', 'fokus_campaign', 'setuju', 'unknown']);
@@ -122,14 +128,14 @@ describe.skipIf(!URL_)('BD brain, end to end over HTTP', () => {
 
   it('Instagram DM: opener → form → focus answer → handed to WhatsApp', async () => {
     const say = async (text: string) => {
-      const m = await withTenant(db, t.tenantId, (tx) =>
-        ingestInboundInstagramDmMessage({ tx, tenantId: t.tenantId, kek: TEST_KEK }, {
+      const m = await inDivision((ctx) =>
+        ingestInboundInstagramDmMessage(ctx, {
           channelId: igChannelId, username: 'budi.brand', threadId: '3401', body: text,
           providerMessageId: `ig.${Math.random()}`, displayName: 'budi.brand',
         }));
-      const out = await processBdDraft(
+      const out = await processChatbotReply(
         { db, kek: TEST_KEK, brain, dispatch: async (j) => { dispatched.push(j); } },
-        { tenantId: t.tenantId, conversationId: m.conversationId, text },
+        { tenantId: t.tenantId, divisionId: t.divisions.marketing, conversationId: m.conversationId, messageId: m.messageId },
       );
       return { conversationId: m.conversationId, out };
     };
@@ -139,7 +145,7 @@ describe.skipIf(!URL_)('BD brain, end to end over HTTP', () => {
     for (const text of ['Info kak', 'Nama brand: Baju Uji, posisi owner, link shopee: -', 'lebih ke sales kak']) {
       const { conversationId: id, out } = await say(text);
       conversationId = id;
-      intents.push(out.intent ?? '?');
+      intents.push('intent' in out ? out.intent : '?');
     }
     expect(intents).toEqual(['minta_info', 'isi_form', 'fokus_campaign']);
 

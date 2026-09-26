@@ -1,3 +1,5 @@
+import { UnrecoverableError } from 'bullmq';
+
 /**
  * The only code path that asks the BD brain (`apps/bd-brain`, served by
  * `python -m bd_bot brain-serve`) what to say next — the BD counterpart to
@@ -68,11 +70,56 @@ export interface BdStep {
   actions: BdAction[];
 }
 
+/** `BD_BRAIN_TIMEOUT_MS` when unset or unreadable. */
+export const DEFAULT_BD_BRAIN_TIMEOUT_MS = 10_000;
+
+/** Booking and slot proposals talk to Google Calendar and may read the
+ * conversation with an LLM, so they never get less than this. */
+const SCHEDULING_TIMEOUT_FLOOR_MS = 45_000;
+
+/**
+ * `BD_BRAIN_TIMEOUT_MS` is held under this so a step plus a booking stays well
+ * inside the thread's lease (`CHATBOT_LEASE_STALE_MS`, 2 minutes); past it the
+ * lease is swept from under a run that is still working.
+ */
+export const MAX_BD_BRAIN_TIMEOUT_MS = 30_000;
+
+/** trained-cb reads "now" as Jakarta wall-clock time, so the offset travels with it. */
+const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+export function jakartaIso(d: Date): string {
+  return new Date(d.getTime() + JAKARTA_OFFSET_MS).toISOString().replace('Z', '+07:00');
+}
+
+/** Null when `BD_BRAIN_URL` is unset — the chatbot then records every run as `brain_not_configured`. */
+export function bdBrainFromEnv(source: NodeJS.ProcessEnv = process.env): BdBrainClient | null {
+  if (!source.BD_BRAIN_URL) return null;
+  const timeout = Number(source.BD_BRAIN_TIMEOUT_MS);
+  return new BdBrainClient(
+    source.BD_BRAIN_URL,
+    source.BD_BRAIN_SECRET ?? '',
+    Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, MAX_BD_BRAIN_TIMEOUT_MS) : DEFAULT_BD_BRAIN_TIMEOUT_MS,
+  );
+}
+
+/**
+ * 400 is our payload being wrong, 401 our secret, 404 a route this brain does
+ * not serve; none is fixed by trying again eight times with backoff, so the
+ * queue is told not to.
+ */
+async function brainFailure(what: string, res: Response): Promise<Error> {
+  const text = await res.text().catch(() => '');
+  const message = `bd-brain ${what} failed: ${res.status} ${text}`;
+  return res.status === 400 || res.status === 401 || res.status === 404
+    ? new UnrecoverableError(message)
+    : new Error(message);
+}
+
 export class BdBrainClient {
   constructor(
     private baseUrl: string,
     private secret: string,
-    private timeoutMs = 10_000,
+    readonly timeoutMs = DEFAULT_BD_BRAIN_TIMEOUT_MS,
   ) {}
 
   /**
@@ -103,21 +150,14 @@ export class BdBrainClient {
       body: JSON.stringify({
         conversation: args.conversation,
         text: args.text,
-        now: args.now.toISOString(),
+        now: jakartaIso(args.now),
         history: args.history ?? [],
         ...(args.intent ? { intent: args.intent } : {}),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      const err = new Error(`bd-brain step failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
-      // 400 is our payload being wrong and 401 our secret being wrong; neither
-      // is fixed by trying again eight times with exponential backoff.
-      err.permanent = res.status === 400 || res.status === 401 || res.status === 404;
-      throw err;
-    }
+    if (!res.ok) throw await brainFailure('step', res);
 
     return (await res.json()) as BdStep;
   }
@@ -151,19 +191,12 @@ export class BdBrainClient {
       body: JSON.stringify({
         conversation: args.conversation,
         history: args.history,
-        now: args.now.toISOString(),
+        now: jakartaIso(args.now),
       }),
-      // Booking talks to Google Calendar and may read the conversation with
-      // an LLM, so it is slower than a `step` by design.
-      signal: AbortSignal.timeout(Math.max(this.timeoutMs, 45_000)),
+      signal: AbortSignal.timeout(Math.max(this.timeoutMs, SCHEDULING_TIMEOUT_FLOOR_MS)),
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      const err = new Error(`bd-brain book failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
-      err.permanent = res.status === 400 || res.status === 401 || res.status === 404;
-      throw err;
-    }
+    if (!res.ok) throw await brainFailure('book', res);
 
     return (await res.json()) as BdBooking;
   }
@@ -193,17 +226,12 @@ export class BdBrainClient {
         fallback_text: args.fallbackText,
         fallback_key: args.fallbackKey,
         history: args.history,
-        now: args.now.toISOString(),
+        now: jakartaIso(args.now),
       }),
-      signal: AbortSignal.timeout(Math.max(this.timeoutMs, 45_000)),
+      signal: AbortSignal.timeout(Math.max(this.timeoutMs, SCHEDULING_TIMEOUT_FLOOR_MS)),
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      const err = new Error(`bd-brain propose-slots failed: ${res.status} ${text}`) as Error & { permanent?: boolean };
-      err.permanent = res.status === 400 || res.status === 401 || res.status === 404;
-      throw err;
-    }
+    if (!res.ok) throw await brainFailure('propose-slots', res);
 
     return await res.json() as { messages: string[]; conversation: BdConversation };
   }
@@ -216,7 +244,7 @@ export interface BdBooking {
   /** Google's own event id and the event's own Calendar link. Present only
    * when this call is the one that actually booked something — absent when
    * `_book` offered slots, failed, or (a re-run) found a meeting already on
-   * the conversation. `bdDraft.ts` links the task through `event_id` when it
+   * the conversation. `chatbotReply.ts` links the task through `event_id` when it
    * has one; `apps/console/components/TaskCalendar.tsx` falls back to
    * matching on `meet_link` for the tasks booked before this existed. */
   event_id: string | null;

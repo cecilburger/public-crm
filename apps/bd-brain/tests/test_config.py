@@ -18,14 +18,14 @@ def _declared_ads_deck() -> list[tuple[str, str]]:
     """The ads deck as each place spells it: the dataclass default, and the
     two env files. All three must name the same file, or a deploy picks up
     whichever one happens to win."""
-    src = (ROOT / "src" / "bd_bot" / "config.py").read_text()
+    src = (ROOT / "src" / "bd_bot" / "config.py").read_text(encoding="utf-8")
     default = src.split('"ADS_DECK_PDF",', 1)[1].split('"', 2)[1]
     out = [("(default)", default)]
     for name in (".env", ".env.example"):
         f = ROOT / name
         if not f.is_file():
             continue
-        for line in f.read_text().splitlines():
+        for line in f.read_text(encoding="utf-8").splitlines():
             if line.startswith("ADS_DECK_PDF="):
                 out.append((name, line.split("=", 1)[1].strip()))
     return out

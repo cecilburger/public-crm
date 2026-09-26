@@ -1,6 +1,7 @@
 export * from './sql.ts';
 export * from './migrate.ts';
 export * from './tenant.ts';
+export * from './divisions.ts';
 export * from './platform.ts';
 export * from './metering.ts';
 export * from './audit.ts';
@@ -26,4 +27,5 @@ export * from './dashboard.ts';
 export * from './agentPerformance.ts';
 export * from './igComments.ts';
 export * from './facebookBridge.ts';
+export * from './chatbot.ts';
 export * from './bdState.ts';

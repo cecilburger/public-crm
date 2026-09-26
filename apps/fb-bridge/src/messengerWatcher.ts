@@ -77,7 +77,7 @@ export class MessengerWatcher {
      * CRM is the source of truth for what has been stored, and a second opinion
      * kept on this machine would drift the moment either side is restored.
      */
-    private knownIds: (tenantId: string, externalIds: string[]) => Promise<Set<string>>,
+    private knownIds: (sessionKey: string, externalIds: string[]) => Promise<Set<string>>,
     private maxBackfill = Number(process.env.FB_BACKFILL_MAX_MESSAGES ?? 50),
   ) {}
 
@@ -104,36 +104,36 @@ export class MessengerWatcher {
    * nothing was checking the one tab that mattered.
    */
   private async reconcile(): Promise<void> {
-    for (const tenantId of await this.sessions.knownTenantIds()) {
-      if (this.observed.has(tenantId) && !this.sessions.isConnected(tenantId)) {
-        this.log.warn({ tenantId }, 'fb-bridge: browser connection died — re-attaching');
-        this.detach(tenantId);
+    for (const sessionKey of await this.sessions.knownSessionKeys()) {
+      if (this.observed.has(sessionKey) && !this.sessions.isConnected(sessionKey)) {
+        this.log.warn({ sessionKey }, 'fb-bridge: browser connection died — re-attaching');
+        this.detach(sessionKey);
       }
 
-      if (this.observed.has(tenantId) && !(await this.isObserverAlive(tenantId))) {
-        this.log.warn({ tenantId }, 'fb-bridge: inbox tab went unresponsive — re-attaching');
-        this.detach(tenantId);
+      if (this.observed.has(sessionKey) && !(await this.isObserverAlive(sessionKey))) {
+        this.log.warn({ sessionKey }, 'fb-bridge: inbox tab went unresponsive — re-attaching');
+        this.detach(sessionKey);
       }
 
-      if (!this.observed.has(tenantId)) {
-        await this.attachTenant(tenantId).catch((err) =>
-          this.log.warn({ err, tenantId }, 'fb-bridge: failed to attach tenant to the messenger watcher'));
+      if (!this.observed.has(sessionKey)) {
+        await this.attachTenant(sessionKey).catch((err) =>
+          this.log.warn({ err, sessionKey }, 'fb-bridge: failed to attach tenant to the messenger watcher'));
         continue;
       }
 
       // Already attached and healthy: sweep the inbox once anyway. An observer
       // only fires on *future* mutations, so a thread that changed while the
       // browser was briefly wedged would otherwise never be noticed.
-      this.enqueue(tenantId, () => this.sweepInbox(tenantId));
+      this.enqueue(sessionKey, () => this.sweepInbox(sessionKey));
       // And reconcile history, which the observer cannot do at all: it reports
       // changes from now on, and says nothing about what happened while the
       // bridge was down.
-      this.enqueue(tenantId, () => this.backfillTenant(tenantId));
+      this.enqueue(sessionKey, () => this.backfillTenant(sessionKey));
     }
   }
 
-  private async isObserverAlive(tenantId: string): Promise<boolean> {
-    const page = this.observerPages.get(tenantId);
+  private async isObserverAlive(sessionKey: string): Promise<boolean> {
+    const page = this.observerPages.get(sessionKey);
     if (!page || page.isClosed()) return false;
     // A hung page never rejects and never resolves, so this is raced against a
     // timeout rather than trusted to fail on its own.
@@ -143,31 +143,31 @@ export class MessengerWatcher {
     ]).catch(() => false);
   }
 
-  private detach(tenantId: string): void {
-    this.observed.delete(tenantId);
-    this.observerPages.delete(tenantId);
+  private detach(sessionKey: string): void {
+    this.observed.delete(sessionKey);
+    this.observerPages.delete(sessionKey);
   }
 
   /**
    * Public so the connect route can attach immediately after a login lands,
    * instead of waiting up to ten minutes for the next reconciliation.
    */
-  async attachTenant(tenantId: string): Promise<void> {
-    if (this.observed.has(tenantId)) return;
+  async attachTenant(sessionKey: string): Promise<void> {
+    if (this.observed.has(sessionKey)) return;
     // Reserved before the first await, not after: `getActivePage` can take
     // seconds (launching a browser), and a second caller passing this same
     // check meanwhile would install a second `MutationObserver` on the same
     // page — every change reported twice. `apps/ig-bridge` confirmed that live,
     // as a flood of paired-duplicate webhook events.
-    this.observed.add(tenantId);
+    this.observed.add(sessionKey);
 
-    const page = await this.sessions.getActivePage(tenantId);
+    const page = await this.sessions.getActivePage(sessionKey);
     if (!page) {
-      this.observed.delete(tenantId);
+      this.observed.delete(sessionKey);
       return;
     }
 
-    const { transport, ctx } = await this.transportFor(tenantId);
+    const { transport, ctx } = await this.transportFor(sessionKey);
 
     try {
       await page.goto(transport.inboxUrl(ctx), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -181,28 +181,28 @@ export class MessengerWatcher {
       // again until the next reconciliation ten minutes later. `readThread`
       // already waits for its own marker this way.
       await page.waitForSelector(transport.inboxWaitSelectors.join(', '), { timeout: 15_000 }).catch(() => {});
-      await installInboxObserver(page, () => this.enqueue(tenantId, () => this.sweepInbox(tenantId)));
-      this.observerPages.set(tenantId, page);
-      this.log.info({ tenantId, transport: transport.kind }, 'fb-bridge: inbox observer attached');
+      await installInboxObserver(page, () => this.enqueue(sessionKey, () => this.sweepInbox(sessionKey)));
+      this.observerPages.set(sessionKey, page);
+      this.log.info({ sessionKey, transport: transport.kind }, 'fb-bridge: inbox observer attached');
       if (!transport.discoversConversations) {
         // Said once, at attach, rather than never: this transport reconciles
         // what it already knows and reads whichever conversation the surface
         // has selected, but it cannot enumerate an inbox. An operator seeing a
         // healthy-looking bridge deserves to know which of those it is doing.
         this.log.warn(
-          { tenantId, transport: transport.kind },
+          { sessionKey, transport: transport.kind },
           'fb-bridge: this surface exposes no per-row conversation id — only the selected conversation and already-known threads are read',
         );
       }
       // The observer fires on future mutations only, so the first reading has
       // to be taken here or a thread that never changes again is never seen.
-      this.enqueue(tenantId, () => this.sweepInbox(tenantId));
+      this.enqueue(sessionKey, () => this.sweepInbox(sessionKey));
     } catch (err) {
       // A tenant that failed to attach must be free to try again on the next
       // tick. Left marked attached by a *failed* attempt, every later retry
       // silently does nothing — forever, until the process restarts.
-      this.detach(tenantId);
-      this.reportFailure(tenantId, err);
+      this.detach(sessionKey);
+      this.reportFailure(sessionKey, err);
       throw err;
     }
   }
@@ -217,24 +217,24 @@ export class MessengerWatcher {
    * `apps/ig-bridge` saw live as both spurious "empty scrape" warnings and
    * messages reported twice.
    */
-  private enqueue(tenantId: string, work: () => Promise<void>): void {
-    const prior = this.chain.get(tenantId) ?? Promise.resolve();
+  private enqueue(sessionKey: string, work: () => Promise<void>): void {
+    const prior = this.chain.get(sessionKey) ?? Promise.resolve();
     const next = prior
       .then(work)
-      .catch((err) => this.log.warn({ err, tenantId }, 'fb-bridge: a watcher pass failed'));
-    this.chain.set(tenantId, next);
+      .catch((err) => this.log.warn({ err, sessionKey }, 'fb-bridge: a watcher pass failed'));
+    this.chain.set(sessionKey, next);
   }
 
   /* ------------------------------------------------------------- sweeping */
 
-  private async sweepInbox(tenantId: string): Promise<void> {
-    const page = this.observerPages.get(tenantId);
+  private async sweepInbox(sessionKey: string): Promise<void> {
+    const page = this.observerPages.get(sessionKey);
     if (!page || page.isClosed()) return;
 
-    const { transport } = await this.transportFor(tenantId);
+    const { transport } = await this.transportFor(sessionKey);
     const reading = await transport.readInbox(page);
     if (!reading) {
-      this.log.warn({ tenantId }, 'fb-bridge: inbox container not found — selectors may be stale');
+      this.log.warn({ sessionKey }, 'fb-bridge: inbox container not found — selectors may be stale');
       return;
     }
 
@@ -245,7 +245,7 @@ export class MessengerWatcher {
     // with it, which is a worse place to debug from than an error would have
     // been. `rendered` is what the list showed; `read` is what could be named.
     this.log.info(
-      { tenantId, transport: transport.kind, rendered: rowCount, read: rows.length },
+      { sessionKey, transport: transport.kind, rendered: rowCount, read: rows.length },
       'fb-bridge: inbox swept',
     );
     if (rowCount === 0) {
@@ -254,12 +254,12 @@ export class MessengerWatcher {
       // indistinguishable from here — so it is logged rather than swallowed,
       // because the silent version of this is a bridge that looks healthy and
       // delivers nothing.
-      this.log.warn({ tenantId }, 'fb-bridge: inbox rendered with no conversation links — empty inbox, or INBOX.rowLink is stale');
+      this.log.warn({ sessionKey }, 'fb-bridge: inbox rendered with no conversation links — empty inbox, or INBOX.rowLink is stale');
       return;
     }
 
-    const seen = this.signatures.get(tenantId) ?? new Map<string, string>();
-    this.signatures.set(tenantId, seen);
+    const seen = this.signatures.get(sessionKey) ?? new Map<string, string>();
+    this.signatures.set(sessionKey, seen);
 
     // A row's name is not tracked here. The sender on each message comes from
     // the thread itself, where the markup names it per bubble; carrying the
@@ -270,11 +270,11 @@ export class MessengerWatcher {
       // only reading of who this conversation is with. Remembered rather than
       // passed through, because backfill reaches a thread without having just
       // read the inbox.
-      this.rememberContactName(tenantId, row.threadId, row.name);
+      this.rememberContactName(sessionKey, row.threadId, row.name);
       if (seen.get(row.threadId) === row.signature) continue;
       seen.set(row.threadId, row.signature);
-      await this.readThread(tenantId, row.threadId).catch((err) =>
-        this.log.warn({ err, tenantId, threadId: row.threadId }, 'fb-bridge: failed to read a changed thread'));
+      await this.readThread(sessionKey, row.threadId).catch((err) =>
+        this.log.warn({ err, sessionKey, threadId: row.threadId }, 'fb-bridge: failed to read a changed thread'));
     }
   }
 
@@ -287,14 +287,14 @@ export class MessengerWatcher {
    * would leave every thread behind it silently unreconciled, which is the
    * failure mode this whole pass exists to prevent.
    */
-  private async backfillTenant(tenantId: string): Promise<void> {
-    const page = this.observerPages.get(tenantId);
+  private async backfillTenant(sessionKey: string): Promise<void> {
+    const page = this.observerPages.get(sessionKey);
     if (!page || page.isClosed()) return;
 
-    const { transport } = await this.transportFor(tenantId);
+    const { transport } = await this.transportFor(sessionKey);
     const reading = await transport.readInbox(page);
     if (!reading) {
-      this.log.warn({ tenantId }, 'fb-bridge: inbox container not found — cannot reconcile history');
+      this.log.warn({ sessionKey }, 'fb-bridge: inbox container not found — cannot reconcile history');
       return;
     }
 
@@ -302,22 +302,22 @@ export class MessengerWatcher {
     // surface that cannot enumerate its inbox, the anchors are the only memory
     // of which conversations exist at all — without them a reconnecting bridge
     // would reconcile one conversation and silently forget the rest.
-    const rows = this.withKnownThreads(tenantId, reading.rows);
+    const rows = this.withKnownThreads(sessionKey, reading.rows);
     let imported = 0;
     for (const row of rows) {
       try {
-        imported += await this.backfillThread(tenantId, row.threadId);
+        imported += await this.backfillThread(sessionKey, row.threadId);
       } catch (err) {
         // Named, not swallowed: an operator has to be able to see which
         // conversation is stuck and why.
         this.log.warn(
-          { tenantId, threadId: row.threadId, err: (err as Error).message },
+          { sessionKey, threadId: row.threadId, err: (err as Error).message },
           'fb-bridge: could not reconcile a thread — continuing with the rest',
         );
-        this.reportFailure(tenantId, err);
+        this.reportFailure(sessionKey, err);
       }
     }
-    if (imported > 0) this.log.info({ tenantId, imported }, 'fb-bridge: history reconciled');
+    if (imported > 0) this.log.info({ sessionKey, imported }, 'fb-bridge: history reconciled');
   }
 
   /**
@@ -333,9 +333,9 @@ export class MessengerWatcher {
    * writes them straight in as sent rather than queueing them to be delivered
    * to a real person a second time.
    */
-  private async backfillThread(tenantId: string, threadId: string): Promise<number> {
-    const { transport, ctx } = await this.transportFor(tenantId);
-    const page = await this.sessions.newPage(tenantId);
+  private async backfillThread(sessionKey: string, threadId: string): Promise<number> {
+    const { transport, ctx } = await this.transportFor(sessionKey);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return 0;
 
     try {
@@ -347,23 +347,23 @@ export class MessengerWatcher {
       if (!html) throw new Error('message container not found — the transcript selectors may be stale');
 
       const parsed = transport.parseTranscript(html, {
-        selfName: ctx.pageName, contactName: this.contactNameFor(tenantId, threadId),
+        selfName: ctx.pageName, contactName: this.contactNameFor(sessionKey, threadId),
       });
       const candidates = parsed.messages
         .map((m) => m.externalMessageId)
         .filter((id): id is string => Boolean(id))
-        .map((id) => `fb_dm:${tenantId}:${id}`);
+        .map((id) => `fb_dm:${sessionKey}:${id}`);
 
-      const knownKeys = await this.knownIds(tenantId, candidates);
+      const knownKeys = await this.knownIds(sessionKey, candidates);
       const missing = selectBackfill(parsed.messages, {
-        isKnown: (id) => knownKeys.has(`fb_dm:${tenantId}:${id}`),
+        isKnown: (id) => knownKeys.has(`fb_dm:${sessionKey}:${id}`),
         maxMessages: this.maxBackfill,
       });
 
       for (const message of missing) {
         this.onEvent({
           event: 'message',
-          tenantId,
+          sessionKey,
           at: new Date().toISOString(),
           message: {
             threadId,
@@ -373,7 +373,7 @@ export class MessengerWatcher {
             text: message.text,
             sentAt: message.sentAt,
             direction: message.direction,
-            seq: this.takeSeq(tenantId, threadId),
+            seq: this.takeSeq(sessionKey, threadId),
           },
         });
       }
@@ -383,9 +383,9 @@ export class MessengerWatcher {
     }
   }
 
-  private async readThread(tenantId: string, threadId: string): Promise<void> {
-    const { transport, ctx } = await this.transportFor(tenantId);
-    const page = await this.sessions.newPage(tenantId);
+  private async readThread(sessionKey: string, threadId: string): Promise<void> {
+    const { transport, ctx } = await this.transportFor(sessionKey);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) return;
 
     try {
@@ -400,14 +400,14 @@ export class MessengerWatcher {
       const html = await transport.readTranscriptHtml(page);
       if (!html) {
         this.log.warn(
-          { tenantId, threadId, transport: transport.kind },
+          { sessionKey, threadId, transport: transport.kind },
           'fb-bridge: message container not found — the transcript selectors may be stale',
         );
         return;
       }
 
       const parsed = transport.parseThread(html, {
-        selfName: ctx.pageName, contactName: this.contactNameFor(tenantId, threadId),
+        selfName: ctx.pageName, contactName: this.contactNameFor(sessionKey, threadId),
       });
 
       if (parsed.matchedRows > 0 && parsed.unknownSenderRows === parsed.matchedRows) {
@@ -415,20 +415,20 @@ export class MessengerWatcher {
         // ordinary; all of them means the sender selectors stopped matching, and
         // the correct response is to say so, not to quietly deliver nothing.
         this.log.error(
-          { tenantId, threadId, rows: parsed.matchedRows },
+          { sessionKey, threadId, rows: parsed.matchedRows },
           'fb-bridge: no message row had an identifiable sender — THREAD sender selectors are stale',
         );
       }
 
-      const fresh = this.diffNew(tenantId, threadId, parsed.messages);
+      const fresh = this.diffNew(sessionKey, threadId, parsed.messages);
       this.log.info(
-        { tenantId, threadId, matched: parsed.matchedRows, inbound: parsed.messages.length, fresh: fresh.length },
+        { sessionKey, threadId, matched: parsed.matchedRows, inbound: parsed.messages.length, fresh: fresh.length },
         'fb-bridge: thread read',
       );
       for (const message of fresh) {
         this.onEvent({
           event: 'message',
-          tenantId,
+          sessionKey,
           at: new Date().toISOString(),
           message: {
             threadId,
@@ -441,12 +441,12 @@ export class MessengerWatcher {
             text: message.text,
             sentAt: message.sentAt,
             direction: 'inbound',
-            seq: this.takeSeq(tenantId, threadId),
+            seq: this.takeSeq(sessionKey, threadId),
           },
         });
       }
     } catch (err) {
-      this.reportFailure(tenantId, err);
+      this.reportFailure(sessionKey, err);
       throw err;
     } finally {
       await page.close().catch(() => {});
@@ -464,9 +464,9 @@ export class MessengerWatcher {
    * falls back to anchoring on the previously-last-known message, which is what
    * `apps/ig-bridge` had to do for everything.
    */
-  private diffNew(tenantId: string, threadId: string, current: ParsedMessage[]): ParsedMessage[] {
-    const byThread = this.anchors.get(tenantId) ?? new Map<string, Anchor[]>();
-    this.anchors.set(tenantId, byThread);
+  private diffNew(sessionKey: string, threadId: string, current: ParsedMessage[]): ParsedMessage[] {
+    const byThread = this.anchors.get(sessionKey) ?? new Map<string, Anchor[]>();
+    this.anchors.set(sessionKey, byThread);
     const previous = byThread.get(threadId);
 
     // An empty read of a thread that had messages a moment ago is a hiccup —
@@ -476,7 +476,7 @@ export class MessengerWatcher {
     // the entire visible history as new. `apps/ig-bridge` hit this live.
     if (current.length === 0) {
       if (previous && previous.length > 0) {
-        this.log.warn({ tenantId, threadId }, 'fb-bridge: empty read of a known thread — keeping the last good anchor');
+        this.log.warn({ sessionKey, threadId }, 'fb-bridge: empty read of a known thread — keeping the last good anchor');
       }
       return [];
     }
@@ -485,7 +485,7 @@ export class MessengerWatcher {
       id: m.externalMessageId, senderName: m.senderName, text: m.text,
     }));
     byThread.set(threadId, asAnchors);
-    void this.persistAnchors(tenantId);
+    void this.persistAnchors(sessionKey);
 
     // No anchor at all — the first time this thread has ever been read.
     // Reporting the whole visible history once is correct rather than noisy:
@@ -508,7 +508,7 @@ export class MessengerWatcher {
     // The anchor is nowhere in this reading — it scrolled out of the rendered
     // window. Reporting only the newest message under-reports by a message or
     // two in that rare case, which beats replaying an entire conversation.
-    this.log.warn({ tenantId, threadId }, 'fb-bridge: anchor not found in this read — reporting only the newest message');
+    this.log.warn({ sessionKey, threadId }, 'fb-bridge: anchor not found in this read — reporting only the newest message');
     return current.slice(-1);
   }
 
@@ -522,8 +522,8 @@ export class MessengerWatcher {
    * It is read from the connection rather than configured globally, because two
    * tenants on the same bridge can legitimately be on different surfaces.
    */
-  private async transportFor(tenantId: string): Promise<{ transport: ThreadTransport; ctx: TransportContext }> {
-    const marker = await this.sessions.getPageMarker(tenantId);
+  private async transportFor(sessionKey: string): Promise<{ transport: ThreadTransport; ctx: TransportContext }> {
+    const marker = await this.sessions.getPageMarker(sessionKey);
     const ctx: TransportContext = {
       pageName: marker?.pageName ?? null,
       assetId: marker?.assetId ?? null,
@@ -531,15 +531,15 @@ export class MessengerWatcher {
     return { transport: ctx.assetId ? businessSuiteTransport : messengerDotComTransport, ctx };
   }
 
-  private rememberContactName(tenantId: string, threadId: string, name: string): void {
+  private rememberContactName(sessionKey: string, threadId: string, name: string): void {
     if (!name.trim()) return;
-    const byThread = this.contactNames.get(tenantId) ?? new Map<string, string>();
-    this.contactNames.set(tenantId, byThread);
+    const byThread = this.contactNames.get(sessionKey) ?? new Map<string, string>();
+    this.contactNames.set(sessionKey, byThread);
     byThread.set(threadId, name.trim());
   }
 
-  private contactNameFor(tenantId: string, threadId: string): string | null {
-    return this.contactNames.get(tenantId)?.get(threadId) ?? null;
+  private contactNameFor(sessionKey: string, threadId: string): string | null {
+    return this.contactNames.get(sessionKey)?.get(threadId) ?? null;
   }
 
   /**
@@ -552,26 +552,26 @@ export class MessengerWatcher {
    * open and leaves every other one behind, permanently and silently.
    */
   private withKnownThreads(
-    tenantId: string, rows: { threadId: string; name: string; signature: string }[],
+    sessionKey: string, rows: { threadId: string; name: string; signature: string }[],
   ): { threadId: string; name: string; signature: string }[] {
     const merged = new Map(rows.map((row) => [row.threadId, row]));
-    for (const threadId of this.anchors.get(tenantId)?.keys() ?? []) {
+    for (const threadId of this.anchors.get(sessionKey)?.keys() ?? []) {
       if (merged.has(threadId)) continue;
-      merged.set(threadId, { threadId, name: this.contactNameFor(tenantId, threadId) ?? '', signature: '' });
+      merged.set(threadId, { threadId, name: this.contactNameFor(sessionKey, threadId) ?? '', signature: '' });
     }
     return [...merged.values()];
   }
 
-  private takeSeq(tenantId: string, threadId: string): number {
-    const byThread = this.nextSeq.get(tenantId) ?? new Map<string, number>();
-    this.nextSeq.set(tenantId, byThread);
+  private takeSeq(sessionKey: string, threadId: string): number {
+    const byThread = this.nextSeq.get(sessionKey) ?? new Map<string, number>();
+    this.nextSeq.set(sessionKey, byThread);
     const seq = byThread.get(threadId) ?? 0;
     byThread.set(threadId, seq + 1);
     return seq;
   }
 
-  private anchorFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.thread-anchors.json');
+  private anchorFile(sessionKey: string): string {
+    return path.join(this.sessions.getProfileDir(sessionKey), '.thread-anchors.json');
   }
 
   /**
@@ -579,22 +579,22 @@ export class MessengerWatcher {
    * Without this, every restart would forget every thread and re-ingest each
    * conversation's whole visible history as new.
    */
-  async loadAnchors(tenantId: string): Promise<void> {
-    if (this.anchors.has(tenantId)) return;
+  async loadAnchors(sessionKey: string): Promise<void> {
+    if (this.anchors.has(sessionKey)) return;
     try {
-      const raw = await fs.readFile(this.anchorFile(tenantId), 'utf8');
+      const raw = await fs.readFile(this.anchorFile(sessionKey), 'utf8');
       const parsed = JSON.parse(raw) as Record<string, Anchor[]>;
-      this.anchors.set(tenantId, new Map(Object.entries(parsed)));
+      this.anchors.set(sessionKey, new Map(Object.entries(parsed)));
     } catch {
       // Nothing persisted yet — the first read reports everything once, the
       // same as a thread genuinely seen for the first time.
     }
   }
 
-  private async persistAnchors(tenantId: string): Promise<void> {
-    const byThread = this.anchors.get(tenantId);
+  private async persistAnchors(sessionKey: string): Promise<void> {
+    const byThread = this.anchors.get(sessionKey);
     if (!byThread) return;
-    await fs.writeFile(this.anchorFile(tenantId), JSON.stringify(Object.fromEntries(byThread)), 'utf8')
+    await fs.writeFile(this.anchorFile(sessionKey), JSON.stringify(Object.fromEntries(byThread)), 'utf8')
       .catch(() => {});
   }
 
@@ -606,14 +606,14 @@ export class MessengerWatcher {
    * to log in or answer Facebook's prompt. Anything else is left to the next
    * reconciliation pass.
    */
-  private reportFailure(tenantId: string, err: unknown): void {
+  private reportFailure(sessionKey: string, err: unknown): void {
     const needsLogin = err instanceof SessionExpiredError || err instanceof CheckpointRequiredError;
     if (!needsLogin) return;
 
     const error = (err as Error).message;
-    this.sessions.forgetSession(tenantId, error);
-    this.detach(tenantId);
-    this.onEvent({ event: 'session_error', tenantId, at: new Date().toISOString(), error, needsLogin: true });
+    this.sessions.forgetSession(sessionKey, error);
+    this.detach(sessionKey);
+    this.onEvent({ event: 'session_error', sessionKey, at: new Date().toISOString(), error, needsLogin: true });
   }
 }
 

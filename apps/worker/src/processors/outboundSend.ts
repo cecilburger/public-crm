@@ -1,7 +1,7 @@
 import { guardOutbound, sendRatePerSecond, normalisePhone, toMicros, META_RATE_IDR } from '@kirana/core';
 import {
   withTenant, openField, tenantKeys, incrementUsage, ensureBillingPeriod, getDecryptedIgToken,
-  type Database,
+  divisionSessionKey, setHandling, type Database,
 } from '@kirana/db';
 import type { MetaClient } from '../meta.ts';
 import type { WaBridgeClient } from '../waBridge.ts';
@@ -33,23 +33,41 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
     const rows = await tx.query<{
       id: string; body_enc: string | null; template_name: string | null; status: string;
       channel_id: string; conversation_id: string; contact_id: string; channel_kind: string;
+      division_id: string;
       last_inbound_at: Date | null; quality: string; external_id: string | null; phone_enc: string | null;
       ig_psid_enc: string | null; ig_thread_id_enc: string | null; ig_username_enc: string | null;
-      fb_thread_id_enc: string | null;
+      fb_thread_id_enc: string | null; sender_type: string; handling: string; bot_handed_over: boolean;
     }>(
       `select m.id, m.body_enc, m.template_name, m.status, m.channel_id, m.conversation_id,
-              c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.quality, ch.external_id,
-              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.ig_username_enc, ct.fb_thread_id_enc
+              c.contact_id, c.last_inbound_at, ch.kind as channel_kind, ch.division_id, ch.quality, ch.external_id,
+              ct.phone_enc, ct.ig_psid_enc, ct.ig_thread_id_enc, ct.ig_username_enc, ct.fb_thread_id_enc,
+              m.sender_type, c.handling,
+              exists (
+                select 1 from chatbot_runs r
+                 where r.tenant_id = m.tenant_id and r.conversation_id = m.conversation_id
+                   and r.status = 'handover' and r.finished_at >= m.created_at
+              ) as bot_handed_over
          from messages m
          join conversations c on c.id = m.conversation_id and c.tenant_id = m.tenant_id
          join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
          join contacts ct on ct.id = c.contact_id and ct.tenant_id = m.tenant_id
-        where m.tenant_id = $1 and m.id = $2`,
+        where m.tenant_id = $1 and m.id = $2
+        for update of m`,
       [job.tenantId, job.messageId],
     );
+    // Held until this send is recorded: a message handed to this worker twice
+    // (a chatbot job re-hands its unsent replies on redelivery) is sent once.
     const msg = rows[0];
     if (!msg) return { status: 'not_found' };
     if (msg.status !== 'queued') return { status: 'already_sent' };
+
+    // A bot reply still waiting when a person took the conversation must not
+    // follow their first word. The bot's own hand-over — its closing message,
+    // an opt-out acknowledgement, and anything it queued before — still goes.
+    if (msg.sender_type === 'bot' && msg.handling !== 'bot' && !msg.bot_handed_over) {
+      await markFailed(tx, job, 'bot_cancelled_by_takeover');
+      return { status: 'cancelled' };
+    }
 
     const keys = await tenantKeys(tx, deps.kek, job.tenantId);
     const body = msg.body_enc ? openField(keys, job.tenantId, msg.body_enc) : '';
@@ -60,7 +78,11 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
     // Cloud API credential does.
     if (msg.channel_kind === 'instagram') {
       const psid = msg.ig_psid_enc ? openField(keys, job.tenantId, msg.ig_psid_enc) : null;
-      const ig = psid ? await getDecryptedIgToken({ tx, tenantId: job.tenantId, kek: deps.kek }) : null;
+      // The token of the division this channel belongs to — the two divisions
+      // are different Instagram accounts.
+      const ig = psid
+        ? await getDecryptedIgToken({ tx, tenantId: job.tenantId, kek: deps.kek, divisionId: msg.division_id })
+        : null;
       if (!psid || !ig) {
         await markFailed(tx, job, 'channel_unavailable');
         return { status: 'failed' };
@@ -117,7 +139,10 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         const username = msg.ig_username_enc
           ? openField(keys, job.tenantId, msg.ig_username_enc)
           : undefined;
-        await deps.igBridge.send({ tenantId: job.tenantId, threadId, body, username });
+        // The bridge session is the division's, not the tenant's: each
+        // division's Instagram account is its own browser profile.
+        const sessionKey = await divisionSessionKey(tx, msg.division_id);
+        await deps.igBridge.send({ sessionKey, threadId, body, username });
         await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
           [job.tenantId, job.messageId]);
         await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
@@ -152,7 +177,10 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         return { status: 'failed' };
       }
       try {
-        await deps.fbBridge.send({ tenantId: job.tenantId, threadId, body });
+        // The division's Page session, not the tenant's — Marketing and AI
+        // are different Pages in different browser profiles.
+        const sessionKey = await divisionSessionKey(tx, msg.division_id);
+        await deps.fbBridge.send({ sessionKey, threadId, body });
         await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
           [job.tenantId, job.messageId]);
         await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
@@ -165,41 +193,6 @@ export async function processOutbound(deps: SendDeps, job: { tenantId: string; m
         }
         await scheduleRetry(tx, job, err as Error);
         return { status: 'retry', error: err as Error };
-      }
-    }
-
-    // Facebook. The whole chain below is real — thread id, client, the success
-    // and failure handling — and it is exercised end to end today. What it
-    // reaches is a bridge that answers 501, because driving Messenger's composer
-    // needs selectors read off the live site and every selector guessed for this
-    // bridge so far has been wrong. The client turns that into a permanent
-    // failure, so the message is marked failed with the bridge's own reason
-    // rather than sitting at 'queued' looking sent — which is exactly what
-    // happened to a real agent replying to a real customer.
-    //
-    // It sits above the phone lookup because a Facebook contact is identified by
-    // a Facebook id and has no phone number at all; the generic
-    // 'channel_unavailable' failure fired first and buried the real reason.
-    if (msg.channel_kind === 'messenger_bridge') {
-      const threadId = msg.fb_thread_id_enc ? openField(keys, job.tenantId, msg.fb_thread_id_enc) : null;
-      if (!threadId) {
-        await markFailed(tx, job, 'Percakapan Facebook ini belum punya thread id — tidak bisa dibalas');
-        return { status: 'failed' };
-      }
-      try {
-        await deps.fbBridge.send({ tenantId: job.tenantId, threadId, body });
-        await tx.query(`update messages set status = 'sent' where tenant_id = $1 and id = $2`,
-          [job.tenantId, job.messageId]);
-        await tx.query('delete from message_outbox where tenant_id = $1 and message_id = $2',
-          [job.tenantId, job.messageId]);
-        return { status: 'sent' };
-      } catch (err) {
-        if ((err as { permanent?: boolean }).permanent === true) {
-          await markFailed(tx, job, (err as Error).message.slice(0, 500));
-          return { status: 'failed' };
-        }
-        await scheduleRetry(tx, job, err as Error);
-        throw err;
       }
     }
 
@@ -331,8 +324,33 @@ async function scheduleRetry(tx: Tx, job: { tenantId: string; messageId: string 
 export async function markSendExhausted(
   db: Database, tenantId: string, messageId: string, lastError: string,
 ): Promise<void> {
-  await withTenant(db, tenantId, (tx) =>
-    markFailed(tx, { tenantId, messageId }, `Gagal setelah beberapa kali percobaan: ${lastError}`.slice(0, 500)));
+  await withTenant(db, tenantId, async (tx) => {
+    await markFailed(tx, { tenantId, messageId }, `Gagal setelah beberapa kali percobaan: ${lastError}`.slice(0, 500));
+
+    // `handOverFailedChatbotJob` in main.ts only covers the brain-side queues
+    // (chatbot.reply, bd.draft) — a reply the brain produced just fine but
+    // the bridge could never actually deliver (this queue) fell through that
+    // gap entirely, leaving the conversation on `handling = 'bot'` forever
+    // with no one told the customer never got an answer. Same hand-over
+    // `markChatbotExhausted` does on the brain side, triggered from the
+    // delivery side instead.
+    //
+    // Not for Instagram: chat-ig runs bot-only by product decision, with no
+    // hand-over control in that page's UI — flipping `handling` there would
+    // silence the bot with no way to notice or undo it from the console.
+    const rows = await tx.query<{ conversation_id: string; sender_type: string; division_id: string; channel_kind: string }>(
+      `select m.conversation_id, m.sender_type, ch.division_id, ch.kind as channel_kind
+         from messages m join channels ch on ch.id = m.channel_id and ch.tenant_id = m.tenant_id
+        where m.tenant_id = $1 and m.id = $2`,
+      [tenantId, messageId],
+    );
+    const msg = rows[0];
+    if (msg && msg.channel_kind !== 'instagram_bridge' && (msg.sender_type === 'bot' || msg.sender_type === 'autopilot')) {
+      await setHandling({ tx, tenantId, divisionId: msg.division_id }, {
+        conversationId: msg.conversation_id, handling: 'needs_human', onlyFrom: ['bot'],
+      });
+    }
+  });
 }
 
 async function markFailed(tx: Tx, job: { tenantId: string; messageId: string }, reason: string) {

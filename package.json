@@ -23,6 +23,7 @@
     "dev:api": "tsx watch --env-file=.env apps/api/src/server.ts",
     "dev:worker": "tsx watch --env-file=.env apps/worker/src/main.ts",
     "start:api": "node --experimental-strip-types apps/api/src/server.ts",
+    "start:worker": "node --experimental-strip-types apps/worker/src/main.ts",
     "dev:console": "npm run dev -w @kirana/console",
     "build:console": "npm run build -w @kirana/console",
     "start:console": "npm run start -w @kirana/console",

@@ -4,7 +4,10 @@ import {
   invalid, notFound, forbidden, conflict, canTouchConversation, guardOutbound, maskPhone,
   serviceWindowOpen, actorCan,
 } from '@kirana/core';
-import { audit, listInbox, queueOutboundMessage, tenantKeys, openField, createDeal } from '@kirana/db';
+import {
+  audit, listInbox, queueOutboundMessage, tenantKeys, openField, createDeal, chatbotOwnership,
+  currentEscalationReason,
+} from '@kirana/db';
 import type { AppCtx } from '../app.ts';
 
 /**
@@ -71,6 +74,11 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
             join channels ch on ch.id = c.channel_id and ch.tenant_id = c.tenant_id
            where c.tenant_id = $1 and c.id = $2`, [actor.tenantId, id]);
       if (!conv[0]) throw notFound('Conversation');
+      const ownership = await chatbotOwnership(
+        { tx, tenantId: actor.tenantId, divisionId: actor.divisionId ?? null }, id);
+      if (!ownership) throw notFound('Conversation');
+      const escalationReason = await currentEscalationReason(
+        { tx, tenantId: actor.tenantId, divisionId: actor.divisionId ?? null }, id);
 
       const keys = await tenantKeys(tx, ctx.kek, actor.tenantId);
 
@@ -82,13 +90,13 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       );
 
       const messages = await tx.query<{
-        id: string; direction: string; sender_type: string; body_enc: string | null;
+        id: string; direction: string; sender_type: string; sender_id: string | null; body_enc: string | null;
         status: string; at: Date;
       }>(
         // When the customer sent it, not when we happened to receive it. For live
         // traffic those are seconds apart; for a redelivery or an import they are
         // not, and showing our clock would misdate the conversation.
-        `select id, direction, sender_type, body_enc, status,
+        `select id, direction, sender_type, sender_id, body_enc, status,
                 coalesce(provider_ts, created_at) as at
            from messages where tenant_id = $1 and conversation_id = $2
            order by at asc limit 200`, [actor.tenantId, id]);
@@ -101,7 +109,9 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
         [actor.tenantId, conv[0].contact_id],
       );
 
-      const drafts = await tx.query<{
+      // One owner per thread: a draft Autopilot left before trained-cb took
+      // this account over is not offered next to the bot's own replies.
+      const drafts = ownership.owned ? [] : await tx.query<{
         id: string; body_enc: string; confidence: string; intent: string | null; reasons: unknown; model: string | null;
       }>(
         `select id, body_enc, confidence, intent, reasons, model
@@ -118,6 +128,10 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       return {
         conversation: {
           ...conv[0],
+          handling: ownership.handling,
+          chatbot_owned: ownership.owned,
+          opt_out: ownership.optOut,
+          last_escalation_reason: escalationReason,
           serviceWindowOpen: serviceWindowOpen(
             conv[0].last_inbound_at ? new Date(conv[0].last_inbound_at) : null, new Date()),
         },
@@ -145,7 +159,7 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
             }
           : null,
         messages: messages.map((m) => ({
-          id: m.id, direction: m.direction, senderType: m.sender_type, status: m.status,
+          id: m.id, direction: m.direction, senderType: m.sender_type, senderId: m.sender_id, status: m.status,
           at: m.at,
           body: m.body_enc ? openField(keys, actor.tenantId, m.body_enc) : null,
         })),
@@ -262,6 +276,11 @@ export function registerConversationRoutes(app: FastifyInstance, ctx: AppCtx): v
       if (!conv[0]) throw notFound('Conversation');
       if (!canTouchConversation(actor, { assigneeId: conv[0].assignee_id })) {
         throw forbidden('This conversation is assigned to someone else');
+      }
+      const ownership = await chatbotOwnership(
+        { tx, tenantId: actor.tenantId, divisionId: actor.divisionId ?? null }, params.id);
+      if (ownership?.owned) {
+        throw conflict('The chatbot answers this conversation; Autopilot drafts cannot be sent on it');
       }
 
       const channel = await tx.query<{ kind: string; quality: string }>(

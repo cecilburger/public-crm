@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { Page } from 'puppeteer';
 import { COMMENTS, URLS } from './selectors.ts';
-import { parseFacebookComments } from './parsers/comments.ts';
+import { parseFacebookComments, type ParsedComment, type ParsedComments } from './parsers/comments.ts';
 import { readContainerHtml, type Logger } from './messengerWatcher.ts';
 import { readPostSurfaceHtml } from './pageHtml.ts';
-import { CheckpointRequiredError, SessionExpiredError, type SessionManager } from './sessionManager.ts';
+import { CheckpointRequiredError, SessionExpiredError, type PageMarker, type SessionManager } from './sessionManager.ts';
 import type { FbBridgeEvent } from './events.ts';
 
 /**
@@ -16,19 +17,50 @@ import type { FbBridgeEvent } from './events.ts';
  * continuously would mean holding a tab per post. A conservative sweep is the
  * honest design — fifteen minutes is roughly how often a person actually checks
  * their Page, and polling harder than that is the surest way to get an account
- * flagged for no benefit.
+ * flagged for no benefit. The first sweep does not wait for it: one runs at
+ * startup and one the moment a login settles (`onSessionReady`).
  */
-const SWEEP_INTERVAL_MS = 15 * 60_000;
+export const SWEEP_INTERVAL_MS = 15 * 60_000;
 /** How many of a Page's newest posts are re-read in full on each sweep. */
 const POSTS_PER_SWEEP = 3;
 /** How long a post's comments get to render before it is read. */
-const COMMENT_RENDER_MS = 12_000;
+const COMMENT_RENDER_MS = 20_000;
+/**
+ * How long the timeline gets to show a post LINK, not merely a post shape.
+ *
+ * The feed paints post-shaped placeholders — `div[role="article"]` with no
+ * text and no links — before its GraphQL fetch resolves, and the next posts
+ * only hydrate as they scroll into view. Measured live at the moment the old
+ * sweep read (the first article appearing): three post articles, two of them
+ * still without a link — and every sweep before this recorded `posts: 0`
+ * while three posts sat on the Page. Waiting for a permalink is waiting for
+ * the thing the sweep actually needs.
+ */
+const POST_DISCOVERY_MS = 20_000;
+const DISCOVERY_POLL_MS = 1_000;
+/** How long a post's own surface gets for its comments to render and settle. */
+const POST_SURFACE_SETTLE_MS = 15_000;
+/** Bounded, like everything a sweep does: a person scrolls a little, not the whole history. */
+const MAX_DISCOVERY_SCROLLS = 3;
+const SCROLL_SETTLE_MS = 2_000;
 
-/** How many comment ids to keep per tenant. Comments arrive on old posts as
- * well as new ones, so this has to cover more than one sweep's worth — but it
- * is only an optimisation. The real idempotency barrier is the unique index on
- * `(tenant_id, comment_id)` in the CRM, which holds even if this forgets. */
-const SEEN_LIMIT = 5_000;
+export type SweepTrigger = 'startup' | 'interval' | 'ready' | 'manual';
+
+/** What the CRM already holds, by comment id. An unreachable CRM answers "nothing". */
+export type KnownCommentIds = (sessionKey: string, commentIds: string[]) => Promise<Set<string>>;
+
+/** Resolves true only once the CRM has accepted the event. */
+export type EmitEvent = (ev: FbBridgeEvent) => Promise<boolean> | boolean | void;
+
+export interface SweepSummary {
+  posts: number;
+  read: number;
+  known: number;
+  fresh: number;
+  rejected: number;
+}
+
+const noneKnown: KnownCommentIds = async () => new Set();
 
 /**
  * Pulls inbound comments off a tenant's Facebook Page.
@@ -42,31 +74,45 @@ const SEEN_LIMIT = 5_000;
  * comment belongs to a post and is public, a DM belongs to a conversation and
  * is not, and collapsing the two would put every commenter into the reply
  * inbox and bill them as a conversation window.
+ *
+ * KEEPS NO LEDGER. Which comments are already stored is asked of the CRM on
+ * every sweep, the same arrangement the Messenger backfill uses. A file of
+ * "seen" ids beside the profile used to decide this, and it outlived the
+ * database it described: after the CRM was rebuilt, sixteen comments stayed
+ * "seen" in the file and never reached the new database at all. A comment
+ * counts as delivered only when the CRM says so; one it refused is offered
+ * again on the next sweep.
  */
 export class CommentWatcher {
-  private seen = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
   private running = new Set<string>();
 
   constructor(
     private sessions: SessionManager,
-    private onEvent: (ev: FbBridgeEvent) => void,
+    private onEvent: EmitEvent,
     private log: Logger,
+    private knownCommentIds: KnownCommentIds = noneKnown,
   ) {}
 
   start(): void {
-    void this.sweepAll();
-    this.timer = setInterval(() => void this.sweepAll(), SWEEP_INTERVAL_MS);
+    void this.sweepAll('startup');
+    this.timer = setInterval(() => void this.sweepAll('interval'), SWEEP_INTERVAL_MS);
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
   }
 
-  private async sweepAll(): Promise<void> {
-    for (const tenantId of await this.sessions.knownTenantIds()) {
-      await this.sweep(tenantId).catch((err) =>
-        this.log.warn({ err, tenantId }, 'fb-bridge: comment sweep failed'));
+  /** A login just settled: read the Page now rather than at the next interval. */
+  onSessionReady(sessionKey: string): void {
+    void this.sweep(sessionKey, 'ready').catch((err) =>
+      this.log.warn({ err, sessionKey }, 'fb-bridge: comment sweep failed'));
+  }
+
+  private async sweepAll(trigger: SweepTrigger): Promise<void> {
+    for (const sessionKey of await this.sessions.knownSessionKeys()) {
+      await this.sweep(sessionKey, trigger).catch((err) =>
+        this.log.warn({ err, sessionKey }, 'fb-bridge: comment sweep failed'));
     }
   }
 
@@ -77,38 +123,26 @@ export class CommentWatcher {
    * must not have the next interval start a second one beside it, both reading
    * the same feed and both deciding the same comment is new.
    */
-  async sweep(tenantId: string): Promise<void> {
-    if (this.running.has(tenantId)) return;
-    const marker = await this.sessions.getPageMarker(tenantId);
-    if (!marker) return;
+  async sweep(sessionKey: string, trigger: SweepTrigger = 'manual'): Promise<SweepSummary | null> {
+    if (this.running.has(sessionKey)) return null;
+    const marker = await this.sessions.getPageMarker(sessionKey);
+    if (!marker) return null;
 
-    this.running.add(tenantId);
-    const page = await this.sessions.newPage(tenantId);
+    this.running.add(sessionKey);
+    const page = await this.sessions.newPage(sessionKey);
     if (!page) {
-      this.running.delete(tenantId);
-      return;
+      this.running.delete(sessionKey);
+      return null;
     }
+    const ids = { sessionKey, tenantId: marker.tenantId ?? null, pageId: marker.pageId };
+    this.log.info({ event: 'fb_page_sweep_started', ...ids, trigger }, 'fb_page_sweep_started');
 
     try {
-      await page.goto(URLS.pagePosts(marker.pageId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await this.sessions.assertUsable(page);
+      const own = { pageId: marker.pageId, pageName: marker.pageName };
+      const timeline = await this.discoverPosts(page, marker, ids);
+      if (!timeline) return null;
 
-      // `assertUsable` only proves the BODY has some text — the header, the
-      // nav, the sidebar — which paints well before the feed's own GraphQL
-      // fetch resolves. Reading the feed immediately after it, on a browser
-      // that has just launched with no warm cache, found zero posts: not
-      // because there were none, but because the feed had not rendered yet.
-      // Confirmed live, on the very first sweep after every cold start.
-      await page.waitForSelector(COMMENTS.post.join(', '), { timeout: COMMENT_RENDER_MS }).catch(() => {});
-
-      const html = await readContainerHtml(page, COMMENTS.feed);
-      if (!html) {
-        this.log.warn({ tenantId }, 'fb-bridge: page feed container not found — COMMENTS.feed may be stale');
-        return;
-      }
-
-      const parsed = parseFacebookComments(html);
-      const found = new Map(parsed.comments.map((comment) => [comment.commentId, comment]));
+      const found = new Map(timeline.comments.map((comment) => [comment.commentId, comment]));
 
       // The timeline is a summary, not the comments. It renders the first one
       // or two under each post and hides the rest behind "View more comments",
@@ -117,8 +151,10 @@ export class CommentWatcher {
       // thread is rendered. Bounded, because a Page's history is not: only the
       // newest posts are worth re-reading every sweep, and anything older is
       // reached the same way the first time it appears.
-      for (const postId of parsed.postIds.slice(0, POSTS_PER_SWEEP)) {
-        await page.goto(URLS.postPermalink(marker.pageId, postId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      for (const [index, postId] of timeline.postIds.slice(0, POSTS_PER_SWEEP).entries()) {
+        const url = URLS.postPermalink(marker.pageId, postId);
+        this.log.info({ event: 'fb_post_opened', ...ids, postId, url }, 'fb_post_opened');
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         // `domcontentloaded` is the document, not the comments: they are
         // rendered afterwards, and a read taken straight after the navigation
         // came back with whatever the timeline already had — which looked
@@ -126,18 +162,33 @@ export class CommentWatcher {
         // through, so a post that genuinely has no comments costs the timeout
         // once rather than a fixed delay every sweep.
         await page.waitForSelector(COMMENTS.comment.join(', '), { timeout: COMMENT_RENDER_MS }).catch(() => {});
-        const postHtml = await readPostSurfaceHtml(page, postId);
+        // Fail-closed: only a surface that proves it owns THIS post is read
+        // (`readPostSurfaceHtml`); a background feed or another dialog is not.
+        const { html: postHtml, reads } = await this.readSettledPostSurface(page, postId, own);
+        this.log.info({
+          event: 'fb_post_surface_found', ...ids, postId, found: Boolean(postHtml), bytes: postHtml?.length ?? 0, reads,
+        }, 'fb_post_surface_found');
         if (!postHtml) {
           this.log.warn(
-            { tenantId, postId },
+            { sessionKey, postId },
             'fb-bridge: target post surface not found — refusing background feed fallback',
           );
           continue;
         }
-        for (const comment of parseFacebookComments(postHtml, { defaultPostId: postId }).comments) {
+        await snapshot(sessionKey, `post-${index}`, postHtml);
+        const parsed = parseFacebookComments(postHtml, { defaultPostId: postId, ...own });
+        this.log.info(
+          { event: 'fb_comments_rendered', ...ids, postId, commentNodes: parsed.matchedComments },
+          'fb_comments_rendered',
+        );
+        this.log.info({
+          event: 'fb_customer_comments_parsed', ...ids, postId, customer: parsed.comments.length,
+          pageOwn: parsed.droppedPageOwn, droppedNoId: parsed.droppedNoId, droppedNoPost: parsed.droppedNoPost,
+        }, 'fb_customer_comments_parsed');
+        for (const comment of parsed.comments) {
           if (comment.postId !== postId) {
             this.log.warn(
-              { tenantId, expectedPostId: postId, parsedPostId: comment.postId, commentId: comment.commentId },
+              { sessionKey, expectedPostId: postId, parsedPostId: comment.postId, commentId: comment.commentId },
               'fb-bridge: comment surface contained a different post — dropped',
             );
             continue;
@@ -146,85 +197,166 @@ export class CommentWatcher {
         }
       }
 
-      if (parsed.droppedNoId > 0) {
-        // Loud rather than silent: a comment with no readable id has no
-        // idempotency key, so it is dropped instead of being re-ingested on
-        // every sweep. All of them being dropped means the selectors moved.
-        this.log.warn(
-          { tenantId, dropped: parsed.droppedNoId, matched: parsed.matchedComments },
-          'fb-bridge: comments dropped for having no readable id — COMMENTS.permalink may be stale',
-        );
-      }
-
-      const seen = await this.loadSeen(tenantId);
-      let fresh = 0;
-      for (const comment of found.values()) {
-        if (seen.has(comment.commentId)) continue;
-        seen.add(comment.commentId);
-        fresh += 1;
-        this.onEvent({
-          event: 'comment',
-          tenantId,
-          at: new Date().toISOString(),
-          comment: { ...comment, pageId: marker.pageId, pageName: marker.pageName },
-        });
-      }
+      const summary = await this.emitNew(sessionKey, marker, [...found.values()]);
       // Logged every sweep, not only when something is new. A sweep that finds
       // nothing and says nothing is indistinguishable from a sweep that never
       // ran or one whose selectors have gone stale, and this service has been
       // all three.
-      this.log.info(
-        { tenantId, posts: parsed.postIds.length, read: found.size, fresh },
-        'fb-bridge: page comments swept',
-      );
-      if (fresh > 0) await this.persistSeen(tenantId, seen);
+      const result = { ...summary, posts: timeline.postIds.length };
+      this.log.info({ ...ids, trigger, ...result }, 'fb-bridge: page comments swept');
+      return result;
     } catch (err) {
       const needsLogin = err instanceof SessionExpiredError || err instanceof CheckpointRequiredError;
       if (needsLogin) {
         const error = (err as Error).message;
-        this.sessions.forgetSession(tenantId, error);
-        this.onEvent({ event: 'session_error', tenantId, at: new Date().toISOString(), error, needsLogin: true });
+        this.sessions.forgetSession(sessionKey, error);
+        void this.onEvent({ event: 'session_error', sessionKey, at: new Date().toISOString(), error, needsLogin: true });
       }
       throw err;
     } finally {
       await page.close().catch(() => {});
-      this.running.delete(tenantId);
+      this.running.delete(sessionKey);
     }
-  }
-
-  private seenFile(tenantId: string): string {
-    return path.join(this.sessions.getProfileDir(tenantId), '.seen-comments.json');
   }
 
   /**
-   * The ids already reported, persisted beside the profile.
-   *
-   * Without this every restart would re-report every comment still visible on
-   * the Page. The CRM would reject them all on its unique index, so nothing
-   * would actually duplicate — but it would be a burst of pointless webhook
-   * traffic on every save under `tsx watch`, which is noise that hides real
-   * signal.
+   * The Page's timeline, read once it shows post links — and the evidence of
+   * how it looked at the moment the old sweep used to read it.
    */
-  private async loadSeen(tenantId: string): Promise<Set<string>> {
-    const cached = this.seen.get(tenantId);
-    if (cached) return cached;
-    let ids: string[] = [];
-    try {
-      ids = JSON.parse(await fs.readFile(this.seenFile(tenantId), 'utf8')) as string[];
-    } catch {
-      // Nothing persisted yet.
+  private async discoverPosts(
+    page: Page, marker: PageMarker, ids: Record<string, unknown>,
+  ): Promise<ParsedComments | null> {
+    const own = { pageId: marker.pageId, pageName: marker.pageName };
+    await page.goto(URLS.pagePosts(marker.pageId), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await this.sessions.assertUsable(page);
+    await page.waitForSelector(COMMENTS.post.join(', '), { timeout: COMMENT_RENDER_MS }).catch(() => {});
+
+    const read = async () => {
+      const html = await readContainerHtml(page, COMMENTS.feed);
+      return { html, parsed: html ? parseFacebookComments(html, own) : null };
+    };
+    // What the sweep read before post links were waited for — kept as evidence.
+    const first = await read();
+    let current = first;
+
+    const deadline = Date.now() + POST_DISCOVERY_MS;
+    while (current.html && (current.parsed?.postIds.length ?? 0) === 0 && Date.now() < deadline) {
+      await sleep(DISCOVERY_POLL_MS);
+      current = await read();
     }
-    const set = new Set(ids);
-    this.seen.set(tenantId, set);
-    return set;
+    // Only the first post hydrates in view; the next ones do as they scroll in.
+    let scrolls = 0;
+    while (current.html && (current.parsed?.postIds.length ?? 0) > 0
+      && (current.parsed?.postIds.length ?? 0) < POSTS_PER_SWEEP && scrolls < MAX_DISCOVERY_SCROLLS) {
+      const before = current.parsed!.postIds.length;
+      await page.evaluate('window.scrollBy(0, 1400)').catch(() => {});
+      scrolls += 1;
+      await sleep(SCROLL_SETTLE_MS);
+      current = await read();
+      if ((current.parsed?.postIds.length ?? 0) === before && scrolls >= 2) break;
+    }
+
+    if (!current.html || !current.parsed) {
+      this.log.warn({ ...ids }, 'fb-bridge: page feed container not found — COMMENTS.feed may be stale');
+      return null;
+    }
+    await snapshot(String(ids.sessionKey), 'timeline', current.html);
+    const shape = (p: ParsedComments | null) => p && ({
+      posts: p.postIds.length, postArticles: p.postArticles, postArticlesWithoutId: p.postArticlesWithoutId,
+      commentNodes: p.matchedComments,
+    });
+    this.log.info({
+      event: 'fb_posts_discovered', ...ids, count: current.parsed.postIds.length, postIds: current.parsed.postIds,
+      atFirstRead: shape(first.parsed), afterWait: shape(current.parsed), scrolls,
+    }, 'fb_posts_discovered');
+    if (current.parsed.droppedNoId > 0) {
+      // Loud rather than silent: a comment with no readable id has no
+      // idempotency key, so it is dropped instead of being re-ingested on
+      // every sweep. All of them being dropped means the selectors moved.
+      this.log.warn(
+        { ...ids, dropped: current.parsed.droppedNoId, matched: current.parsed.matchedComments },
+        'fb-bridge: comments dropped for having no readable id — COMMENTS.permalink may be stale',
+      );
+    }
+    return current.parsed;
   }
 
-  private async persistSeen(tenantId: string, seen: Set<string>): Promise<void> {
-    // Oldest first out of the file, so a Page with years of comments does not
-    // grow this without bound. Trimming can only cause a re-report, which the
-    // CRM's unique index absorbs — it can never cause a duplicate.
-    const trimmed = [...seen].slice(-SEEN_LIMIT);
-    this.seen.set(tenantId, new Set(trimmed));
-    await fs.writeFile(this.seenFile(tenantId), JSON.stringify(trimmed), 'utf8').catch(() => {});
+  /**
+   * The target post's surface once its own comments have rendered.
+   *
+   * Waiting for "a comment" is not enough on a permalink: the feed behind the
+   * post's modal carries comments too, so that wait returned at once and the
+   * modal was read before its comments arrived — confirmed live, a post with
+   * three comments read back as 19 KB and none, then as 73 KB and three a
+   * moment later. This re-reads the post's OWN surface until its comment count
+   * is non-zero and unchanged across two reads, or the time runs out (a post
+   * with genuinely no comments costs that once per sweep).
+   */
+  private async readSettledPostSurface(
+    page: Page, postId: string, own: { pageId: string; pageName: string },
+  ): Promise<{ html: string | null; reads: number }> {
+    const deadline = Date.now() + POST_SURFACE_SETTLE_MS;
+    let html = await readPostSurfaceHtml(page, postId);
+    let reads = 1;
+    let previous = -1;
+    for (;;) {
+      const count = html ? parseFacebookComments(html, { defaultPostId: postId, ...own }).matchedComments : 0;
+      if (html && count > 0 && count === previous) return { html, reads };
+      if (Date.now() >= deadline) return { html, reads };
+      previous = count;
+      await sleep(DISCOVERY_POLL_MS);
+      html = await readPostSurfaceHtml(page, postId);
+      reads += 1;
+    }
   }
+
+  /**
+   * Offers the CRM every comment it does not already hold, one event each,
+   * and counts one as delivered only when the CRM accepted it.
+   */
+  async emitNew(sessionKey: string, marker: PageMarker, comments: ParsedComment[]): Promise<Omit<SweepSummary, 'posts'>> {
+    const ids = { sessionKey, tenantId: marker.tenantId ?? null, pageId: marker.pageId };
+    const unique = [...new Map(comments.map((c) => [c.commentId, c])).values()];
+    const known = unique.length > 0 ? await this.knownCommentIds(sessionKey, unique.map((c) => c.commentId)) : new Set<string>();
+    let fresh = 0;
+    let rejected = 0;
+    for (const comment of unique) {
+      const isKnown = known.has(comment.commentId);
+      this.log.info({
+        event: 'fb_comment_candidate', ...ids, postId: comment.postId, commentId: comment.commentId,
+        parentCommentId: comment.parentCommentId, authorId: comment.authorId, known: isKnown,
+      }, 'fb_comment_candidate');
+      if (isKnown) continue;
+      const accepted = (await this.onEvent({
+        event: 'comment',
+        sessionKey,
+        at: new Date().toISOString(),
+        comment: { ...comment, pageId: marker.pageId, pageName: marker.pageName },
+      })) === true;
+      this.log.info({
+        event: 'fb_comment_event_emitted', ...ids, postId: comment.postId, commentId: comment.commentId,
+        parentCommentId: comment.parentCommentId, accepted,
+      }, 'fb_comment_event_emitted');
+      if (accepted) fresh += 1;
+      else rejected += 1;
+    }
+    return { read: unique.length, known: known.size, fresh, rejected };
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The HTML a sweep read, written out only when `FB_BRIDGE_SNAPSHOT_DIR` is set.
+ *
+ * Off by default, like `FB_BRIDGE_DEBUG`: these pages are customers' comments.
+ * It exists because the failures here are silent by nature — a selector that
+ * matches nothing looks exactly like a Page with nothing on it — and the only
+ * way to tell them apart is the markup the sweep actually saw.
+ */
+async function snapshot(sessionKey: string, stage: string, html: string): Promise<void> {
+  const dir = process.env.FB_BRIDGE_SNAPSHOT_DIR;
+  if (!dir) return;
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
+  await fs.writeFile(path.join(dir, `${sessionKey}-${stage}.html`), html, 'utf8').catch(() => {});
 }

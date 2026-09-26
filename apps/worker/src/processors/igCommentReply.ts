@@ -1,6 +1,7 @@
 import {
-  withTenant, getIgComment, setIgCommentOutcome, upsertContactByIgUsername, ensureConversation,
-  recordIgBridgeAgentReply, seedBdConversationState, type Database,
+  withTenant, getIgComment, setIgCommentOutcome, divisionSessionKey,
+  upsertContactByIgUsername, ensureConversation, recordIgBridgeAgentReply, seedBdConversationState,
+  type Database,
 } from '@kirana/db';
 import type { IgBridgeClient } from '../igBridgeClient.ts';
 
@@ -34,32 +35,28 @@ export const commentOpenerMessageKey = (tenantId: string, commentId: string): st
  * The public line deliberately says almost nothing — the BD team's own rule
  * is not to explain under a post, because everyone scrolling past reads it,
  * including competitors, and a commenter who has already been answered has no
- * reason to open the DM that is the whole point. Both texts come from the
- * brain (`apps/bd-brain`, `/v1/comment-reply`), so the bot's templates remain
- * the single place its words are written.
+ * reason to open the DM that is the whole point. Both texts come from
+ * `trained-cb`, so the bot's templates remain the single place its words are
+ * written.
  *
  * Neither half is retried into a loop. A public reply Instagram refuses is
  * refusing the pace or the content, and asking again shortly is how an
  * account earns an action block — the row records the failure and the page
  * shows it, for a person to decide about.
- *
- * Once the opener is in the commenter's DMs, the flow has to be told: the
- * opener asks for their brand, so their first reply is the answer to that
- * question and must arrive at `inbound_qualify`. Before this (24 Sep 2026)
- * the DM conversation did not exist in the CRM until the commenter wrote
- * back, so `bd.draft` stepped their reply from `new` and sent the
- * qualification form — the same questions a second time. `seedAfterOpener`
- * is the bot's `MetaTransport._seed` on this side: create the conversation,
- * record the opener on it, and set the node only if the person has no state
- * yet. Someone who already talked to us keeps their place.
  */
 export async function processIgCommentReply(
   deps: IgCommentReplyDeps, job: IgCommentReplyJob,
 ): Promise<{ status: string }> {
-  const comment = await withTenant(deps.db, job.tenantId, (tx) =>
-    getIgComment({ tx, tenantId: job.tenantId, kek: deps.kek }, job.commentId));
+  // The comment names the division whose account it was left on, and that
+  // division's browser session is the one that answers it.
+  const loaded = await withTenant(deps.db, job.tenantId, async (tx) => {
+    const row = await getIgComment({ tx, tenantId: job.tenantId, kek: deps.kek }, job.commentId);
+    if (!row) return null;
+    return { comment: row, sessionKey: await divisionSessionKey(tx, row.divisionId) };
+  });
 
-  if (!comment) return { status: 'gone' };
+  if (!loaded) return { status: 'gone' };
+  const { comment, sessionKey } = loaded;
   // Someone already dealt with it by hand, or a previous run did. Re-posting
   // under a public post is the one mistake worth being paranoid about.
   if (comment.publicStatus !== 'pending' || comment.dmStatus !== 'pending') {
@@ -79,7 +76,7 @@ export async function processIgCommentReply(
   const isReply = comment.parentRef !== null;
 
   const result = await deps.igBridge.replyToComment({
-    tenantId: job.tenantId,
+    sessionKey,
     postRef: comment.postRef,
     commentRef: comment.commentRef,
     commenter: comment.commenter,
@@ -95,7 +92,8 @@ export async function processIgCommentReply(
   if (result.dm.sent || result.dm.alreadyThere) {
     try {
       seeded = await seedAfterOpener(deps, job, {
-        commenter: comment.commenter, threadId: result.dm.threadId, opener: texts.dmOpener,
+        divisionId: comment.divisionId, commenter: comment.commenter,
+        threadId: result.dm.threadId, opener: texts.dmOpener,
       });
     } catch (err) {
       // The DM went out; losing the seed costs one repeated question, not
@@ -148,11 +146,11 @@ export async function processIgCommentReply(
  */
 export async function seedAfterOpener(
   deps: IgCommentReplyDeps, job: IgCommentReplyJob,
-  args: { commenter: string; threadId?: string; opener: string; now?: Date },
+  args: { divisionId: string; commenter: string; threadId?: string; opener: string; now?: Date },
 ): Promise<{ conversationId: string; contactId: string; seeded: boolean }> {
   const now = args.now ?? new Date();
   return withTenant(deps.db, job.tenantId, async (tx) => {
-    const ctx = { tx, tenantId: job.tenantId, kek: deps.kek };
+    const ctx = { tx, tenantId: job.tenantId, kek: deps.kek, divisionId: args.divisionId };
     const channels = await tx.query<{ id: string }>(
       `select id from channels where tenant_id = $1 and kind = 'instagram_bridge' and status <> 'disabled'
         order by created_at limit 1`,
@@ -181,7 +179,7 @@ export async function seedAfterOpener(
       conversationId, node: NODE_AFTER_COMMENT_OPENER, now,
     });
     return { conversationId, contactId, seeded };
-  });
+  }, { divisionId: args.divisionId });
 }
 
 async function record(

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getSession } from './session';
+import type { Handling } from './chatbot';
 
 export const API_URL = process.env.KIRANA_API_URL ?? 'http://127.0.0.1:8080';
 
@@ -15,6 +16,8 @@ interface CallOptions {
   token?: string | null;
   /** Reads are never cached: an inbox that is 30 seconds stale is a wrong inbox. */
   cache?: RequestCache;
+  /** Which Marketing/AI division the request acts in; the API defaults to marketing when absent. */
+  division?: string;
 }
 
 export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> {
@@ -22,6 +25,7 @@ export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> 
     method: opts.method ?? 'GET',
     headers: {
       ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.division ? { 'x-division': opts.division } : {}),
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -43,11 +47,11 @@ export async function call<T>(path: string, opts: CallOptions = {}): Promise<T> 
  * than rendering a half-empty page.
  */
 export async function api<T>(path: string, opts: Omit<CallOptions, 'token'> = {}): Promise<T> {
-  const { accessToken } = await getSession();
+  const { accessToken, division } = await getSession();
   if (!accessToken) redirect('/masuk');
 
   try {
-    return await call<T>(path, { ...opts, token: accessToken });
+    return await call<T>(path, { division, ...opts, token: accessToken });
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) redirect('/masuk?reason=expired');
     throw err;
@@ -56,9 +60,21 @@ export async function api<T>(path: string, opts: Omit<CallOptions, 'token'> = {}
 
 /* ------------------------------------------------------------------ types */
 
+export type { DivisionKey } from './session';
+
+export interface Division {
+  id: string;
+  key: 'marketing' | 'ai';
+  name: string;
+}
+
 export interface Me {
   user: { id: string; name: string; email: string; role: Role };
   workspace: { name: string; slug: string; status: string };
+  /** The division this request acted in — what the switcher shows as active. */
+  division: Division;
+  /** Both divisions of the workspace, Marketing first. */
+  divisions: Division[];
 }
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
@@ -78,6 +94,9 @@ export interface ConversationSummary {
   contact_id: string;
   created_at: string;
   first_response_at: string | null;
+  handling: Handling;
+  /** True when trained-cb answers this thread (division on, account on, a DM bridge). */
+  chatbot_owned: boolean;
 }
 
 export interface AutopilotDraft {
@@ -96,16 +115,38 @@ export interface ConversationDetail {
      * cannot send — see `Composer`'s `disabledReason`. */
     channel_kind: string;
     serviceWindowOpen: boolean;
+    handling: Handling;
+    chatbot_owned: boolean;
+    /** The contact asked the bot to stop; the bot cannot be switched back on here. */
+    opt_out: boolean;
+    last_escalation_reason: string | null;
   };
   contact: { displayName: string | null; phone: string | null; tags: string[] };
   draft: AutopilotDraft | null;
   orders: { code: string; status: string; shipArea: string | null; totalIdr: number; createdAt: string }[];
   messages: {
     id: string; direction: 'inbound' | 'outbound';
-    senderType: 'contact' | 'agent' | 'autopilot' | 'system';
+    /** `bot` is trained-cb; `autopilot` is legacy Autopilot. */
+    senderType: 'contact' | 'agent' | 'autopilot' | 'system' | 'bot';
+    /** Set on an `autopilot` row when a person approved the draft. */
+    senderId: string | null;
     /** When the customer sent it, not when we received it. */
     status: string; at: string; body: string | null;
   }[];
+}
+
+export interface ChatbotChannel {
+  id: string;
+  kind: 'whatsapp_web' | 'instagram_bridge' | 'messenger_bridge';
+  displayName: string;
+  status: string;
+}
+
+/** `GET /v1/chatbot` — the division's DM accounts; the bot always answers on all of them. */
+export interface ChatbotOverview {
+  channels: ChatbotChannel[];
+  counts: Record<Handling, number>;
+  brainNotConfiguredRecently: boolean;
 }
 
 export interface Member {

@@ -9,6 +9,7 @@ import { assignConversation, resolveConversation } from '../../actions';
 import { CsrfField } from '@/components/Csrf';
 import { AddClientFromChatButton } from '@/components/AddClientFromChatButton';
 import { ScrollToLatest } from '@/components/ScrollToLatest';
+import { senderLabelKey, isMachineWritten, isUndelivered } from '@/lib/chatbot';
 
 export const dynamic = 'force-dynamic';
 
@@ -95,9 +96,10 @@ export default async function ChatIgThreadPage({ params }: { params: Promise<{ i
         <div className="thread-body">
           {messages.length === 0 ? <p className="empty">{t.chats.noMessages}</p> : null}
           {messages.map((m) => (
-            <div key={m.id} className={`msg ${m.direction === 'outbound' ? 'out' : ''} ${m.senderType === 'autopilot' ? 'ai' : ''}`}>
+            <div key={m.id} className={`msg ${m.direction === 'outbound' ? 'out' : ''} ${isMachineWritten(m) ? 'ai' : ''}`}>
               <div className="meta">
-                {t.chats.sender[m.senderType] ?? m.senderType} · {clock(m.at)}
+                {t.chats.sender[senderLabelKey(m)] ?? m.senderType} · {clock(m.at)}
+                {isUndelivered(m) ? <> · <span style={{ color: 'var(--danger)' }}>{t.chats.undelivered}</span></> : null}
               </div>
               <div className="bubble">{m.body ?? <em className="dim">{t.chats.redacted}</em>}</div>
             </div>

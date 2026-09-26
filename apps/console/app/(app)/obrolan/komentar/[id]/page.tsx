@@ -1,28 +1,37 @@
 import { api, type FacebookComment } from '@/lib/api';
 import { t } from '@/lib/copy';
-import { CommentThread } from '@/components/CommentThread';
+import { CommentPostThread } from '@/components/CommentPostThread';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * A public comment, opened inside the existing inbox.
+ * Every comment left on one Page post, opened inside the existing inbox.
  *
- * Its own URL space rather than sharing `/obrolan/[id]`: a comment id and a
- * conversation id are both UUIDs, and one route serving both would turn a
- * mistyped id into either a confusing 404 or, worse, somebody else's thread.
+ * The route segment is Facebook's own post id, not a comment's row id — the
+ * left list groups comments by the post they were left on (Meta Business
+ * Suite's own "Facebook comments" layout: the post on the left, everyone who
+ * commented on it together on the right), so this page shows all of them
+ * together rather than one at a time. Its own URL space regardless: a post id
+ * is never a UUID, so it cannot collide with a conversation id either way.
  *
- * Read from the list endpoint rather than a per-id route. There is no
- * `/v1/inbox/comments/:id`, and adding one would create a second way to read
- * data the inbox already holds — and a second place for the permission on it
- * to drift. The list is capped and ordered newest-first, the same window the
- * inbox itself shows, so anything reachable from the list is reachable here.
+ * A comment's row id is still accepted in the segment: links minted before
+ * the list grouped by post point at one comment, and that comment's post is
+ * what they now open — nothing bookmarked or notified goes dead.
+ *
+ * Read from the list endpoint rather than a per-post route. There is no
+ * `/v1/inbox/comments?postId=`, and adding one would create a second way to
+ * read data the inbox already holds — and a second place for the permission
+ * on it to drift. The list is capped and ordered newest-first, the same
+ * window the inbox itself shows, so anything reachable from the list is
+ * reachable here.
  */
-export default async function CommentPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function CommentPostPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { comments } = await api<{ comments: FacebookComment[] }>('/v1/inbox/comments?limit=200');
-  const comment = comments.find((c) => c.id === id);
+  const postId = comments.some((c) => c.postId === id) ? id : comments.find((c) => c.id === id)?.postId;
+  const onThisPost = postId ? comments.filter((c) => c.postId === postId) : [];
 
-  if (!comment) {
+  if (!postId || onThisPost.length === 0) {
     return (
       <div className="thread">
         <div className="empty" style={{ margin: 'auto', maxWidth: 380 }}>
@@ -33,9 +42,5 @@ export default async function CommentPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  // Every comment on the same post, not just the one that was clicked — a
-  // post's comments are read together, the way they actually sit on
-  // Facebook, rather than one at a time behind a separate click each.
-  const inPost = comments.filter((c) => c.postId === comment.postId);
-  return <CommentThread postId={comment.postId} pageName={comment.pageName} comments={inPost} />;
+  return <CommentPostThread postId={postId} comments={onThisPost} />;
 }

@@ -10,6 +10,7 @@ import type { NotificationItem } from '@/lib/notifications';
 import { WaBridgeRailList } from '@/components/WaBridgeRailList';
 import { NotificationBell } from '@/components/NotificationBell';
 import { GlobalSearch } from '@/components/GlobalSearch';
+import { DivisionSwitch } from '@/components/DivisionSwitch';
 import { withBase } from '@/lib/basePath';
 
 const ICONS = {
@@ -19,6 +20,8 @@ const ICONS = {
   chatWa: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 7h6M9 11h6M9 15h3" /></>,
   chatIg: <><rect x="3" y="3" width="18" height="18" rx="5" /><circle cx="12" cy="12" r="4" /><circle cx="17" cy="7" r="0.8" fill="currentColor" stroke="none" /></>,
   igComments: <><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.7-.8L3 21l1.9-4.6A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" /></>,
+  chatFb: <><rect x="3" y="3" width="18" height="18" rx="5" /><path d="M13.5 20v-6.5h2.2l.4-2.7h-2.6v-1.7c0-.8.2-1.3 1.3-1.3h1.4V5.2c-.6-.1-1.4-.1-2.1-.1-2.1 0-3.5 1.3-3.5 3.6v2h-2.3v2.7h2.3V20" /></>,
+  fbComments: <><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.7-.8L3 21l1.9-4.6A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" /><path d="M12.8 15.2V11h1.5l.3-1.8h-1.8V8.1c0-.5.1-.9.8-.9h1V5.6a10 10 0 0 0-1.4-.1c-1.9 0-2.9 1.1-2.9 2.6V9.2H9v1.8h1.3v4.2" /></>,
   client: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6.5 7-6.5s7 2.9 7 6.5" /></>,
   clientDeal: <><circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5 5.5-5.5" /></>,
   clientProses: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3 2" /></>,
@@ -159,6 +162,8 @@ const INBOX = [
   { href: '/chat-wa', label: t.nav.chatWa, badge: false, icon: 'chatWa' as const },
   { href: '/chat-ig', label: t.nav.chatIg, badge: false, icon: 'chatIg' as const },
   { href: '/komentar-ig', label: t.nav.igComments, badge: false, icon: 'igComments' as const },
+  { href: '/chat-fb', label: t.nav.chatFb, badge: false, icon: 'chatFb' as const },
+  { href: '/komentar-fb', label: t.nav.fbComments, badge: false, icon: 'fbComments' as const },
   { href: '/channel-wa', label: t.nav.channelWa, badge: false, icon: 'channelWa' as const },
 ];
 
@@ -284,6 +289,8 @@ export function Rail({
         <span className="brand-name">{t.app.name}</span>
         <span className="brand-notif"><NotificationBell items={notifications} /></span>
       </div>
+
+      <DivisionSwitch active={me.division} divisions={me.divisions} collapsed={collapsed} />
 
       <button type="button" className="navitem navitem-toggle rail-toggle" onClick={toggleCollapsed}
               aria-pressed={collapsed} title={collapsed ? t.nav.expand : undefined}>

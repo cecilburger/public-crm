@@ -1,11 +1,11 @@
 import path from 'node:path';
 import Fastify from 'fastify';
 import {
-  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
+  NoActiveSessionError, SenderNotImplementedError, SendNotConfirmedError, SendNotAttemptedError, ThreadRequiresAcceptanceError, SessionManager, CommentActionNotImplementedError, CommentNotFoundError, CommentActionUnavailableError,
 } from './sessionManager.ts';
 import { MessengerWatcher } from './messengerWatcher.ts';
 import { CommentWatcher } from './commentWatcher.ts';
-import type { FbBridgeEvent } from './events.ts';
+import { createCrmClient } from './crmClient.ts';
 
 const PORT = Number(process.env.PORT ?? 8092);
 const FB_BRIDGE_SECRET = process.env.FB_BRIDGE_SECRET ?? 'dev-fb-bridge-secret-change-me';
@@ -14,68 +14,30 @@ const authDir = path.join(import.meta.dirname, '..', '.fb_bridge_auth');
 
 const app = Fastify({ logger: true });
 
-/**
- * Everything this service knows how to tell the CRM goes through one endpoint,
- * authenticated by a shared secret — the same arrangement `apps/wa-bridge` and
- * `apps/ig-bridge` use. It is an internal service on loopback, not a public
- * provider, so there is no per-payload signature to verify.
- *
- * A failure here is logged and dropped rather than retried. The CRM's own spool
- * is the retry mechanism for anything that got through, and the watcher's
- * reconciliation pass re-reads whatever did not — a retry loop in here would
- * only queue events in memory that a restart throws away anyway.
- */
-async function postEvent(ev: FbBridgeEvent): Promise<void> {
-  try {
-    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
-      body: JSON.stringify(ev),
-    });
-    if (!res.ok) {
-      app.log.warn({ status: res.status, event: ev.event, tenantId: ev.tenantId },
-        'kirana api rejected an fb-bridge event');
-      return;
-    }
-    app.log.info({ event: ev.event, tenantId: ev.tenantId }, 'fb-bridge event posted to kirana api');
-  } catch (err) {
-    app.log.error({ err, event: ev.event }, 'could not reach kirana api');
-  }
-}
-
 const sessions = new SessionManager(authDir);
+
 /**
- * What the CRM already holds, asked over the same internal channel everything
- * else uses. The bridge keeps no ledger of its own: a file here would be a
- * second opinion about what has been stored, and the two drift apart the moment
- * either side is restored or redeployed.
- *
- * An unreachable CRM answers "nothing is known", which makes a backfill skip
- * rather than re-import — the limit in `selectBackfill` bounds the damage, and
- * the CRM's own unique indexes absorb whatever slips through.
+ * A session key is a division's profile name, issued by the CRM: Marketing's
+ * is the bare tenant id (what every profile was called before divisions
+ * existed), any other division's is `<tenantId>-<division>`. The tenant id
+ * the CRM wants on every event is therefore recoverable from the key alone;
+ * the marker's copy, written at connect time, is preferred when it exists.
  */
-async function knownIds(tenantId: string, externalIds: string[]): Promise<Set<string>> {
-  if (externalIds.length === 0) return new Set();
-  try {
-    const res = await fetch(`${KIRANA_API_URL}/v1/webhooks/fb-bridge/known`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${FB_BRIDGE_SECRET}` },
-      body: JSON.stringify({ tenantId, externalIds }),
-    });
-    if (!res.ok) {
-      app.log.warn({ status: res.status, tenantId }, 'fb-bridge: could not read known message ids');
-      return new Set();
-    }
-    const body = await res.json() as { known?: string[] };
-    return new Set(body.known ?? []);
-  } catch (err) {
-    app.log.warn({ err, tenantId }, 'fb-bridge: could not reach kirana api for known message ids');
-    return new Set();
-  }
+const SESSION_KEY = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-[a-z]+)?$/i;
+function tenantIdFromSessionKey(sessionKey: string): string | null {
+  const match = SESSION_KEY.exec(sessionKey);
+  return match ? match[1]!.toLowerCase() : null;
+}
+async function tenantOf(sessionKey: string): Promise<string> {
+  const marker = await sessions.getPageMarker(sessionKey);
+  return marker?.tenantId ?? tenantIdFromSessionKey(sessionKey) ?? sessionKey;
 }
 
-const messenger = new MessengerWatcher(sessions, (ev) => void postEvent(ev), app.log, knownIds);
-const comments = new CommentWatcher(sessions, (ev) => void postEvent(ev), app.log);
+/** Events in, "what do you already hold?" out — see `crmClient.ts`. */
+const crm = createCrmClient({ apiUrl: KIRANA_API_URL, secret: FB_BRIDGE_SECRET, tenantOf, log: app.log });
+
+const messenger = new MessengerWatcher(sessions, (ev) => void crm.postEvent(ev), app.log, crm.knownIds);
+const comments = new CommentWatcher(sessions, (ev) => crm.postEvent(ev), app.log, crm.knownCommentIds);
 
 // Both watchers' own first pass resumes every tenant with a persisted profile.
 // `tsx watch` restarts on every code change and in production a redeploy or a
@@ -138,11 +100,11 @@ app.get('/healthz', async () => ({ status: 'ok' }));
  * or the CRM.
  */
 app.post<{
-  Params: { tenantId: string };
-  Body: { pageId?: string; pageName?: string; assetId?: string };
+  Params: { sessionKey: string };
+  Body: { pageId?: string; pageName?: string; assetId?: string; tenantId?: string };
 }>(
-  '/internal/sessions/:tenantId/login-window', async (req, reply) => {
-    const { pageId, pageName, assetId } = req.body ?? {};
+  '/internal/sessions/:sessionKey/login-window', async (req, reply) => {
+    const { pageId, pageName, assetId, tenantId } = req.body ?? {};
     if (!pageId || !pageName) {
       return reply.status(400).send({ error: 'pageId and pageName are required' });
     }
@@ -150,26 +112,33 @@ app.post<{
     // connection reads facebook.com/messages/t/, with one it reads that Page's
     // Business Suite inbox. Stored beside the profile so a restart resumes on
     // the same surface instead of silently falling back to the personal one.
-    const marker = { pageId, pageName, assetId: assetId ?? null };
-    const state = await sessions.openLoginWindow(req.params.tenantId, marker, (settled) => {
+    // The tenant id rides along so every event can name it without a lookup.
+    const marker = {
+      pageId, pageName, assetId: assetId ?? null,
+      tenantId: tenantId ?? tenantIdFromSessionKey(req.params.sessionKey),
+    };
+    const state = await sessions.openLoginWindow(req.params.sessionKey, marker, (settled) => {
       if (settled.status !== 'ready') return;
-      void messenger.loadAnchors(req.params.tenantId)
-        .then(() => messenger.attachTenant(req.params.tenantId))
+      // The first comment sweep happens now, not up to fifteen minutes later —
+      // and on its own, so a Messenger attach that fails cannot cancel it.
+      comments.onSessionReady(req.params.sessionKey);
+      void messenger.loadAnchors(req.params.sessionKey)
+        .then(() => messenger.attachTenant(req.params.sessionKey))
         .catch((err) => app.log.warn({ err }, 'fb-bridge: failed to attach after login'));
     });
     return reply.send(state);
   });
 
-app.get<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/status', async (req, reply) =>
-  reply.send(await sessions.status(req.params.tenantId)));
+app.get<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey/status', async (req, reply) =>
+  reply.send(await sessions.status(req.params.sessionKey)));
 
 /** Forces a comment sweep now instead of waiting for the next interval — for an
  * operator who just posted something and wants to see it wired up, and for
  * manual verification during setup. */
-app.post<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/sweep-comments', async (req, reply) => {
+app.post<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey/sweep-comments', async (req, reply) => {
   try {
-    await comments.sweep(req.params.tenantId);
-    return reply.send({ swept: true });
+    const summary = await comments.sweep(req.params.sessionKey, 'manual');
+    return reply.send({ swept: summary !== null, ...(summary ?? {}) });
   } catch (err) {
     return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal membaca komentar' });
   }
@@ -184,12 +153,12 @@ app.post<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId/sweep-c
  * than a reply that sits queued looking sent. When the sender lands, nothing
  * upstream changes — this route simply stops answering 501.
  */
-app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string } }>(
-  '/internal/sessions/:tenantId/threads/:threadId/send', async (req, reply) => {
+app.post<{ Params: { sessionKey: string; threadId: string }; Body: { text?: string } }>(
+  '/internal/sessions/:sessionKey/threads/:threadId/send', async (req, reply) => {
     const text = req.body?.text;
     if (!text) return reply.status(400).send({ error: 'text is required' });
     try {
-      await sessions.sendMessage(req.params.tenantId, req.params.threadId, text);
+      await sessions.sendMessage(req.params.sessionKey, req.params.threadId, text);
       return reply.send({ sent: true });
     } catch (err) {
       if (err instanceof SenderNotImplementedError) {
@@ -203,12 +172,17 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string
       if (err instanceof NoActiveSessionError) {
         return reply.status(404).send({ error: err.message });
       }
+      if (err instanceof SendNotAttemptedError) {
+        // Given up on before anything was typed: the CRM may try again with
+        // no risk of the customer receiving the message twice.
+        return reply.status(503).send({ error: err.message, code: 'send_not_attempted' });
+      }
       if (err instanceof SendNotConfirmedError) {
-        // Not permanent: the message may have been rate-limited, and the next
-        // attempt can legitimately succeed.
+        // Typed, but never seen in the transcript. The CRM does not retry a
+        // DM on this: typing it again could deliver it twice.
         return reply.status(502).send({ error: err.message, code: 'send_not_confirmed' });
       }
-      app.log.warn({ err, tenantId: req.params.tenantId }, 'fb-bridge send failed');
+      app.log.warn({ err, sessionKey: req.params.sessionKey }, 'fb-bridge send failed');
       return reply.status(502).send({ error: err instanceof Error ? err.message : 'Gagal mengirim pesan Facebook' });
     }
   });
@@ -222,14 +196,14 @@ app.post<{ Params: { tenantId: string; threadId: string }; Body: { text?: string
  * treats as terminal for that comment rather than retrying — retyping onto a
  * real person's post is the one outcome worse than a missed reply.
  */
-app.post<{ Params: { tenantId: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
-  '/internal/sessions/:tenantId/comments/reply', async (req, reply) => {
+app.post<{ Params: { sessionKey: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
+  '/internal/sessions/:sessionKey/comments/reply', async (req, reply) => {
     const { postId, commentId, text } = req.body ?? {};
     if (!postId || !commentId || !text) {
       return reply.status(400).send({ error: 'postId, commentId and text are required' });
     }
     try {
-      await sessions.replyToComment(req.params.tenantId, { postId, commentId, text });
+      await sessions.replyToComment(req.params.sessionKey, { postId, commentId, text });
       return reply.send({ replied: true });
     } catch (err) {
       return reply.status(commentActionStatus(err)).send(commentActionBody(err));
@@ -243,14 +217,14 @@ app.post<{ Params: { tenantId: string }; Body: { postId?: string; commentId?: st
  * Facebook does not offer it for this comment or this person, that is a 409
  * the CRM records as `dm_error`, not a failure to retry.
  */
-app.post<{ Params: { tenantId: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
-  '/internal/sessions/:tenantId/comments/private-reply', async (req, reply) => {
+app.post<{ Params: { sessionKey: string }; Body: { postId?: string; commentId?: string; text?: string } }>(
+  '/internal/sessions/:sessionKey/comments/private-reply', async (req, reply) => {
     const { postId, commentId, text } = req.body ?? {};
     if (!postId || !commentId || !text) {
       return reply.status(400).send({ error: 'postId, commentId and text are required' });
     }
     try {
-      const { threadId } = await sessions.privateReplyToComment(req.params.tenantId, { postId, commentId, text });
+      const { threadId } = await sessions.privateReplyToComment(req.params.sessionKey, { postId, commentId, text });
       return reply.send({ sent: true, threadId });
     } catch (err) {
       return reply.status(commentActionStatus(err)).send(commentActionBody(err));
@@ -278,8 +252,8 @@ function commentActionBody(err: unknown): { error: string; code?: string } {
 
 /** Deletes the stored Chromium profile. This is what makes "disconnect" in the
  * CRM actually revoke the session rather than just hide it. */
-app.delete<{ Params: { tenantId: string } }>('/internal/sessions/:tenantId', async (req, reply) => {
-  await sessions.logout(req.params.tenantId);
+app.delete<{ Params: { sessionKey: string } }>('/internal/sessions/:sessionKey', async (req, reply) => {
+  await sessions.logout(req.params.sessionKey);
   return reply.status(204).send();
 });
 

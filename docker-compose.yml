@@ -1,5 +1,24 @@
 # Local stack. Production runs the same images against managed Postgres and
 # Redis; the only difference is where the connection strings point.
+#
+# `postgres`/`redis` below are the local-only convenience services —
+# `ops/bootstrap-roles.sql` hardcodes their passwords on purpose (see its own
+# header) and is never meant to run against a real deployment. A server
+# deploy points DATABASE_URL/REDIS_URL at a managed instance instead and
+# never starts these two services at all.
+#
+# `api`, `worker`, `console` and `bd-brain` are the images this file's own
+# comment above means by "the same images" — no bind-mounted source, no
+# dev-mode command, and NODE_ENV defaults to production so
+# packages/core/src/env.ts's own boot-time guard actually runs and refuses
+# to start on a secret that still holds its development default. Override
+# any `${VAR:-dev-default}` below with real values (a `.env` file beside
+# this one, or real environment variables) before pointing this at a real
+# deployment.
+#
+# `wa-bridge`, `ig-bridge` and `fb-bridge` are images too, but on a separate
+# opt-in profile ("bridges") rather than started by a plain `docker compose
+# up` — see their own block, further down, for why.
 services:
   postgres:
     image: postgres:16-alpine
@@ -32,9 +51,12 @@ services:
 
   api:
     build: { context: ., dockerfile: ops/Dockerfile }
-    command: ["npm", "run", "dev:api"]
+    # No command override: the image's own CMD (node --experimental-strip-types
+    # apps/api/src/server.ts) is already the production entry point. The old
+    # `npm run dev:api` here ran tsx in watch mode — fine on a bind-mounted
+    # source tree, meaningless (and slower) against a built, immutable image.
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-production}
       # The API connects as kirana_app: subject to row-level security, no DDL.
       DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
       CONTROL_DATABASE_URL: postgres://kirana_provisioner:${PROVISIONER_DB_PASSWORD:-kirana-provisioner-local}@postgres:5432/kirana
@@ -43,22 +65,55 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-000000}
       META_APP_SECRET: ${META_APP_SECRET:-dev-meta-app-secret}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-dev-verify-token}
+      # Shared secrets and addresses for the three bridges. They do not start
+      # by default with `docker compose up` here — they hold a live browser
+      # session each and can just as well run as their own host processes —
+      # but env.ts validates the secrets on every boot regardless, and
+      # refuses a placeholder once NODE_ENV=production. Bring them up
+      # alongside everything else with `docker compose --profile bridges up`
+      # (services `wa-bridge`/`ig-bridge`/`fb-bridge`, further down) and the
+      # URLs below reach them by service name automatically; running a bridge
+      # on a separate host instead just means overriding its URL to point
+      # there.
+      WA_BRIDGE_URL: ${WA_BRIDGE_URL:-http://wa-bridge:8090}
+      WA_BRIDGE_SECRET: ${WA_BRIDGE_SECRET:-dev-wa-bridge-secret-change-me}
+      IG_BRIDGE_URL: ${IG_BRIDGE_URL:-http://ig-bridge:8091}
+      IG_BRIDGE_SECRET: ${IG_BRIDGE_SECRET:-dev-ig-bridge-secret-change-me}
+      FB_BRIDGE_URL: ${FB_BRIDGE_URL:-http://fb-bridge:8092}
+      FB_BRIDGE_SECRET: ${FB_BRIDGE_SECRET:-dev-fb-bridge-secret-change-me}
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-    volumes: [".:/app", "/app/node_modules"]
 
   worker:
     build: { context: ., dockerfile: ops/Dockerfile }
-    command: ["npm", "run", "dev:worker"]
+    command: ["node", "--experimental-strip-types", "apps/worker/src/main.ts"]
+    # No HTTP server in this process — the image's baked-in HEALTHCHECK pings
+    # apps/api's :8080/healthz, which nothing here ever listens on. Left
+    # enabled, Docker would report this container unhealthy forever.
+    healthcheck:
+      disable: true
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: postgres://kirana_app:${APP_DB_PASSWORD:-kirana-app-local}@postgres:5432/kirana
       CONTROL_DATABASE_URL: postgres://kirana_provisioner:${PROVISIONER_DB_PASSWORD:-kirana-provisioner-local}@postgres:5432/kirana
       REDIS_URL: redis://redis:6379
       KIRANA_KEK: ${KIRANA_KEK:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
+      # Validated by the same env.ts schema as the API even though this
+      # process never signs a session — omitting it just moves the failure
+      # from "refused to boot with a clear message" to "refused to boot
+      # because JWT_SECRET failed schema validation", which is worse.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-000000}
       META_APP_SECRET: ${META_APP_SECRET:-dev-meta-app-secret}
+      # See the same block on `api` above — same bridges, same `--profile
+      # bridges` opt-in, same reasoning for the URL defaults.
+      WA_BRIDGE_URL: ${WA_BRIDGE_URL:-http://wa-bridge:8090}
+      WA_BRIDGE_SECRET: ${WA_BRIDGE_SECRET:-dev-wa-bridge-secret-change-me}
+      IG_BRIDGE_URL: ${IG_BRIDGE_URL:-http://ig-bridge:8091}
+      IG_BRIDGE_SECRET: ${IG_BRIDGE_SECRET:-dev-ig-bridge-secret-change-me}
+      FB_BRIDGE_URL: ${FB_BRIDGE_URL:-http://fb-bridge:8092}
+      FB_BRIDGE_SECRET: ${FB_BRIDGE_SECRET:-dev-fb-bridge-secret-change-me}
       # Unset is fine: Autopilot falls back to the offline stand-in.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AUTOPILOT_MODEL: ${AUTOPILOT_MODEL:-claude-opus-5}
@@ -70,7 +125,6 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       bd-brain: { condition: service_healthy }
-    volumes: [".:/app", "/app/node_modules"]
 
   # The chatbot that answers brands and books meetings — Python, stateless,
   # asked over HTTP by the worker. Keeps nothing: Postgres is its memory.
@@ -94,18 +148,89 @@ services:
       timeout: 3s
       retries: 10
 
-  console:
-    build: { context: ., dockerfile: ops/Dockerfile }
-    command: ["npm", "run", "dev", "-w", "@kirana/console"]
+  # The three bridges — real WhatsApp Web / Instagram / Facebook sessions
+  # driven from a browser, one per connected number/account. Off a plain
+  # `docker compose up` on purpose (profile "bridges"): each one holds a
+  # live login in a Chromium profile on its own volume below, so restarting
+  # or rescheduling the container the way `api`/`worker` are meant to be
+  # restarted logs it out. Bring them up explicitly —
+  # `docker compose --profile bridges up -d` — once, on whichever host is
+  # meant to keep that profile alive, or run them as their own host
+  # processes elsewhere entirely and just point `api`/`worker`'s
+  # `*_BRIDGE_URL` above at wherever that is instead.
+  #
+  # Two of the three (`ig-bridge`, `fb-bridge`) also have a login path that
+  # opens a REAL, non-headless browser window a human finishes by hand — see
+  # each Dockerfile's own header. That cannot happen inside this container.
+  # Do that one-time login on a machine with a real display instead (a
+  # laptop running the matching `npm run dev:*-bridge` works fine) and copy
+  # the resulting profile directory onto the volume below before starting
+  # the container here. `wa-bridge` has no such step: it pairs by QR code,
+  # shown as a plain image in the console, which works headless already.
+  wa-bridge:
+    profiles: ["bridges"]
+    build: { context: ., dockerfile: ops/Dockerfile.wa-bridge }
     environment:
-      NODE_ENV: development
-      # Server-side calls only — the browser never talks to the API directly,
-      # so the access token stays in an httpOnly cookie.
       KIRANA_API_URL: http://api:8080
+      WA_BRIDGE_SECRET: ${WA_BRIDGE_SECRET:-dev-wa-bridge-secret-change-me}
+      WA_WEB_VERSION: ${WA_WEB_VERSION:-}
+    volumes: [wa_bridge_auth:/app/apps/wa-bridge/.wwebjs_auth]
+    ports: ["8090:8090"]
+    depends_on: [api]
+
+  ig-bridge:
+    profiles: ["bridges"]
+    build: { context: ., dockerfile: ops/Dockerfile.ig-bridge }
+    environment:
+      KIRANA_API_URL: http://api:8080
+      IG_BRIDGE_SECRET: ${IG_BRIDGE_SECRET:-dev-ig-bridge-secret-change-me}
+      IG_BRIDGE_HEADLESS: ${IG_BRIDGE_HEADLESS:-true}
+      IG_COMMENT_POLL_MS: ${IG_COMMENT_POLL_MS:-300000}
+      IG_COMMENT_FORCE_DM: ${IG_COMMENT_FORCE_DM:-false}
+    volumes: [ig_bridge_auth:/app/apps/ig-bridge/.ig_bridge_auth]
+    ports: ["8091:8091"]
+    depends_on: [api]
+
+  fb-bridge:
+    profiles: ["bridges"]
+    build: { context: ., dockerfile: ops/Dockerfile.fb-bridge }
+    environment:
+      KIRANA_API_URL: http://api:8080
+      FB_BRIDGE_SECRET: ${FB_BRIDGE_SECRET:-dev-fb-bridge-secret-change-me}
+      FB_BRIDGE_HEADLESS: ${FB_BRIDGE_HEADLESS:-true}
+      FB_BRIDGE_DEBUG: ${FB_BRIDGE_DEBUG:-false}
+      FB_COMMENT_AUTO_DM: ${FB_COMMENT_AUTO_DM:-false}
+      FB_COMMENT_COOLDOWN_MS: ${FB_COMMENT_COOLDOWN_MS:-60000}
+      FB_COMMENT_BATCH: ${FB_COMMENT_BATCH:-5}
+      FB_COMMENT_MAX_ATTEMPTS: ${FB_COMMENT_MAX_ATTEMPTS:-3}
+      FB_COMMENT_AUTO_REPLY_TEXT: ${FB_COMMENT_AUTO_REPLY_TEXT:-Check DM ya kak!!!}
+      FB_COMMENT_AUTO_DM_TEXT: ${FB_COMMENT_AUTO_DM_TEXT:-}
+      FB_BACKFILL_MAX_MESSAGES: ${FB_BACKFILL_MAX_MESSAGES:-50}
+    volumes: [fb_bridge_auth:/app/apps/fb-bridge/.fb_bridge_auth]
+    ports: ["8092:8092"]
+    depends_on: [api]
+
+  console:
+    build:
+      context: .
+      dockerfile: ops/Dockerfile.console
+      args:
+        # Next's `env` block in next.config.mjs inlines this at build time —
+        # setting it under `environment:` below would do nothing, since the
+        # build that reads it already finished by then. See
+        # ops/Dockerfile.console's own comment on this exact failure mode.
+        KIRANA_API_URL: http://api:8080
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
     ports: ["3000:3000"]
     depends_on: [api]
-    volumes: [".:/app", "/app/node_modules"]
 
 volumes:
   pgdata:
   redisdata:
+  # Each bridge's live login — the same reason `bd-brain`'s secrets and
+  # `postgres`'s data get a volume above: a container the orchestrator can
+  # freely recreate must not lose it.
+  wa_bridge_auth:
+  ig_bridge_auth:
+  fb_bridge_auth:

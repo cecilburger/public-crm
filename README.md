@@ -23,8 +23,14 @@ npm run dev:bd-brain  # the BD chatbot (apps/bd-brain, Python) → :4321; see ap
 
 # the real stack
 cp .env.example .env
-make up           # postgres + redis + api + worker + console
+make up           # postgres + redis + api + worker + console + bd-brain
 make seed
+
+# the three bridges (WhatsApp Web / Instagram / Facebook) — a live browser
+# session each, so they're on their own opt-in profile rather than started
+# by `make up`. See docker-compose.yml's own comment above the wa-bridge/
+# ig-bridge/fb-bridge services for the one-time manual login two of them need.
+docker compose --profile bridges up -d --build
 ```
 
 Sign in at http://localhost:3000 with workspace `toko-demo`,

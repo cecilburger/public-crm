@@ -298,6 +298,21 @@ export class SessionManager {
       this.onEvent({ channelId, event: 'authenticated', at: new Date().toISOString() });
     });
 
+    // Diagnostic only — WhatsApp Web's own progress between 'authenticated'
+    // and 'ready', which the three lifecycle events above say nothing about.
+    // A session stuck reporting 'authenticated' with no 'ready' ever
+    // following has failed somewhere in here, and these two are what say
+    // where: a `change_state` other than CONNECTED (CONFLICT — another
+    // device/session already has this number open elsewhere; TIMEOUT —
+    // WhatsApp's own servers took too long; UNPAIRED* — the phone's link
+    // was pulled), or a `loading_screen` that starts but never reaches 100.
+    client.on('change_state', (state) => {
+      console.log(`[wa-bridge] ${channelId} change_state: ${state}`);
+    });
+    client.on('loading_screen', (percent, message) => {
+      console.log(`[wa-bridge] ${channelId} loading_screen: ${percent}% ${message}`);
+    });
+
     client.on('auth_failure', (message) => {
       // The stored login is no longer good, so stop advertising it as
       // resumable — otherwise every restart retries a session that can only
@@ -398,6 +413,12 @@ export class SessionManager {
     try {
       await client.initialize();
     } catch (err) {
+      // Logged before any of the `looksLoggedOut` branching below decides
+      // what to do about it — that check only asks "does this look like a
+      // stale session", not "what actually happened", and the raw error was
+      // otherwise never written down anywhere.
+      console.error(`[wa-bridge] ${channelId} initialize() failed:`, err);
+
       // Nothing is left half-alive: the client comes out of the map and its
       // browser page is closed. Without this each failed attempt left another
       // tab open against the same profile — three of them, on the session that

@@ -10,6 +10,12 @@ import { EventEmitter } from 'node:events';
 export interface RealtimeMessageEvent {
   type: 'message';
   conversationId: string;
+  /**
+   * The Marketing/AI division the conversation lives in, so a console showing
+   * the other division is not woken for it. Absent on events from a worker
+   * that predates divisions — those reach every listener, as they always did.
+   */
+  divisionId?: string;
 }
 
 export type RealtimeEvent = RealtimeMessageEvent;

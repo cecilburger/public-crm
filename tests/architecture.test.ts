@@ -15,7 +15,11 @@ async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   for (const entry of await readdir(join(ROOT, dir), { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '.next') continue;
-    const full = join(dir, entry.name);
+    // Not `join(dir, entry.name)`: it uses the OS separator, and every path
+    // this collects gets compared against a forward-slash literal below (the
+    // `ALLOWED` lists) — `path.join` on Windows made every one of those
+    // comparisons fail despite matching the same real file.
+    const full = `${dir}/${entry.name}`;
     if (entry.isDirectory()) out.push(...await sourceFiles(full));
     else if (/\.tsx?$/.test(entry.name)) out.push(full);
   }
@@ -175,5 +179,29 @@ describe('migrations are forward-only', () => {
         || new RegExp(`'${table}'`).test(sql); // named in a DO block's table list
       expect(enabled, `${table} has tenant_id but no row-level security`).toBe(true);
     }
+  });
+});
+
+describe('routes act inside the request\'s division', () => {
+  /**
+   * `ctx.asTenant` is what pins the Marketing/AI division onto a route's
+   * transaction. A route that opened its own `withTenant` would run with the
+   * tenant alone — tenant-wide, both divisions visible — so only the files
+   * that run before a session exists, or that take their division from a
+   * bridge session instead of a user, may do it.
+   */
+  const ALLOWED = [
+    'apps/api/src/routes/auth.ts',      // sign-in, refresh and sign-out: no division involved
+    'apps/api/src/routes/mfa.ts',       // the second factor, before a session exists
+    'apps/api/src/routes/checkout.ts',  // a public capability URL
+    'apps/api/src/routes/webhooks.ts',  // bridge events, scoped to the division their session key names
+  ];
+
+  it('opens a transaction only through asTenant', async () => {
+    const callers: string[] = [];
+    for (const file of await sourceFiles('apps/api/src/routes')) {
+      if (/\bwithTenant\s*\(/.test(await read(file))) callers.push(file);
+    }
+    expect(callers.sort()).toEqual([...ALLOWED].sort());
   });
 });

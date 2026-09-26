@@ -11,7 +11,14 @@ const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migr
  * already-applied migration is a hard error: editing history silently is how
  * staging and production drift apart.
  */
-export async function migrate(db: Database, opts: { dir?: string; log?: (m: string) => void } = {}) {
+export async function migrate(
+  db: Database,
+  opts: {
+    dir?: string; log?: (m: string) => void;
+    /** Stop after this version (inclusive) — for tests that populate a database at one point in history and then migrate it forward. */
+    upTo?: string;
+  } = {},
+) {
   const dir = opts.dir ?? MIGRATIONS_DIR;
   const log = opts.log ?? (() => {});
 
@@ -33,6 +40,7 @@ export async function migrate(db: Database, opts: { dir?: string; log?: (m: stri
 
   for (const file of files) {
     const version = file.replace(/\.sql$/, '');
+    if (opts.upTo && version > opts.upTo) break;
     const body = await readFile(join(dir, file), 'utf8');
     // `git`'s `core.autocrlf` checks these files out differently machine to
     // machine (LF as committed, CRLF on a Windows clone with autocrlf on),
